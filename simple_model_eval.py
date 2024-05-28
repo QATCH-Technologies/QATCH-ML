@@ -1,6 +1,7 @@
 import tensorflow as tf
 import pandas as pd
 import numpy as np
+from scipy.signal import argrelextrema, find_peaks
 import random
 import seaborn as sns
 from sklearn.metrics import confusion_matrix, classification_report
@@ -17,12 +18,23 @@ from utils import linebreak
 from sklearn.model_selection import train_test_split
 
 
+def find_local_maxima_with_indices(points):
+    x = np.array(points)
+    # for local maxima
+    peaks, _ = find_peaks(x)
+
+    return np.asarray(peaks)
+
+
 def plot_actual_vs_predicted(actual_values, predicted_values):
     # Find indices where either list has a value of 1
+    # Find the last occurrence of 1 in the binary data
+    last_1_index = len(actual_values) - 1 - actual_values[::-1].index(1)
+
+    # Truncate both datasets
+    actual_values = actual_values[: last_1_index + 1]
 
     actual_indices = [i for i, val in enumerate(actual_values) if val == 1]
-    predicted_indices = get_results(predicted_values)
-    print(predicted_indices)
 
     # Plot the actual and predicted values
     plt.figure(figsize=(8, 6))
@@ -34,8 +46,8 @@ def plot_actual_vs_predicted(actual_values, predicted_values):
         marker="o",
     )
     plt.scatter(
-        predicted_indices,
-        [1] * len(predicted_indices),
+        [predicted_values],
+        [1] * len(predicted_values),
         color="red",
         label="Predicted",
         marker="x",
@@ -60,6 +72,35 @@ def plot_actual_vs_predicted(actual_values, predicted_values):
     plt.show()
 
 
+def plot_pred_values(pred_values, actual_values):
+    print(pred_values)
+    linebreak()
+    print(actual_values)
+    # Find the last occurrence of 1 in the binary data
+    last_1_index = len(actual_values) - 1 - actual_values[::-1].index(1)
+
+    # Truncate both datasets
+    values = pred_values[: last_1_index + 1]
+    binary_data = actual_values[: last_1_index + 1]
+
+    # Get the indices where binary_data is 1
+    marked_indices = [i for i, val in enumerate(binary_data) if val == 1]
+
+    # Plotting
+    plt.plot(values)
+    plt.scatter(
+        marked_indices,
+        [values[i] for i in marked_indices],
+        color="red",
+        label="Actual Indices",
+    )
+    plt.title("Prediction Distribution")
+    plt.xlabel("Index")
+    plt.ylabel("Percentage")
+    plt.legend()
+    plt.show()
+
+
 def unpack_result(data):
     result = []
     for sublist in data.tolist():
@@ -70,20 +111,74 @@ def unpack_result(data):
     return result
 
 
-def get_results(pred):
-    return sorted(range(len(pred)), key=lambda i: pred[i], reverse=True)[:6]
+def unpack_pred(data):
+    result = []
+    for sublist in data:
+        for value in sublist:
+            result.append(value)
+    return np.array(result)
+
+
+def get_peaks(data):
+    max_peaks = 6
+    min_distance = 0  # Minimum distance between peaks
+    prominence_threshold = 0.6
+    peaks, properties = find_peaks(data, prominence=(None, prominence_threshold))
+
+    # Sort peaks by prominence
+    sorted_peaks = sorted(
+        peaks,
+        key=lambda x: properties["prominences"][list(peaks).index(x)],
+        reverse=True,
+    )
+
+    # Filter out peaks that are too close to each other
+    significant_peaks = []
+    last_peak_index = None
+    while len(significant_peaks) < max_peaks:
+        for peak_index in sorted_peaks:
+            if last_peak_index is None or peak_index - last_peak_index >= min_distance:
+                significant_peaks.append(peak_index)
+                last_peak_index = peak_index
+
+    return significant_peaks
+
+
+def get_idxs(peaks, raw):
+    indices = {
+        value: [index for index, element in enumerate(raw) if element == value]
+        for value in peaks
+    }
+    return indices
+
+
+def plot_on_curve():
+    # Replace 'file_path.csv' with the path to your CSV file
+    file_path = "file_path.csv"
+
+    # Load the CSV file into a pandas DataFrame
+    data = pd.read_csv("content/training_data_with_points/BSA200MGML_2_3rd.csv")
+
+    # Extract the 'Dissipation' column into a list
+    raw = np.array(data["Dissipation"])
 
 
 def evaluate_model(model, X_test, y_test):
     y_pred_classes = []
     for x, y in zip(X_test, y_test):
-        reshaped_x = np.reshape(np.asarray(x).astype(np.float32), (-1, 55340, 4))
+        reshaped_x = np.reshape(np.asarray(x).astype(np.float32), (-1, 55340, 1))
         reshaped_y = np.reshape(np.asarray(y).astype(np.float32), (-1, 55340, 1))
 
-        y_pred = model.predict(reshaped_x)
+        y_pred = model.predict(reshaped_x)[0]
+        print(y_pred)
         unpacked_actual = unpack_result(reshaped_y)
-        unpacked_pred = unpack_result(y_pred)
-        plot_actual_vs_predicted(unpacked_actual, unpacked_pred)
+        unpacked_predicted = unpack_pred(y_pred)
+        plot_pred_values(unpacked_predicted, unpacked_actual)
+        peaks = get_peaks(unpacked_predicted)
+        for p in peaks:
+            print(p)
+
+        plot_actual_vs_predicted(unpacked_actual, peaks)
         exit()
         y_pred_classes.append((reshaped_y, y_pred))
 
