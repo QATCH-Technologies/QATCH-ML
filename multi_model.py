@@ -1,18 +1,19 @@
-import msvcrt
-import pandas as pd
 import numpy as np
-import os
-import csv
+import tensorflow as tf
+from tensorflow.keras.models import Sequential, Model
+from tensorflow.keras.layers import (
+    Conv1D,
+    MaxPooling1D,
+    Flatten,
+    Dense,
+    Dropout,
+    GlobalMaxPooling1D,
+    Input,
+)
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
-from sklearn.neighbors import LocalOutlierFactor
-from sklearn.cluster import KMeans
-from tensorflow.keras.models import Sequential
-from scipy.signal import savgol_filter
-from tensorflow.keras.layers import Dense, Flatten, Conv1D, MaxPooling1D, Dropout
-from sklearn.neighbors import LocalOutlierFactor
-from utils import status, error, info, linebreak, loading, echo, plot_loss
 import matplotlib.pyplot as plt
+import pandas as pd
+import os
 
 """ Ensures pandas displays all rows of a dataframe on print(). """
 pd.set_option("display.max_rows", None)
@@ -42,74 +43,14 @@ POI_FILE = "content/training_data_with_points/W0802_F5_DI6s_good_3rd_poi.csv"
 DATA_FILE = "content/training_data_with_points/W0802_F5_DI6s_good_3rd.csv"
 
 
-def find_fill_start_end(data):
-    # Data preprocessing
-    smoothed_data = savgol_filter(
-        data["Dissipation"].values, window_length=11, polyorder=3
-    )
-
-    # Calculate the derivative
-    gradient = np.gradient(smoothed_data)
-
-    # Smooth the derivative if necessary
-    smoothed_gradient = savgol_filter(gradient, window_length=11, polyorder=3)
-    # Identify change points
-    change_points = []
-    threshold = 0.0000001  # Adjust as needed
-    while len(change_points) == 0:
-        for i in range(1, len(smoothed_gradient)):
-            if (
-                smoothed_gradient[i] > threshold
-                and smoothed_gradient[i] > smoothed_gradient[i - 1]
-            ):
-                change_points.append(i)
-        threshold = threshold / 2
-
-    return change_points
-
-
-def region_gen(data):
-    start_time = find_fill_start_end(data)[0]
-    end_time = find_fill_start_end(data)[-1]
-    dissipation_raw = dissipation_trim = data["Dissipation"]
-    dissipation_trim = dissipation_raw.values[start_time - TRIM_OFFSET : end_time]
-    time = np.arange(len(dissipation_trim))
-    lof_data = dissipation_trim.reshape(-1, 1)
-    contamination = 0.05
-    clusters = {}
-    while len(clusters) < 6 and contamination < 0.5:
-        lof = LocalOutlierFactor(contamination=contamination)
-        anomalies = lof.fit_predict(lof_data)
-
-        idxs = []
-        for pt in time:
-            if anomalies[pt] == -1:
-                idxs.append(pt)
-            else:
-                idxs.append(0)
-
-        data = np.asarray(idxs)
-        data = np.reshape(data, (-1, 1))
-        kmeans = KMeans(n_clusters=7)
-        kmeans.fit(data)
-        for i in range(len(kmeans.labels_)):
-            if kmeans.labels_[i] > 0:
-                if clusters.get(kmeans.labels_[i]) is None:
-                    clusters[kmeans.labels_[i]] = [i]
-                else:
-                    clusters[kmeans.labels_[i]].append(i)
-        contamination = contamination + 0.01
-    regional_data = {}
-    for k, v in clusters.items():
-        cluster_start = v[0] + start_time
-        if cluster_start + 50 > time[-1]:
-            cluster_start = cluster_start - 25
-        cluster_end = cluster_start + 50  # Make this a constant
-        raw_cluster = dissipation_raw[cluster_start:cluster_end].values
-        cluster_time = np.arange(cluster_start, cluster_end)
-        regional_data[k - 1] = (raw_cluster, cluster_time)
-
-    return regional_data
+def plot_history(history, cluster_id):
+    plt.plot(history.history["loss"], label="Train Loss")
+    plt.plot(history.history["val_loss"], label="Validation Loss")
+    plt.title(f"Training and Validation Loss for Cluster {cluster_id}")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.legend()
+    plt.show()
 
 
 def region_gen_v2(data, poi):
@@ -137,6 +78,7 @@ def region_gen_v2(data, poi):
 
 def read_data(raw_data_file, poi_file):
     raw_data = pd.read_csv(raw_data_file)
+    raw_data = pd.drop(DROPPED_FEATURES)
     poi_data = pd.read_csv(poi_file, header=None)
     return {"RAW": raw_data, "POI": poi_data}
 
@@ -156,98 +98,143 @@ def load_data_from_directory(data_directory):
     return dfs
 
 
-def build_model():
-    model = Sequential()
-    model.add(
-        Conv1D(filters=32, kernel_size=3, activation="relu", input_shape=(100, 4))
-    )
-    model.add(MaxPooling1D(pool_size=2))
-    model.add(Conv1D(filters=64, kernel_size=3, activation="relu"))
-    model.add(MaxPooling1D(pool_size=2))
-    model.add(Flatten())
-    model.add(Dense(128, activation="relu"))
-    model.add(Dropout(0.5))
-    model.add(Dense(1, activation="linear"))  # For regression
-    model.compile(optimizer="adam", loss="mean_squared_error", metrics=["mae"])
+def create_model(input_shape, num_filters=64, kernel_size=3, dropout_rate=0.2):
+    inputs = Input(shape=input_shape)
+
+    # Optional: Embedding Layer if needed
+    # embedded = Embedding(input_dim, output_dim)(inputs)
+
+    # Temporal Convolutional Neural Network (TCN)
+    conv1 = Conv1D(
+        filters=num_filters,
+        kernel_size=kernel_size,
+        activation="relu",
+        padding="causal",
+    )(inputs)
+    conv2 = Conv1D(
+        filters=num_filters,
+        kernel_size=kernel_size,
+        activation="relu",
+        padding="causal",
+    )(conv1)
+    conv3 = Conv1D(
+        filters=num_filters,
+        kernel_size=kernel_size,
+        activation="relu",
+        padding="causal",
+    )(conv2)
+    conv4 = Conv1D(
+        filters=num_filters,
+        kernel_size=kernel_size,
+        activation="relu",
+        padding="causal",
+    )(conv3)
+    pooling = GlobalMaxPooling1D()(conv4)
+    dropout = Dropout(rate=dropout_rate)(pooling)
+
+    # Dense Layers
+    dense1 = Dense(64, activation="relu")(dropout)
+    dense2 = Dense(32, activation="relu")(dense1)
+
+    # Output Layer
+    output = Dense(1)(dense2)  # Output layer for regression
+
+    model = Model(inputs=inputs, outputs=output)
     return model
 
 
-def convert(data):
-    # Convert DataFrame to NumPy array
-    ret = []
-    for df in data:
-        data_array = df.to_numpy()
-
-        # Reshape data to the required shape (n_samples, 1, 4)
-        data_array = data_array.reshape((len(data_array), 1, data_array.shape[1]))
-        ret.append(data_array)
-    return ret
-
-
-def train_model(X_train, y_train, X_val, y_val):
-    model = build_model()
-    # Need to convert training and test data into useable format for tensorflow
-    X_train = convert(X_train)
-    X_val = convert(X_val)
-    history = model.fit(
-        X_train, y_train, epochs=32, batch_size=16, validation_data=(X_val, y_val)
-    )
-    model.summary()
-    return model, history
-
-
 if __name__ == "__main__":
-    content = load_data_from_directory(CONTENT_DIRECTORY)
-    merge = []
-    r1, r2, r3, r4, r5, r6 = (
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
-    )
-    for data_set in content:
-        df = pd.DataFrame()
-        regions = region_gen_v2(data_set["RAW"], data_set["POI"])
-        for cluster in regions.keys():
-            if cluster == 0:
-                r1.append(
-                    {"DATA": regions[cluster], "POI": data_set["POI"].values[cluster]}
-                )
-            elif cluster == 1:
-                r2.append(
-                    {"DATA": regions[cluster], "POI": data_set["POI"].values[cluster]}
-                )
-            elif cluster == 2:
-                r3.append(
-                    {"DATA": regions[cluster], "POI": data_set["POI"].values[cluster]}
-                )
-            elif cluster == 3:
-                r4.append(
-                    {"DATA": regions[cluster], "POI": data_set["POI"].values[cluster]}
-                )
-            elif cluster == 4:
-                r5.append(
-                    {"DATA": regions[cluster], "POI": data_set["POI"].values[cluster]}
-                )
-            else:
-                r6.append(
-                    {"DATA": regions[cluster], "POI": data_set["POI"].values[cluster]}
-                )
-    merge.append(r1)
-    merge.append(r2)
-    merge.append(r3)
-    merge.append(r4)
-    merge.append(r5)
-    merge.append(r6)
-    poi_models = []
-    for region in merge:
-        X = [item["DATA"] for item in region]
-        y = [item["POI"] for item in region]
+    # Initialize dictionaries to hold training, validation, and test data for each cluster
+    X_train_sets = {}
+    X_val_sets = {}
+    X_test_sets = {}
+    y_train_sets = {}
+    y_val_sets = {}
+    y_test_sets = {}
+    region_data = region_gen_v2(data, pois)
+    # Loop through each cluster to split data
+    for cluster_id, records in region_data.items():
+        # If there's only one record, we can't split; handle this by putting all into training
+        if len(records) < 2:
+            print(
+                f"Cluster {cluster_id} has less than 2 records, not enough to split into train and test."
+            )
+            X_train_sets[cluster_id] = np.array([record["DATA"] for record in records])
+            y_train_sets[cluster_id] = np.array([record["POI"] for record in records])
+            X_val_sets[cluster_id] = np.array([])
+            y_val_sets[cluster_id] = np.array([])
+            X_test_sets[cluster_id] = np.array([])
+            y_test_sets[cluster_id] = np.array([])
+            continue
 
+        # Extract the data and labels
+        X = np.array([record["DATA"] for record in records])
+        y = np.array([record["POI"] for record in records])
+
+        # Split the data into training and testing sets
         X_train, X_test, y_train, y_test = train_test_split(
             X, y, test_size=0.2, random_state=42
         )
-        model, history = train_model(X_train, y_train, X_test, y_test)
-        plot_loss(history)
+
+        # Further split the training data into training and validation sets
+        X_train, X_val, y_train, y_val = train_test_split(
+            X_train, y_train, test_size=0.25, random_state=42
+        )  # 0.25*0.8 = 0.2 of original data
+
+        # Store the split data in the dictionaries
+        X_train_sets[cluster_id] = X_train
+        X_val_sets[cluster_id] = X_val
+        X_test_sets[cluster_id] = X_test
+        y_train_sets[cluster_id] = y_train
+        y_val_sets[cluster_id] = y_val
+        y_test_sets[cluster_id] = y_test
+
+        # Dictionary to hold the models and their training histories
+    models = {}
+    histories = {}
+
+    # Train a model for each cluster
+    for cluster_id in region_data.keys():
+        if (
+            len(X_train_sets[cluster_id]) < 2
+        ):  # Skip training if there's not enough data
+            continue
+
+        print(f"\nTraining model for Cluster {cluster_id}")
+
+        # Get training, validation, and test data
+        X_train = np.array(X_train_sets[cluster_id])
+        y_train = np.array(y_train_sets[cluster_id])
+        X_val = np.array(X_val_sets[cluster_id])
+        y_val = np.array(y_val_sets[cluster_id])
+        X_test = np.array(X_test_sets[cluster_id])
+        y_test = np.array(y_test_sets[cluster_id])
+
+        # Create a CNN model
+        input_shape = (X_train.shape[1], X_train.shape[2])
+        model = create_model(input_shape=input_shape)
+
+        # Train the model and store the history
+        history = model.fit(
+            X_train,
+            y_train,
+            validation_data=(X_val, y_val),
+            epochs=100,
+            batch_size=4,
+            verbose=0,
+        )
+
+        # Evaluate the model
+        if X_test.size > 0:  # If test data is available
+            loss, mae = model.evaluate(X_test, y_test, verbose=0)
+            print(
+                f"Model for Cluster {cluster_id} - Test Loss: {loss:.4f}, Test MAE: {mae:.4f}"
+            )
+
+        # Store the trained model and its history
+        models[cluster_id] = model
+        histories[cluster_id] = history
+
+    for cluster_id, history in histories.items():
+        print(f"\nTraining and Validation History for Cluster {cluster_id}")
+        plot_history(history, cluster_id)
