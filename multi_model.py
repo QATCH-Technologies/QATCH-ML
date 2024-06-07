@@ -76,26 +76,7 @@ def region_gen_v2(data, poi):
     return regions
 
 
-def read_data(raw_data_file, poi_file):
-    raw_data = pd.read_csv(raw_data_file)
-    raw_data = pd.drop(DROPPED_FEATURES)
-    poi_data = pd.read_csv(poi_file, header=None)
-    return {"RAW": raw_data, "POI": poi_data}
 
-
-def load_data_from_directory(data_directory):
-    dfs = []
-
-    for filename in os.listdir(data_directory):
-        if filename.endswith("_poi.csv"):
-            poi_file = os.path.join(data_directory, filename)
-            raw_data_file = os.path.join(
-                data_directory, filename.replace("_poi.csv", ".csv")
-            )
-            if os.path.isfile(raw_data_file):
-                combined_df = read_data(raw_data_file, poi_file)
-                dfs.append(combined_df)
-    return dfs
 
 
 def create_model(input_shape, num_filters=64, kernel_size=3, dropout_rate=0.2):
