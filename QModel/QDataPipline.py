@@ -1,6 +1,7 @@
 import pandas as pd
 import os
 import csv
+import numpy as np
 
 
 class QDataPipeline:
@@ -68,13 +69,14 @@ class QDataPipeline:
             )
 
         # Calculate the average value of 'Dissipation' and 'Resonance_Frequency' columns
-        avg_dissipation = self.__dataframe__["Dissipation"].mean()
         avg_resonance_frequency = self.__dataframe__["Resonance_Frequency"].mean()
-        avg = (avg_dissipation + avg_resonance_frequency) / 2
-
         # Compute the ys_diss, ys_freq, and ys_diff
-        self.__dataframe__["ys_diss"] = self.__dataframe__["Dissipation"] * avg / 2
-        self.__dataframe__["ys_freq"] = avg - self.__dataframe__["Resonance_Frequency"]
+        self.__dataframe__["ys_diss"] = (
+            self.__dataframe__["Dissipation"] * avg_resonance_frequency / 2
+        )
+        self.__dataframe__["ys_freq"] = (
+            avg_resonance_frequency - self.__dataframe__["Resonance_Frequency"]
+        )
         diff_factor = 2.0
         self.__dataframe__["Difference"] = (
             self.__dataframe__["ys_freq"] - diff_factor * self.__dataframe__["ys_diss"]
@@ -82,6 +84,11 @@ class QDataPipeline:
 
         # Drop the intermediate columns if not needed
         self.__dataframe__.drop(columns=["ys_diss", "ys_freq"], inplace=True)
+
+    def compute_gradient(self, column):
+        self.__dataframe__[column.join("_gradient")] = np.gradient(
+            self.__dataframe__[column]
+        )
 
     def add_class(self, poi_filepath=None):
         """
