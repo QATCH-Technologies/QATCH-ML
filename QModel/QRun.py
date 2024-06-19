@@ -40,22 +40,31 @@ data_df = pd.DataFrame()
 #                                 if sub_sub_folder_path.endswith(
 #                                     ".csv"
 #                                 ) and not sub_sub_folder_path.endswith("_poi.csv"):
-#                                     # print(f"Concatenating {sub_sub_folder_path}...")
+#                                     print(f"Concatenating {sub_sub_folder_path}...")
 #                                     file_data = pd.read_csv(sub_sub_folder_path)
 #                                     data_df = pd.concat([data_df, file_data])
 ###
-# qmodel = QModel(data_df)
-# qmodel.tune_hyperopt(25)
-# qmodel.train()
-# qmodel.save()
-actual = [2611, 2620, 2624, 2758, 3341, 3976]
-pipe = QDataPipeline("VOYAGER_models/W10+QV1862_EL5_L8_3rd.csv")
-pipe.compute_difference()
-pipe.save_dataframe()
-qpreditor = QModelPredict("QModel/SavedModels/QModel_20240618_074619.json")
-predictions_raw, peaks = qpreditor.predict("VOYAGER_models/W10+QV1862_EL5_L8_3rd.csv")
+# qModel = QModel(data_df)
+# qModel.tune("p", 10)
+# qModel.tune("d", 10)
+# qModel.train_pooler()
+# qModel.train_discriminator()
+# qModel.save_pooler()
+# qModel.save_discriminator()
+# pipe = QDataPipeline("VOYAGER_models/W10+QV1862_EL5_L8_3rd.csv")
+# pipe.compute_difference()
+# pipe.save_dataframe()
+qpreditor = QModelPredict(
+    pooler_path="QModel/SavedModels/QModelPooler.json",
+    discriminator_path="QModel/SavedModels/QModelDiscriminator.json",
+)
+pooler_results, discriminator_results, peaks = qpreditor.predict(
+    "content/VOYAGER_PROD_DATA/VOYAGER_3RD BATCH_W7/MM231106W7_FV699_25X_D11/MM231106W7_FV699_25X_D11_3rd.csv"
+)
 print(peaks)
-df = pd.read_csv("VOYAGER_models/W10+QV1862_EL5_L8_3rd.csv")
+df = pd.read_csv(
+    "content/VOYAGER_PROD_DATA/VOYAGER_3RD BATCH_W7/MM231106W7_FV699_25X_D11/MM231106W7_FV699_25X_D11_3rd.csv"
+)
 
 
 # Extract columns from the DataFrame
@@ -71,14 +80,18 @@ difference = normalize(difference)
 resonance_frequency = normalize(resonance_frequency)
 dissipation = normalize(dissipation)
 actual_indices = pd.read_csv(
-    "VOYAGER_models/W10+QV1862_EL5_L8_3rd_poi.csv", header=None
+    "content/VOYAGER_PROD_DATA/VOYAGER_3RD BATCH_W7/MM231106W7_FV699_25X_D11/MM231106W7_FV699_25X_D11_3rd_poi.csv",
+    header=None,
 ).values
 actual_indices = [item[0] for item in actual_indices]
 plt.figure(figsize=(8, 6))
-plt.plot(normalize(predictions_raw), color="lime", label="Model Confidence")
+# plt.plot(normalize(pooler_results), color="darkviolet", label="Pooler Confidence")
+plt.plot(
+    normalize(discriminator_results), color="lime", label="Discriminator Confidence"
+)
 plt.plot(dissipation, color="gold", label="Dissipation")
-plt.plot(difference, color="darkorange", label="Difference")
-plt.plot(resonance_frequency, color="deeppink", label="Resonance Frequency")
+# plt.plot(difference, color="darkorange", label="Difference")
+# plt.plot(resonance_frequency, color="deeppink", label="Resonance Frequency")
 plt.scatter(
     peaks,
     dissipation[peaks],
@@ -86,18 +99,18 @@ plt.scatter(
     marker="o",
     color="darkviolet",
 )
-plt.scatter(
-    peaks,
-    difference[peaks],
-    marker="o",
-    color="darkviolet",
-)
-plt.scatter(
-    peaks,
-    resonance_frequency[peaks],
-    marker="o",
-    color="darkviolet",
-)
+# plt.scatter(
+#     peaks,
+#     difference[peaks],
+#     marker="o",
+#     color="darkviolet",
+# )
+# plt.scatter(
+#     peaks,
+#     resonance_frequency[peaks],
+#     marker="o",
+#     color="darkviolet",
+# )
 print(actual_indices)
 plt.axvline(x=actual_indices[0], color="dodgerblue", linestyle="--", label="Actual")
 for index in actual_indices:

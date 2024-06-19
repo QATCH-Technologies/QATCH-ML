@@ -8,6 +8,7 @@ from sklearn.decomposition import PCA
 from sklearn.metrics import roc_auc_score
 from pykalman import KalmanFilter
 from hyperopt import STATUS_OK, Trials, fmin, hp, tpe
+from scipy.fftpack import fft, fftfreq, ifft
 
 
 # Constants for model configuration and dataset splitting
@@ -20,12 +21,20 @@ EARLY_STOP = 50
 OPT_ROUNDS = 1000
 VERBOSE_EVAL = 50
 TARGET = "Class"
-PREDICTORS = [
+POOLING_PREDICTORS = [
     "Relative_time",
     "Dissipation",
     "Resonance_Frequency",
     "Peak Magnitude (RAW)",
     "Difference",
+]
+DISCRIMINATOR_PREDICTORS = [
+    "Relative_time",
+    "Dissipation",
+    "Resonance_Frequency",
+    "Peak Magnitude (RAW)",
+    "Difference",
+    "Pooling",
 ]
 
 
@@ -53,14 +62,29 @@ class QModel:
             dataset (DataFrame): The input dataset to be split and used for training.
         """
         # The default parameters are currently optimal for the VOYAGER dataset.
-        self.__params__ = {
+        self.__pooling_params__ = {
             "objective": "binary:logistic",
-            "eta": 0.175,
-            "max_depth": 10,
-            "min_child_weight": 1.0,
-            "subsample": 0.95,
-            "colsample_bytree": 0.7,
+            "eta": 0.4,
+            "max_depth": 6,
+            "min_child_weight": 2.0,
+            "subsample": 0.8,
+            "colsample_bytree": 0.9,
             "gamma": 0.8,
+            "eval_metric": "auc",
+            "nthread": 12,
+            "booster": "gbtree",
+            "device": "cuda",
+            "tree_method": "hist",
+            "seed": RANDOM_STATE,
+        }
+        self.__discriminator_params__ = {
+            "objective": "binary:logistic",
+            "eta": 0.325,
+            "max_depth": 1,
+            "min_child_weight": 5.0,
+            "subsample": 0.7,
+            "colsample_bytree": 0.8,
+            "gamma": 0.7,
             "eval_metric": "auc",
             "nthread": 12,
             "booster": "gbtree",
@@ -77,50 +101,107 @@ class QModel:
             random_state=RANDOM_STATE,
             shuffle=True,
         )
-        self.__dtrain__ = xgb.DMatrix(
-            self.__train_df__[PREDICTORS], label=self.__train_df__[TARGET].values
-        )
-        self.__dvalid__ = xgb.DMatrix(
-            self.__valid_df__[PREDICTORS], label=self.__valid_df__[TARGET].values
-        )
-        self.__dtest__ = xgb.DMatrix(
-            self.__test_df__[PREDICTORS], label=self.__test_df__[TARGET].values
-        )
-        self.__watchlist__ = [(self.__dtrain__, "train"), (self.__dvalid__, "valid")]
-        self.__model__ = None
 
-    def train(self):
+        self.__p_dtrain__ = xgb.DMatrix(
+            self.__train_df__[POOLING_PREDICTORS],
+            label=self.__train_df__[TARGET].values,
+        )
+        self.__p_dvalid__ = xgb.DMatrix(
+            self.__valid_df__[POOLING_PREDICTORS],
+            label=self.__valid_df__[TARGET].values,
+        )
+        self.__p_dtest__ = xgb.DMatrix(
+            self.__test_df__[POOLING_PREDICTORS],
+            label=self.__test_df__[TARGET].values,
+        )
+        self.__d_dtrain__ = xgb.DMatrix(
+            self.__train_df__[DISCRIMINATOR_PREDICTORS],
+            label=self.__train_df__[TARGET].values,
+        )
+        self.__d_dvalid__ = xgb.DMatrix(
+            self.__valid_df__[DISCRIMINATOR_PREDICTORS],
+            label=self.__valid_df__[TARGET].values,
+        )
+        self.__d_dtest__ = xgb.DMatrix(
+            self.__test_df__[DISCRIMINATOR_PREDICTORS],
+            label=self.__test_df__[TARGET].values,
+        )
+        self.__pooler_watchlist__ = [
+            (self.__p_dtrain__, "train"),
+            (self.__p_dvalid__, "valid"),
+        ]
+        self.__discriminator_watchlist__ = [
+            (self.__d_dtrain__, "train"),
+            (self.__d_dvalid__, "valid"),
+        ]
+        self.__pooling_model__ = None
+        self.__discriminator_model__ = None
+
+    def train_pooler(self):
         """
         Trains the XGBoost model using the training and validation datasets.
         """
-        self.__model__ = xgb.train(
-            self.__params__,
-            self.__dtrain__,
+        self.__pooling_model__ = xgb.train(
+            self.__pooling_params__,
+            self.__p_dtrain__,
             MAX_ROUNDS,
-            self.__watchlist__,
+            self.__pooler_watchlist__,
             early_stopping_rounds=EARLY_STOP,
             maximize=True,
             verbose_eval=VERBOSE_EVAL,
         )
 
-    def score(self, params):
-        self.__model__ = xgb.train(
-            params,
-            self.__dtrain__,
+    def train_discriminator(self):
+        """
+        Trains the XGBoost model using the training and validation datasets.
+        """
+        self.__discriminator_model__ = xgb.train(
+            self.__discriminator_params__,
+            self.__d_dtrain__,
             MAX_ROUNDS,
-            self.__watchlist__,
+            self.__discriminator_watchlist__,
             early_stopping_rounds=EARLY_STOP,
             maximize=True,
             verbose_eval=VERBOSE_EVAL,
         )
-        predictions = self.__model__.predict(
-            self.__dvalid__, iteration_range=range(0, self.__model__.best_iteration + 1)
+
+    def score_pooler(self, params):
+        self.__pooling_model__ = xgb.train(
+            params,
+            self.__p_dtrain__,
+            MAX_ROUNDS,
+            self.__pooler_watchlist__,
+            early_stopping_rounds=EARLY_STOP,
+            maximize=True,
+            verbose_eval=VERBOSE_EVAL,
         )
-        score = roc_auc_score(self.__dvalid__.get_label(), predictions)
+        predictions = self.__pooling_model__.predict(
+            self.__p_dvalid__,
+            iteration_range=range(0, self.__pooling_model__.best_iteration + 1),
+        )
+        score = roc_auc_score(self.__p_dvalid__.get_label(), predictions)
         loss = 1 - score
         return {"loss": loss, "status": STATUS_OK}
 
-    def tune_hyperopt(self, evaluations=250):
+    def score_discrimintator(self, params):
+        self.__discriminator_model__ = xgb.train(
+            params,
+            self.__d_dtrain__,
+            MAX_ROUNDS,
+            self.__discriminator_watchlist__,
+            early_stopping_rounds=EARLY_STOP,
+            maximize=True,
+            verbose_eval=VERBOSE_EVAL,
+        )
+        predictions = self.__pooling_model__.predict(
+            self.__p_dvalid__,
+            iteration_range=range(0, self.__pooling_model__.best_iteration + 1),
+        )
+        score = roc_auc_score(self.__p_dvalid__.get_label(), predictions)
+        loss = 1 - score
+        return {"loss": loss, "status": STATUS_OK}
+
+    def tune(self, model, evaluations=250):
         """
         This is the optimization function that given a space (space here) of
         hyperparameters and a scoring function (score here), finds the best hyperparameters.
@@ -146,146 +227,67 @@ class QModel:
             "tree_method": "hist",
             "seed": RANDOM_STATE,
         }
-        # Use the fmin function from Hyperopt to find the best hyperparameters
-        best = fmin(
-            self.score,
-            space,
-            algo=tpe.suggest,
-            # trials=trials,
-            max_evals=evaluations,
-        )
-        self.__params__ = best
-        print(f"-- best parameters, \n\t{best}")
+        if model == "p":
+            # Use the fmin function from Hyperopt to find the best hyperparameters
+            best = fmin(
+                self.score_pooler,
+                space,
+                algo=tpe.suggest,
+                # trials=trials,
+                max_evals=evaluations,
+            )
+            self.__pooling_params__ = best
+            print(f"-- best pooling parameters, \n\t{best}")
+        if model == "d":
+            # Use the fmin function from Hyperopt to find the best hyperparameters
+            best = fmin(
+                self.score_discrimintator,
+                space,
+                algo=tpe.suggest,
+                # trials=trials,
+                max_evals=evaluations,
+            )
+            self.__discriminator_params__ = best
+            print(f"-- best discriminator parameters, \n\t{best}")
         return best
 
-    def tune_params(self, verbose=True, tunable=["shape", "sampling", "eta"]):
-        """
-        Tunes the model's hyperparameters using cross-validation.
-
-        Args:
-            verbose (bool, optional): If True, prints the tuning process. Defaults to True.
-            tunable (list, optional): List of parameters to tune. Defaults to ["shape", "sampling", "eta"].
-        """
-        max_auc = 0
-        best_params = self.__params__.copy()
-
-        if "shape" in tunable:
-            gridsearch_params = [
-                (max_depth, min_child_weight)
-                for max_depth in range(9, 12)
-                for min_child_weight in range(5, 8)
-            ]
-            if verbose:
-                print("[QModel.tune] Cross validation tuning decision tree shape,")
-            for max_depth, min_child_weight in gridsearch_params:
-                if verbose:
-                    print(
-                        f"\tCV with max_depth={max_depth}, min_child_weight={min_child_weight}"
-                    )
-                self.__params__["max_depth"] = max_depth
-                self.__params__["min_child_weight"] = min_child_weight
-                cv_results = xgb.cv(
-                    self.__params__,
-                    self.__dtrain__,
-                    num_boost_round=MAX_ROUNDS,
-                    seed=42,
-                    nfold=5,
-                    metrics={"auc"},
-                    early_stopping_rounds=EARLY_STOP,
-                )
-                mean_auc = cv_results["test-auc-mean"].max()
-                boost_rounds = cv_results["test-auc-mean"].argmax()
-                if verbose:
-                    print(f"\t\tAUC {mean_auc} for {boost_rounds} rounds.")
-                if mean_auc > max_auc:
-                    max_auc = mean_auc
-                    best_params["max_depth"] = max_depth
-                    best_params["min_child_weight"] = min_child_weight
-
-            self.__params__.update(best_params)
-
-        if "sampling" in tunable:
-            if verbose:
-                print("[QModel.tune] Cross validation tuning sampling,")
-            gridsearch_params = [
-                (subsample, colsample)
-                for subsample in [i / 10.0 for i in range(7, 11)]
-                for colsample in [i / 10.0 for i in range(7, 11)]
-            ]
-            for subsample, colsample in reversed(gridsearch_params):
-                if verbose:
-                    print(f"\tCV with subsample={subsample}, colsample={colsample}")
-                self.__params__["subsample"] = subsample
-                self.__params__["colsample_bytree"] = colsample
-                cv_results = xgb.cv(
-                    self.__params__,
-                    self.__dtrain__,
-                    num_boost_round=MAX_ROUNDS,
-                    seed=42,
-                    nfold=5,
-                    metrics={"auc"},
-                    early_stopping_rounds=EARLY_STOP,
-                )
-                mean_auc = cv_results["test-auc-mean"].max()
-                boost_rounds = cv_results["test-auc-mean"].argmax()
-                if verbose:
-                    print(f"\t\tAUC {mean_auc} for {boost_rounds} rounds")
-                if mean_auc > max_auc:
-                    max_auc = mean_auc
-                    best_params["subsample"] = subsample
-                    best_params["colsample_bytree"] = colsample
-
-            self.__params__.update(best_params)
-
-        if "eta" in tunable:
-            if verbose:
-                print("[QModel.tune] Cross validation tuning eta,")
-            for eta in [0.3, 0.2, 0.1, 0.05, 0.01, 0.005]:
-                if verbose:
-                    print(f"CV with eta={eta}")
-                self.__params__["eta"] = eta
-                cv_results = xgb.cv(
-                    self.__params__,
-                    self.__dtrain__,
-                    num_boost_round=MAX_ROUNDS,
-                    seed=42,
-                    nfold=5,
-                    metrics=["auc"],
-                    early_stopping_rounds=EARLY_STOP,
-                )
-                mean_auc = cv_results["test-auc-mean"].max()
-                boost_rounds = cv_results["test-auc-mean"].argmax()
-                if verbose:
-                    print(f"\t\tAUC {mean_auc} for {boost_rounds} rounds\n")
-                if mean_auc > max_auc:
-                    max_auc = mean_auc
-                    best_params["eta"] = eta
-
-            self.__params__.update(best_params)
-            if verbose:
-                print("---REPORT---")
-                print(f"Tuning results,\n\t{best_params}")
-                print("Updated model parameters to best parameters")
-
-    def save(self, model_name="QModel"):
+    def save_pooler(self, model_name="QModelPooler"):
         """
         Saves the trained model to a file.
 
         Args:
             model_name (str, optional): Name of the model file. Defaults to "QModel".
         """
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{model_name}_{timestamp}.json"
-        self.__model__.save_model(filename)
+        filename = f"QModel/SavedModels/{model_name}.json"
+        self.__pooling_model__.save_model(filename)
 
-    def get_model(self):
+    def save_discriminator(self, model_name="QModelDiscriminator"):
+        """
+        Saves the trained model to a file.
+
+        Args:
+            model_name (str, optional): Name of the model file. Defaults to "QModel".
+        """
+        filename = f"QModel/SavedModels/{model_name}.json"
+        self.__discriminator_model__.save_model(filename)
+
+    def get_pooler(self):
         """
         Returns the trained model.
 
         Returns:
             Booster: The trained XGBoost model.
         """
-        return self.__model__
+        return self.__pooling_model__
+
+    def get_discriminator(self):
+        """
+        Returns the trained model.
+
+        Returns:
+            Booster: The trained XGBoost model.
+        """
+        return self.__discriminator_model__
 
 
 class QModelPredict:
@@ -296,7 +298,7 @@ class QModelPredict:
         __model__ (Booster): Loaded XGBoost model.
     """
 
-    def __init__(self, modelpath=None):
+    def __init__(self, pooler_path=None, discriminator_path=None):
         """
         Initializes the QModelPredict with a model file.
 
@@ -306,11 +308,13 @@ class QModelPredict:
         Raises:
             ValueError: If no model path is provided.
         """
-        if modelpath is None:
+        if pooler_path is None or discriminator_path is None:
             raise ValueError("[QModelPredict __init__()] No model path given")
 
-        self.__model__ = xgb.Booster()
-        self.__model__.load_model(modelpath)
+        self.__pooler__ = xgb.Booster()
+        self.__pooler__.load_model(pooler_path)
+        self.__discriminator__ = xgb.Booster()
+        self.__discriminator__.load_model(discriminator_path)
 
     def noise_filter(self, predictions):
         # PCA Filter
@@ -355,8 +359,8 @@ class QModelPredict:
         """
         if datapath is None:
             raise ValueError("[QModelPredict __init__()] No data path given")
-        f_names = self.__model__.feature_names
-        dataframe = pd.read_csv(datapath).drop(
+        f_names = self.__pooler__.feature_names
+        pooler_df = pd.read_csv(datapath).drop(
             columns=[
                 "Date",
                 "Time",
@@ -364,18 +368,60 @@ class QModelPredict:
                 "Temperature",
             ]
         )
-        dataframe = dataframe[f_names]
-        xgb_data = xgb.DMatrix(dataframe)
-        predictions = self.__model__.predict(xgb_data)
-        predictions = self.normalize(predictions)
-        print(min(predictions), max(predictions))
-        predictions = self.noise_filter(predictions)
+        pooler_df = pooler_df[f_names]
+        pooling_data = xgb.DMatrix(pooler_df)
+        pooling_results = self.__pooler__.predict(pooling_data)
+        pooling_results = self.normalize(pooling_results)
+        pooling_results = self.noise_filter(pooling_results)
 
-        prediction_threshold = np.mean(predictions)
-        height = 0.01
-        peaks = []
-        while len(peaks) < 6:
-            peaks, _ = find_peaks(predictions, height=height)
+        discriminator_df = pooler_df
+        discriminator_df["Pooling"] = pooling_results
+        discriminator_data = xgb.DMatrix(discriminator_df)
+        discriminator_results = self.__discriminator__.predict(discriminator_data)
+
+        discriminator_results = fft(discriminator_results)
+        discriminator_results[len(discriminator_results) // 2 :] = np.zeros(
+            len(discriminator_results) // 2
+        )
+        discriminator_results = ifft(discriminator_results)
+        # print(max(discriminator_df["Relative_time"]))
+        # sample_rate = len(discriminator_results) / max(
+        #     discriminator_df["Relative_time"]
+        # )
+        # print(sample_rate)
+        # N = len(discriminator_results)
+        # discriminator_results = fftfreq(N, 1 / sample_rate)
+
+        prediction_threshold = np.mean(discriminator_results)
+        # discriminator_results = savgol_filter(discriminator_results, 3, 1)
+        peaks, _ = find_peaks(discriminator_results)
+
+        # Find the largest peak
+        largest_peak = peaks[np.argmax(discriminator_results[peaks])]
+        print(f"largets peaks: {largest_peak}")
+        height = 0.1
+        l_peaks = []
+        while len(l_peaks) < 2:
+            l_peaks, _ = find_peaks(
+                discriminator_results[0:largest_peak],
+                height=height,
+                distance=None,
+            )
+            height = height - 0.01
+        l_peaks = np.append(l_peaks, largest_peak)
+        r_peaks = []
+        height = 0.1
+        while len(r_peaks) < 3:
+            r_peaks, _ = find_peaks(
+                savgol_filter(
+                    discriminator_results[largest_peak : len(discriminator_results)],
+                    20,
+                    1,
+                ),
+                height=height,
+            )
             height = height / 2
-        prominences = peak_prominences(predictions, peaks)
-        return predictions, peaks
+
+        # prominences = peak_prominences(pooling_results, peaks)
+        peaks = np.concatenate((l_peaks, r_peaks + largest_peak))
+        return pooling_results, discriminator_results, peaks
