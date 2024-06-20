@@ -3,13 +3,20 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 import datetime
 import numpy as np
-from scipy.signal import find_peaks, peak_prominences, savgol_filter, butter, filtfilt
+from scipy.signal import (
+    find_peaks,
+    savgol_filter,
+    butter,
+    filtfilt,
+    peak_prominences,
+)
 from sklearn.decomposition import PCA
 from sklearn.metrics import roc_auc_score
 from pykalman import KalmanFilter
 from hyperopt import STATUS_OK, Trials, fmin, hp, tpe
-from scipy.fftpack import fft, fftfreq, ifft
-
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
+import matplotlib.pyplot as plt
 
 # Constants for model configuration and dataset splitting
 VALID_SIZE = 0.20
@@ -36,6 +43,16 @@ DISCRIMINATOR_PREDICTORS = [
     "Difference",
     "Pooling",
 ]
+
+# OUTPUT_PREDICTORS = [
+#     "Relative_time",
+#     "Dissipation",
+#     "Resonance_Frequency",
+#     "Peak Magnitude (RAW)",
+#     "Difference",
+#     "Pooling",
+#     "Discrim",
+# ]
 
 
 class QModel:
@@ -64,12 +81,12 @@ class QModel:
         # The default parameters are currently optimal for the VOYAGER dataset.
         self.__pooling_params__ = {
             "objective": "binary:logistic",
-            "eta": 0.4,
-            "max_depth": 6,
+            "eta": 0.375,
+            "max_depth": 7,
             "min_child_weight": 2.0,
-            "subsample": 0.8,
-            "colsample_bytree": 0.9,
-            "gamma": 0.8,
+            "subsample": 0.95,
+            "colsample_bytree": 0.7,
+            "gamma": 0.65,
             "eval_metric": "auc",
             "nthread": 12,
             "booster": "gbtree",
@@ -79,11 +96,11 @@ class QModel:
         }
         self.__discriminator_params__ = {
             "objective": "binary:logistic",
-            "eta": 0.325,
-            "max_depth": 1,
-            "min_child_weight": 5.0,
+            "eta": 0.475,
+            "max_depth": 7,
+            "min_child_weight": 2.0,
             "subsample": 0.7,
-            "colsample_bytree": 0.8,
+            "colsample_bytree": 0.55,
             "gamma": 0.7,
             "eval_metric": "auc",
             "nthread": 12,
@@ -92,6 +109,21 @@ class QModel:
             "tree_method": "hist",
             "seed": RANDOM_STATE,
         }
+        # self.__output_params__ = {
+        #     "objective": "binary:logistic",
+        #     "eta": 0.325,
+        #     "max_depth": 1,
+        #     "min_child_weight": 5.0,
+        #     "subsample": 0.7,
+        #     "colsample_bytree": 0.8,
+        #     "gamma": 0.7,
+        #     "eval_metric": "auc",
+        #     "nthread": 12,
+        #     "booster": "gbtree",
+        #     "device": "cuda",
+        #     "tree_method": "hist",
+        #     "seed": RANDOM_STATE,
+        # }
         self.__train_df__, self.__test_df__ = train_test_split(
             dataset, test_size=TEST_SIZE, random_state=RANDOM_STATE, shuffle=True
         )
@@ -126,6 +158,18 @@ class QModel:
             self.__test_df__[DISCRIMINATOR_PREDICTORS],
             label=self.__test_df__[TARGET].values,
         )
+        # self.__o_dtrain__ = xgb.DMatrix(
+        #     self.__train_df__[OUTPUT_PREDICTORS],
+        #     label=self.__train_df__[TARGET].values,
+        # )
+        # self.__o_dvalid__ = xgb.DMatrix(
+        #     self.__valid_df__[OUTPUT_PREDICTORS],
+        #     label=self.__valid_df__[TARGET].values,
+        # )
+        # self.__o_dtest__ = xgb.DMatrix(
+        #     self.__test_df__[OUTPUT_PREDICTORS],
+        #     label=self.__test_df__[TARGET].values,
+        # )
         self.__pooler_watchlist__ = [
             (self.__p_dtrain__, "train"),
             (self.__p_dvalid__, "valid"),
@@ -134,8 +178,13 @@ class QModel:
             (self.__d_dtrain__, "train"),
             (self.__d_dvalid__, "valid"),
         ]
+        # self.__output_watchlist__ = [
+        #     (self.__o_dtrain__, "train"),
+        #     (self.__o_dvalid__, "valid"),
+        # ]
         self.__pooling_model__ = None
         self.__discriminator_model__ = None
+        # self.__output_model__ = None
 
     def train_pooler(self):
         """
@@ -165,6 +214,20 @@ class QModel:
             verbose_eval=VERBOSE_EVAL,
         )
 
+    # def train_output(self):
+    #     """
+    #     Trains the XGBoost model using the training and validation datasets.
+    #     """
+    #     self.__discriminator_model__ = xgb.train(
+    #         self.__output_params__,
+    #         self.__o_dtrain__,
+    #         MAX_ROUNDS,
+    #         self.__output_watchlist__,
+    #         early_stopping_rounds=EARLY_STOP,
+    #         maximize=True,
+    #         verbose_eval=VERBOSE_EVAL,
+    #     )
+
     def score_pooler(self, params):
         self.__pooling_model__ = xgb.train(
             params,
@@ -193,13 +256,31 @@ class QModel:
             maximize=True,
             verbose_eval=VERBOSE_EVAL,
         )
-        predictions = self.__pooling_model__.predict(
-            self.__p_dvalid__,
-            iteration_range=range(0, self.__pooling_model__.best_iteration + 1),
+        predictions = self.__discriminator_model__.predict(
+            self.__d_dvalid__,
+            iteration_range=range(0, self.__discriminator_model__.best_iteration + 1),
         )
-        score = roc_auc_score(self.__p_dvalid__.get_label(), predictions)
+        score = roc_auc_score(self.__d_dvalid__.get_label(), predictions)
         loss = 1 - score
         return {"loss": loss, "status": STATUS_OK}
+
+    # def score_output(self, params):
+    #     self.__output_model__ = xgb.train(
+    #         params,
+    #         self.__o_dtrain__,
+    #         MAX_ROUNDS,
+    #         self.__output_watchlist__,
+    #         early_stopping_rounds=EARLY_STOP,
+    #         maximize=True,
+    #         verbose_eval=VERBOSE_EVAL,
+    #     )
+    #     predictions = self.__output_model__.predict(
+    #         self.__o_dvalid__,
+    #         iteration_range=range(0, self.__output_model__.best_iteration + 1),
+    #     )
+    #     score = roc_auc_score(self.__o_dvalid__.get_label(), predictions)
+    #     loss = 1 - score
+    #     return {"loss": loss, "status": STATUS_OK}
 
     def tune(self, model, evaluations=250):
         """
@@ -249,6 +330,17 @@ class QModel:
             )
             self.__discriminator_params__ = best
             print(f"-- best discriminator parameters, \n\t{best}")
+        # if model == "o":
+        #     # Use the fmin function from Hyperopt to find the best hyperparameters
+        #     best = fmin(
+        #         self.score_output,
+        #         space,
+        #         algo=tpe.suggest,
+        #         # trials=trials,
+        #         max_evals=evaluations,
+        #     )
+        #     self.__output_params__ = best
+        #     print(f"-- best output parameters, \n\t{best}")
         return best
 
     def save_pooler(self, model_name="QModelPooler"):
@@ -271,6 +363,16 @@ class QModel:
         filename = f"QModel/SavedModels/{model_name}.json"
         self.__discriminator_model__.save_model(filename)
 
+    # def save_output(self, model_name="QModelOutput"):
+    #     """
+    #     Saves the trained model to a file.
+
+    #     Args:
+    #         model_name (str, optional): Name of the model file. Defaults to "QModel".
+    #     """
+    #     filename = f"QModel/SavedModels/{model_name}.json"
+    #     self.__output_model__.save_model(filename)
+
     def get_pooler(self):
         """
         Returns the trained model.
@@ -288,6 +390,15 @@ class QModel:
             Booster: The trained XGBoost model.
         """
         return self.__discriminator_model__
+
+    # def get_output(self):
+    #     """
+    #     Returns the trained model.
+
+    #     Returns:
+    #         Booster: The trained XGBoost model.
+    #     """
+    #     return self.__discriminator_model__
 
 
 class QModelPredict:
@@ -316,21 +427,58 @@ class QModelPredict:
         self.__discriminator__ = xgb.Booster()
         self.__discriminator__.load_model(discriminator_path)
 
+    def histogram_analysis(self, arr, num_bins, threshold):
+        hist, bins = np.histogram(arr, bins=num_bins)
+        while np.count_nonzero(hist) != threshold:
+            num_bins -= 1
+            hist, bins = np.histogram(arr, bins=num_bins)
+        return hist, bins
+
+    def largest_value_in_bins(self, values, bin_edges):
+        # Combine values with their bin indices
+        combined = list(zip(values, range(len(values))))
+
+        # Sort values based on their bin indices
+        combined.sort(key=lambda x: x[0])
+
+        # Initialize variables
+        max_values = []
+        current_bin_index = 0
+        current_bin_values = []
+
+        # Iterate through sorted values and assign them to bins
+        for value, original_index in combined:
+            # Determine current bin index
+            while (
+                current_bin_index < len(bin_edges) - 1
+                and value >= bin_edges[current_bin_index + 1]
+            ):
+                current_bin_index += 1
+
+            # Add value to current bin
+            current_bin_values.append(value)
+
+            # Check if we need to move to the next bin
+            if current_bin_index == len(bin_edges) - 1 or (
+                current_bin_index < len(bin_edges) - 1
+                and value < bin_edges[current_bin_index + 1]
+            ):
+                # We are at the end of the current bin
+                if current_bin_values:
+                    # Find maximum value in current bin
+                    max_value_in_bin = max(current_bin_values)
+                    max_values.append(max_value_in_bin)
+
+                # Move to the next bin
+                current_bin_values = []
+                current_bin_index += 1
+
+        return max_values
+
+    def normalize(self, data):
+        return (data - np.min(data)) / (np.max(data) - np.min(data))
+
     def noise_filter(self, predictions):
-        # PCA Filter
-        # predictions = predictions.reshape(-1, 1)
-        # pca = PCA(n_components=1)
-        # pca.fit(predictions)
-        # predictions = pca.inverse_transform(pca.transform(predictions))
-        # predictions = [item[0] for item in predictions]
-        # return predictions
-
-        # Kalman Filter
-        # kf = KalmanFilter(initial_state_mean=0, n_dim_obs=1)
-        # measurements = np.asarray(predictions)
-        # filtered_state_means, _ = kf.filter(measurements)
-        # return filtered_state_means.flatten()
-
         # Butter Low-Pass
         fs = 20
         normal_cutoff = 2 / (0.5 * fs)
@@ -339,10 +487,42 @@ class QModelPredict:
         y = filtfilt(b, a, predictions)
         return y
 
-    def normalize(self, predictions):
-        return (predictions - np.min(predictions)) / (
-            np.max(predictions) - np.min(predictions)
-        )
+    def interpolate_peaks(self, data, peak_indices):
+        """
+        Generate a linearly interpolated dataset over the maxima (peaks) of the signal.
+
+        Parameters:
+        - signal_data: numpy array or list, the original signal data
+        - peak_indices: list of integers, indices of peaks in the signal
+
+        Returns:
+        - interpolated_data: numpy array, the interpolated dataset over the peaks
+        """
+        data = np.asarray(data)  # Convert to numpy array if not already
+        interpolated_data = np.zeros_like(
+            data, dtype=float
+        )  # Initialize interpolated data
+
+        # Iterate over pairs of peak indices
+        for i in range(len(peak_indices) - 1):
+            start_idx = peak_indices[i]
+            end_idx = peak_indices[i + 1]
+
+            # Calculate linear interpolation between start_idx and end_idx
+            start_value = data[start_idx]
+            end_value = data[end_idx]
+            interval_values = np.linspace(
+                start_value, end_value, num=end_idx - start_idx + 1
+            )
+
+            # Assign interpolated values to the corresponding indices
+            interpolated_data[start_idx : end_idx + 1] = interval_values
+
+        # Ensure the last segment is filled to the end of the signal
+        last_peak_idx = peak_indices[-1]
+        interpolated_data[last_peak_idx:] = data[last_peak_idx]
+
+        return interpolated_data
 
     def predict(self, datapath):
         """
@@ -368,60 +548,71 @@ class QModelPredict:
                 "Temperature",
             ]
         )
+        # Pooler predictions
         pooler_df = pooler_df[f_names]
         pooling_data = xgb.DMatrix(pooler_df)
         pooling_results = self.__pooler__.predict(pooling_data)
         pooling_results = self.normalize(pooling_results)
         pooling_results = self.noise_filter(pooling_results)
 
+        # Discriminator Predictions
         discriminator_df = pooler_df
         discriminator_df["Pooling"] = pooling_results
         discriminator_data = xgb.DMatrix(discriminator_df)
         discriminator_results = self.__discriminator__.predict(discriminator_data)
-
-        discriminator_results = fft(discriminator_results)
-        discriminator_results[len(discriminator_results) // 2 :] = np.zeros(
-            len(discriminator_results) // 2
+        # Get all peaks in the dataset
+        all_peaks, _ = find_peaks(
+            discriminator_results, height=discriminator_results.mean()
         )
-        discriminator_results = ifft(discriminator_results)
-        # print(max(discriminator_df["Relative_time"]))
-        # sample_rate = len(discriminator_results) / max(
-        #     discriminator_df["Relative_time"]
-        # )
-        # print(sample_rate)
-        # N = len(discriminator_results)
-        # discriminator_results = fftfreq(N, 1 / sample_rate)
-
-        prediction_threshold = np.mean(discriminator_results)
-        # discriminator_results = savgol_filter(discriminator_results, 3, 1)
-        peaks, _ = find_peaks(discriminator_results)
-
-        # Find the largest peak
-        largest_peak = peaks[np.argmax(discriminator_results[peaks])]
-        print(f"largets peaks: {largest_peak}")
-        height = 0.1
-        l_peaks = []
-        while len(l_peaks) < 2:
-            l_peaks, _ = find_peaks(
-                discriminator_results[0:largest_peak],
-                height=height,
-                distance=None,
-            )
-            height = height - 0.01
-        l_peaks = np.append(l_peaks, largest_peak)
+        hist, bins = self.histogram_analysis(all_peaks, len(all_peaks), 4)
+        s_bound = int(bins[1])
+        print(f"-- s_bound={s_bound}")
+        # Find the 3 most significant peaks to the right of the largest peak.
+        r_peaks, _ = find_peaks(
+            discriminator_results[s_bound : len(discriminator_results)],
+            height=discriminator_results[s_bound : len(discriminator_results)].mean(),
+        )
+        r_peaks = r_peaks + s_bound
+        hist, bins = self.histogram_analysis(
+            r_peaks,
+            len(r_peaks),
+            3,
+        )
+        largest = self.largest_value_in_bins(discriminator_results, bins)
+        print(largest)
         r_peaks = []
-        height = 0.1
+        height = discriminator_results[s_bound : len(discriminator_results)].mean()
         while len(r_peaks) < 3:
             r_peaks, _ = find_peaks(
-                savgol_filter(
-                    discriminator_results[largest_peak : len(discriminator_results)],
-                    20,
-                    1,
-                ),
+                discriminator_results[s_bound : len(discriminator_results)],
                 height=height,
             )
-            height = height / 2
 
-        # prominences = peak_prominences(pooling_results, peaks)
-        peaks = np.concatenate((l_peaks, r_peaks + largest_peak))
-        return pooling_results, discriminator_results, peaks
+        r_grouping = KMeans(n_clusters=3, random_state=42)
+        r_grouping.fit(r_peaks.reshape(-1, 1))
+        r_centroids = r_grouping.cluster_centers_ + s_bound
+
+        # Find the 3 most significant peaks to the left of the largest peak.
+        height = 0.1
+        l_peaks = []
+        while len(l_peaks) < 4:
+            l_peaks, _ = find_peaks(
+                pooling_results[0:s_bound],
+                height=height,
+            )
+
+            height = height - 0.01
+        if len(l_peaks) < 3:
+            l_peaks = np.append(l_peaks, (max(l_peaks) + 1))
+        l_grouping = KMeans(n_clusters=3, random_state=42)
+        l_grouping.fit(l_peaks.reshape(-1, 1))
+        l_centroids = l_grouping.cluster_centers_
+        peaks = np.concatenate((l_centroids, r_centroids))
+
+        int_list = list(map(int, peaks.flatten()))
+
+        # Remove duplicates
+        pois = list(set(int_list))
+        pois.sort()
+
+        return pooling_results, discriminator_results, pois, s_bound
