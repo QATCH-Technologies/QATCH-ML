@@ -518,6 +518,7 @@ class QModelPredict:
         return None
 
     def find_start_stop(self, data):
+        data = self.normalize(data)
         # Ensure the start point is valid
         start = 0
         savgol_filter(data, int(len(data) * 0.01), 1)
@@ -526,17 +527,40 @@ class QModelPredict:
 
         # Compute slopes
         slopes = []
+
         for i in range(start + 1, len(data)):
-            slope = data[i] - data[start]
-            slopes.append(slope)
-
+            if i < 100:
+                slopes.append(0)
+            else:
+                slope = (data[i] - data[start]) / i
+                slopes.append(slope)
+        slopes = self.normalize(slopes)
+        curr1 = 0
         for i in range(1, len(slopes)):
-            # print(slopes[i], slopes[i - 1])
-            if slopes[i] < slopes[i - 1] - 1e-5:
-                print(f"==> start: {start + i}")
-                return start + i  # Return the index in the original data
+            if slopes[i] < slopes[start] + 0.1:
+                curr1 = i
 
-        return None
+        curr2 = curr1 + 100
+        slopes2 = [0]
+        for i in range(curr1, len(slopes)):
+            slopes2.append((slopes[i] - slopes[curr1]) / (i - curr1))
+            if slopes2[-1] < slopes2[-2] - 0.05:
+                curr2 = i
+                break
+        # plt.plot(slopes, color="b")
+        # plt.plot(data, color="g")
+        # plt.axvline(
+        #     x=curr1,
+        #     color="black",
+        # )
+        # plt.axvline(
+        #     x=curr2,
+        #     color="red",
+        # )
+        # plt.show()
+        print(f"==> start: {start + curr1, start + curr2}")
+        return (start + curr1, start + curr2)
+
         # savgol_filter(data, int(len(data) * 0.01), 1)
         # first_deriv = np.gradient(data)
         # second_deriv = np.gradient(first_deriv)
@@ -604,16 +628,16 @@ class QModelPredict:
             start and stop values from this function then the correct start and stop bounds will produce accurate
             predictions.
         """
-        start, stop = self.find_start_stop(discriminator_df["Dissipation"].values)
+        start, stop = self.find_start_stop(discriminator_df["Dissipation"].values[100:])
         start_bound = start
-        stop_bound = stop
+        stop_bound = stop + 100
 
         # Get all peaks in the dataset
         all_peaks, _ = find_peaks(
             discriminator_results[start_bound:],
             height=discriminator_results[start_bound:].mean(),
         )
-        hist, bins = self.histogram_analysis(all_peaks, len(all_peaks), 6)
+        hist, bins = self.histogram_analysis(all_peaks, len(all_peaks), 3)
         print(bins)
         # s_bound = int(bins[1]) + t_bound
         print(f"-- s_bound={stop_bound}")
