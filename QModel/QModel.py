@@ -5,6 +5,7 @@ import datetime
 import numpy as np
 from scipy.signal import (
     find_peaks,
+    peak_widths,
     savgol_filter,
     butter,
     filtfilt,
@@ -17,6 +18,8 @@ from hyperopt import STATUS_OK, Trials, fmin, hp, tpe
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 import matplotlib.pyplot as plt
+from QDataPipline import QDataPipeline
+from collections import defaultdict
 
 # Constants for model configuration and dataset splitting
 VALID_SIZE = 0.20
@@ -434,47 +437,6 @@ class QModelPredict:
             hist, bins = np.histogram(arr, bins=num_bins)
         return hist, bins
 
-    def largest_value_in_bins(self, values, bin_edges):
-        # Combine values with their bin indices
-        combined = list(zip(values, range(len(values))))
-
-        # Sort values based on their bin indices
-        combined.sort(key=lambda x: x[0])
-
-        # Initialize variables
-        max_values = []
-        current_bin_index = 0
-        current_bin_values = []
-
-        # Iterate through sorted values and assign them to bins
-        for value, original_index in combined:
-            # Determine current bin index
-            while (
-                current_bin_index < len(bin_edges) - 1
-                and value >= bin_edges[current_bin_index + 1]
-            ):
-                current_bin_index += 1
-
-            # Add value to current bin
-            current_bin_values.append(value)
-
-            # Check if we need to move to the next bin
-            if current_bin_index == len(bin_edges) - 1 or (
-                current_bin_index < len(bin_edges) - 1
-                and value < bin_edges[current_bin_index + 1]
-            ):
-                # We are at the end of the current bin
-                if current_bin_values:
-                    # Find maximum value in current bin
-                    max_value_in_bin = max(current_bin_values)
-                    max_values.append(max_value_in_bin)
-
-                # Move to the next bin
-                current_bin_values = []
-                current_bin_index += 1
-
-        return max_values
-
     def normalize(self, data):
         return (data - np.min(data)) / (np.max(data) - np.min(data))
 
@@ -524,23 +486,94 @@ class QModelPredict:
 
         return interpolated_data
 
-    def predict(self, datapath):
-        """
-        Makes predictions on the given data.
+    def full_bins(self, bins, hist):
+        return [(bins[i], bins[i + 1]) for i, height in enumerate(hist) if height > 0]
 
-        Args:
-            datapath (str): Path to the CSV file containing data for predictions.
+    def find_max_indices(self, data, ranges):
+        max_indices = []
+        for range_tuple in ranges:
+            start, end = range_tuple
+            # Extract the sub-array for the given range
+            sub_array = data[int(start) : int(end) + 1]
+            # Find the index of the maximum value in the sub-array
+            max_index = np.argmax(sub_array)
+            # Adjust the index to be in the context of the original array
+            max_index_in_data = start + max_index
+            max_indices.append(max_index_in_data)
+        return max_indices
 
-        Raises:
-            ValueError: If no data path is provided.
+    def find_start(self, data, threshold):
+        # Calculate gradients
+        gradients = np.diff(data)
 
-        Returns:
-            list: List of indices where the prediction exceeds the threshold.
-        """
-        if datapath is None:
+        # Calculate change in gradients
+        gradient_changes = np.diff(gradients)
+
+        # Find index of first significant change
+        for i, change in enumerate(gradient_changes):
+            if abs(change) > threshold:
+                return (
+                    i + 1
+                )  # +1 because gradient_changes is one element shorter than data
+        return None
+
+    def find_start_stop(self, data):
+        # Ensure the start point is valid
+        start = 0
+        savgol_filter(data, int(len(data) * 0.01), 1)
+        if start < 0 or start >= len(data):
+            raise ValueError("Start point is out of the data range")
+
+        # Compute slopes
+        slopes = []
+        for i in range(start + 1, len(data)):
+            slope = data[i] - data[start]
+            slopes.append(slope)
+
+        for i in range(1, len(slopes)):
+            # print(slopes[i], slopes[i - 1])
+            if slopes[i] < slopes[i - 1] - 1e-5:
+                print(f"==> start: {start + i}")
+                return start + i  # Return the index in the original data
+
+        return None
+        # savgol_filter(data, int(len(data) * 0.01), 1)
+        # first_deriv = np.gradient(data)
+        # second_deriv = np.gradient(first_deriv)
+        # threshold = np.std(second_deriv)
+        # result = np.where(np.abs(second_deriv) > threshold)[0]
+        # print(second_deriv)
+        # print(result)
+        # kmeans = KMeans(n_clusters=2, random_state=0).fit(result.reshape(-1, 1))
+        # labels = kmeans.labels_
+
+        # # defaultdict to store clusters
+        # clusters = defaultdict(list)
+
+        # # Assign points to clusters
+        # for label, point in zip(labels, result):
+        #     clusters[label].append(point)
+
+        # # Finding maxima and minima of each cluster
+        # cluster_max_min = {}
+
+        # for label, cluster_points in clusters.items():
+        #     cluster_max_min[label] = {
+        #         "min": min(cluster_points),
+        #         "max": max(cluster_points),
+        #     }
+        # # Sorting clusters based on max and min values
+
+        # sorted_clusters = sorted(
+        #     cluster_max_min.items(), key=lambda x: (x[1]["min"], x[1]["max"])
+        # )
+        # return sorted_clusters[0][1]["min"], sorted_clusters[1][1]["min"]
+
+    def predict(self, file_buffer):
+        if file_buffer is None:
             raise ValueError("[QModelPredict __init__()] No data path given")
         f_names = self.__pooler__.feature_names
-        pooler_df = pd.read_csv(datapath).drop(
+        pooler_df = pd.read_csv(file_buffer).drop(
             columns=[
                 "Date",
                 "Time",
@@ -548,6 +581,10 @@ class QModelPredict:
                 "Temperature",
             ]
         )
+        qdp = QDataPipeline(file_buffer)
+        qdp.compute_difference()
+        pooler_df = qdp.get_dataframe()
+
         # Pooler predictions
         pooler_df = pooler_df[f_names]
         pooling_data = xgb.DMatrix(pooler_df)
@@ -560,59 +597,67 @@ class QModelPredict:
         discriminator_df["Pooling"] = pooling_results
         discriminator_data = xgb.DMatrix(discriminator_df)
         discriminator_results = self.__discriminator__.predict(discriminator_data)
+
+        """ This is where the start and stop bounds are computed for the prediction window.  I was
+            currently working on implementing the slope technique we discussed however, that function was
+            not working for some reason.  It is called find_start_stop().  If it is possible to return accurate
+            start and stop values from this function then the correct start and stop bounds will produce accurate
+            predictions.
+        """
+        start, stop = self.find_start_stop(discriminator_df["Dissipation"].values)
+        start_bound = start
+        stop_bound = stop
+
         # Get all peaks in the dataset
         all_peaks, _ = find_peaks(
-            discriminator_results, height=discriminator_results.mean()
+            discriminator_results[start_bound:],
+            height=discriminator_results[start_bound:].mean(),
         )
-        hist, bins = self.histogram_analysis(all_peaks, len(all_peaks), 4)
-        s_bound = int(bins[1])
-        print(f"-- s_bound={s_bound}")
+        hist, bins = self.histogram_analysis(all_peaks, len(all_peaks), 6)
+        print(bins)
+        # s_bound = int(bins[1]) + t_bound
+        print(f"-- s_bound={stop_bound}")
         # Find the 3 most significant peaks to the right of the largest peak.
         r_peaks, _ = find_peaks(
-            discriminator_results[s_bound : len(discriminator_results)],
-            height=discriminator_results[s_bound : len(discriminator_results)].mean(),
+            discriminator_results[stop_bound : len(discriminator_results)],
+            height=discriminator_results[
+                stop_bound : len(discriminator_results)
+            ].mean(),
         )
-        r_peaks = r_peaks + s_bound
+        r_peaks = r_peaks + stop_bound
         hist, bins = self.histogram_analysis(
             r_peaks,
             len(r_peaks),
             3,
         )
-        largest = self.largest_value_in_bins(discriminator_results, bins)
-        print(largest)
-        r_peaks = []
-        height = discriminator_results[s_bound : len(discriminator_results)].mean()
-        while len(r_peaks) < 3:
-            r_peaks, _ = find_peaks(
-                discriminator_results[s_bound : len(discriminator_results)],
-                height=height,
-            )
-
-        r_grouping = KMeans(n_clusters=3, random_state=42)
-        r_grouping.fit(r_peaks.reshape(-1, 1))
-        r_centroids = r_grouping.cluster_centers_ + s_bound
+        bin_edges = self.full_bins(bins, hist)
+        r_peaks = self.find_max_indices(discriminator_results, bin_edges)
+        print(f"==> r_peaks: {r_peaks}")
 
         # Find the 3 most significant peaks to the left of the largest peak.
-        height = 0.1
-        l_peaks = []
-        while len(l_peaks) < 4:
-            l_peaks, _ = find_peaks(
-                pooling_results[0:s_bound],
-                height=height,
-            )
+        l_peaks, _ = find_peaks(
+            discriminator_results[start_bound : stop_bound + 1],
+            height=discriminator_results[start_bound : stop_bound + 1].mean(),
+        )
+        prominences = peak_prominences(
+            discriminator_results[start_bound : stop_bound + 1], l_peaks
+        )[0]
+        l_peaks = l_peaks + start_bound
+        # Combine peaks and their prominences
+        peaks_with_prominences = list(zip(l_peaks, prominences))
+        sorted_peaks_with_prominences = sorted(
+            peaks_with_prominences, key=lambda x: x[1], reverse=True
+        )
+        sorted_peaks = [x[0] for x in sorted_peaks_with_prominences]
+        l_peaks = sorted_peaks[:3]
 
-            height = height - 0.01
-        if len(l_peaks) < 3:
-            l_peaks = np.append(l_peaks, (max(l_peaks) + 1))
-        l_grouping = KMeans(n_clusters=3, random_state=42)
-        l_grouping.fit(l_peaks.reshape(-1, 1))
-        l_centroids = l_grouping.cluster_centers_
-        peaks = np.concatenate((l_centroids, r_centroids))
+        print(f"==> l_peaks: {l_peaks}")
 
+        peaks = np.concatenate((l_peaks, r_peaks))
         int_list = list(map(int, peaks.flatten()))
 
         # Remove duplicates
         pois = list(set(int_list))
         pois.sort()
 
-        return pooling_results, discriminator_results, pois, s_bound
+        return pooling_results, discriminator_results, pois, stop_bound, start_bound
