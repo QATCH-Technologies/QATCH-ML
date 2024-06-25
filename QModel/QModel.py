@@ -4,6 +4,8 @@ import numpy as np
 
 from scipy.signal import (
     find_peaks,
+    peak_widths,
+    peak_prominences,
     savgol_filter,
     butter,
     filtfilt,
@@ -12,6 +14,7 @@ from sklearn.cluster import KMeans
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score
 from hyperopt import STATUS_OK, fmin, hp, tpe
+
 try:
     from QDataPipline import QDataPipeline
 except:
@@ -857,11 +860,28 @@ class QModelPredict:
 
             peaks, properties = find_peaks(y, prominence=prominence, height=height)
             while len(peaks) < num_peaks:
-                height -= 1
+                height -= 0.01
                 peaks, properties = find_peaks(y, prominence=prominence, height=height)
-            # Calculate a combined score for each peak based on height and prominence
+
+            prominences = peak_prominences(y, peaks)[0]
+            widths = peak_widths(y, peaks, rel_height=0.5)[0]
+            heights = y[peaks]
+
+            # Define the weights for height, prominence, and width
+            w_h = 0.5
+            w_p = 0.25
+            w_w = 0.25
+
+            # Normalize the properties
+            H_min, H_max = heights.min(), heights.max()
+            P_min, P_max = prominences.min(), prominences.max()
+            W_min, W_max = widths.min(), widths.max()
+
+            # Compute the scores for each peak
             scores = (
-                properties["prominences"] * 0.25 + properties["peak_heights"] * 0.75
+                w_h * (heights - H_min) / (H_max - H_min)
+                + w_p * (prominences - P_min) / (P_max - P_min)
+                + w_w * (widths - W_min) / (W_max - W_min)
             )
 
             # Find the indices of the top `num_peaks` peaks with the highest scores
@@ -925,9 +945,9 @@ class QModelPredict:
         # A buffer for the first 1% of the input data set.
         # Ensures any sensor interference does not affect the slope
         # calculation.
-        zero_buffer = int(len(data) * 0.01)
+        buffer = int(len(data) * 0.01)
         start_slopes = np.where(
-            np.arange(start + 1, len(data)) < zero_buffer,
+            np.arange(start + 1, len(data)) < buffer,
             0,
             (data[start + 1 :] - data[start]) / np.arange(start + 1, len(data) - start),
         )
@@ -935,23 +955,25 @@ class QModelPredict:
         # Compute where there is a significant positive change in the start slopes.
         # This index gets returned as the start index of the critical region.
         start_slopes = self.normalize(start_slopes)
-        start_tmp = 0
+        start_tmp = 1
         for i in range(1, len(start_slopes)):
             if start_slopes[i] < start_slopes[start] + 0.1:
                 start_tmp = i
 
         # Compute where there is a significant negative change in the stop slopes.
         # This index gets returned as the stop index of the critical region.
-        stop_tmp = start_tmp + zero_buffer
+        stop_tmp = start_tmp + buffer
         stop_slopes = [0]
         for i in range(start_tmp, len(start_slopes)):
-            stop_slopes.append(
-                (start_slopes[i] - start_slopes[start_tmp]) / (i - start_tmp)
-            )
+            if not (np.isnan(start_slopes[i]) or np.isnan(start_slopes[start_tmp])):
+                stop_slopes.append(
+                    (start_slopes[i] - start_slopes[start_tmp]) / (i - start_tmp)
+                )
             if stop_slopes[-1] < stop_slopes[-2] - np.mean(stop_slopes):
                 stop_tmp = i
                 break
-        return (start + start_tmp, start + stop_tmp)
+        print(start)
+        return (start + start_tmp - buffer, start + stop_tmp)
 
     def predict(self, file_buffer):
         """
@@ -998,10 +1020,12 @@ class QModelPredict:
             file_buffer_2 = file_buffer
             if not isinstance(file_buffer_2, str):
                 if hasattr(file_buffer_2, "seekable") and file_buffer_2.seekable():
-                    file_buffer_2.seek(0) # reset ByteIO buffer to beginning of stream
+                    file_buffer_2.seek(0)  # reset ByteIO buffer to beginning of stream
                 else:
                     # ERROR: 'file_buffer_2' must be 'BytesIO' type here, but it's not seekable!
-                    raise Exception("Cannot 'seek' stream prior to passing to 'QDataPipeline'.")
+                    raise Exception(
+                        "Cannot 'seek' stream prior to passing to 'QDataPipeline'."
+                    )
             else:
                 # Assuming 'file_buffer_2' is a string to a file path, this will work fine as-is
                 pass
