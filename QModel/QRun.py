@@ -65,20 +65,18 @@ incorrect = 0
 
 
 def compute_error(actual, predicted):
+    return_flag = False
+    if len(predicted) != len(actual):
+        print(f"Actual and predicted are not the same length. found {len(predicted)}")
+        return True
     for i in range(len(actual)):
-        if i < 3:
-            if actual[i] - predicted[i] > ERROR:
-                print(
-                    f"Found error ({i}): {actual[i]} - {predicted[i]} = {actual[i] - predicted[i]}"
-                )
-                return True
-        # else:
-        #     if actual[i] - predicted[i] > ERROR * 3:
-        #         print(
-        #             f"Found error ({i}): {actual[i]} - {predicted[i]} = {actual[i] - predicted[i]}"
-        #         )
-        #         return True
-    return False
+        if actual[i] - predicted[i] > ERROR:
+            return_flag = True
+            print(
+                f"Found error (pt {i + 1}, actual, predicted, difference): {actual[i]} - {predicted[i]} = {actual[i] - predicted[i]}"
+            )
+
+    return return_flag
 
 
 qpreditor = QModelPredict(
@@ -95,127 +93,121 @@ for folder_name in os.listdir(PATH):
 
             if os.path.isdir(sub_folder_path):
                 if os.path.isdir(sub_folder_path):
-                    for sub_sub_folder_name in os.listdir(sub_folder_path):
-                        for filename in os.listdir(sub_folder_path):
-                            for sub_sub_folder_name in os.listdir(sub_folder_path):
-                                sub_sub_folder_path = os.path.join(
-                                    sub_folder_path, sub_sub_folder_name
-                                )
-                                if sub_sub_folder_path.endswith("_poi.csv"):
-                                    poi_file = sub_sub_folder_path
-                                elif sub_sub_folder_path.endswith(
-                                    ".csv"
-                                ) and not sub_sub_folder_path.endswith("_poi.csv"):
-                                    data_file = sub_sub_folder_path
+                    for filename in os.listdir(sub_folder_path):
+                        filename = os.path.join(sub_folder_path, filename)
+                        if filename.endswith("_poi.csv"):
+                            poi_file = filename
+                        elif filename.endswith(".csv") and not filename.endswith(
+                            "_poi.csv"
+                        ):
+                            data_file = filename
+                    print(poi_file)
+                    actual_indices = pd.read_csv(poi_file, header=None).values
+                    actual_indices = [item[0] for item in actual_indices]
+                    print(f"Analyzing {data_file}")
+                    (
+                        peaks,
+                        pooler_results,
+                        discriminator_results,
+                        s_bound,
+                        t_bound,
+                    ) = qpreditor.predict(data_file)
 
-                            actual_indices = pd.read_csv(poi_file, header=None).values
-                            actual_indices = [item[0] for item in actual_indices]
-                            print(f"Analyzing {data_file}")
-                            (
-                                pooler_results,
-                                discriminator_results,
-                                peaks,
-                                s_bound,
-                                t_bound,
-                            ) = qpreditor.predict(data_file)
+                    print(f"Predic: {peaks}")
+                    print(f"Actual: {actual_indices}")
 
-                            print(f"Predic: {peaks}")
-                            print(f"Actual: {actual_indices}")
-
-                            if compute_error(actual_indices, peaks):
-                                incorrect += 1
-                                if PLOTTING:
-                                    df = pd.read_csv(data_file)
-                                    dissipation = df["Dissipation"]
-                                    difference = df["Difference"]
-                                    difference = np.abs(difference)
-                                    resonance_frequency = df["Resonance_Frequency"]
-                                    difference = normalize(difference)
-                                    resonance_frequency = normalize(resonance_frequency)
-                                    dissipation = normalize(dissipation)
-                                    plt.figure(figsize=(8, 6))
-                                    plt.plot(
-                                        normalize(pooler_results),
-                                        color="darkviolet",
-                                        label="Pooler Confidence",
-                                    )
-                                    plt.plot(
-                                        normalize(discriminator_results),
-                                        color="lime",
-                                        label="Discriminator Confidence",
-                                    )
-                                    plt.plot(
-                                        dissipation,
-                                        color="gold",
-                                        label="Dissipation",
-                                    )
-                                    plt.plot(
-                                        difference,
-                                        color="darkorange",
-                                        label="Difference",
-                                    )
-                                    # plt.plot(
-                                    #     resonance_frequency,
-                                    #     color="deeppink",
-                                    #     label="Resonance Frequency",
-                                    # )
-
-                                    # plt.scatter(
-                                    #     peaks,
-                                    #     difference[peaks],
-                                    #     marker="o",
-                                    #     color="darkviolet",
-                                    # )
-                                    # plt.scatter(
-                                    #     peaks,
-                                    #     resonance_frequency[peaks],
-                                    #     marker="o",
-                                    #     color="darkviolet",
-                                    # )
-                                    print(actual_indices)
-                                    plt.axvline(
-                                        x=actual_indices[0],
-                                        color="dodgerblue",
-                                        linestyle="--",
-                                        label="Actual",
-                                    )
-                                    for index in actual_indices:
-                                        plt.axvline(
-                                            x=index,
-                                            color="dodgerblue",
-                                            linestyle="--",
-                                        )
-                                    plt.axvline(
-                                        x=s_bound,
-                                        color="red",
-                                    )
-                                    plt.axvline(
-                                        x=t_bound,
-                                        color="black",
-                                    )
-                                    plt.scatter(
-                                        peaks,
-                                        dissipation[peaks],
-                                        label="Predicted",
-                                        marker="o",
-                                        color="red",
-                                    )
-                                    plot_name = data_file.replace(PATH, "")
-                                    plt.xlabel("POIs")
-                                    plt.ylabel("Dissipation")
-                                    plt.title(
-                                        f"Predicted/Actual POIs on Data: {plot_name}"
-                                    )
-
-                                    plt.legend()
-                                    plt.grid(True)
-                                    plt.show()
-
-                            else:
-                                correct += 1
-                            print(
-                                f"Current error on:\n\t# Correct={correct}\n\t# Incorrect={incorrect}\n\tAccuracy={correct/(incorrect+correct)}"
+                    if compute_error(actual_indices, peaks):
+                        incorrect += 1
+                        if PLOTTING:
+                            df = pd.read_csv(data_file)
+                            dissipation = df["Dissipation"]
+                            difference = df["Difference"]
+                            difference = np.abs(difference)
+                            resonance_frequency = df["Resonance_Frequency"]
+                            difference = normalize(difference)
+                            resonance_frequency = normalize(resonance_frequency)
+                            dissipation = normalize(dissipation)
+                            plt.figure(figsize=(8, 6))
+                            plt.plot(
+                                normalize(pooler_results),
+                                color="darkviolet",
+                                label="Pooler Confidence",
                             )
+                            plt.plot(
+                                normalize(discriminator_results),
+                                color="lime",
+                                label="Discriminator Confidence",
+                            )
+                            plt.plot(
+                                dissipation,
+                                color="gold",
+                                label="Dissipation",
+                            )
+                            plt.plot(
+                                difference,
+                                color="darkorange",
+                                label="Difference",
+                            )
+                            # plt.plot(
+                            #     resonance_frequency,
+                            #     color="deeppink",
+                            #     label="Resonance Frequency",
+                            # )
+
+                            # plt.scatter(
+                            #     peaks,
+                            #     difference[peaks],
+                            #     marker="o",
+                            #     color="darkviolet",
+                            # )
+                            # plt.scatter(
+                            #     peaks,
+                            #     resonance_frequency[peaks],
+                            #     marker="o",
+                            #     color="darkviolet",
+                            # )
+                            print(actual_indices)
+                            plt.axvline(
+                                x=actual_indices[0],
+                                color="dodgerblue",
+                                linestyle="--",
+                                label="Actual",
+                            )
+                            for index in actual_indices:
+                                plt.axvline(
+                                    x=index,
+                                    color="dodgerblue",
+                                    linestyle="--",
+                                )
+                            plt.axvline(
+                                x=s_bound,
+                                color="red",
+                            )
+                            plt.axvline(
+                                x=t_bound,
+                                color="black",
+                            )
+                            plt.scatter(
+                                peaks,
+                                dissipation[peaks],
+                                label="Predicted",
+                                marker="o",
+                                color="red",
+                            )
+                            plot_name = data_file.replace(PATH, "")
+                            plt.xlabel("POIs")
+                            plt.ylabel("Dissipation")
+                            plt.title(f"Predicted/Actual POIs on Data: {plot_name}")
+
+                            plt.legend()
+                            plt.grid(True)
+                            plt.show()
+
+                    else:
+                        correct += 1
+                    print(
+                        f"Current error on:\n\t# Correct={correct}\n\t# Incorrect={incorrect}\n\tAccuracy={correct/(incorrect+correct)}"
+                    )
 
 print(
     f"Total error on dataset:\n\t# Correct={correct}\n\t# Incorrect={incorrect}\n\tAccuracy={correct/(incorrect+correct)}"
