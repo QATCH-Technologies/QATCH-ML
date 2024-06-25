@@ -8,6 +8,7 @@ from scipy.signal import (
     butter,
     filtfilt,
 )
+from sklearn.cluster import KMeans
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score
 from hyperopt import STATUS_OK, fmin, hp, tpe
@@ -852,7 +853,7 @@ class QModelPredict:
             # Find peaks with their properties
 
             peaks, properties = find_peaks(y, prominence=prominence, height=height)
-            while len(peaks) < 3:
+            while len(peaks) < num_peaks:
                 height -= 1
                 peaks, properties = find_peaks(y, prominence=prominence, height=height)
             # Calculate a combined score for each peak based on height and prominence
@@ -1036,7 +1037,28 @@ class QModelPredict:
                 data=r_peaks, num_bins=len(r_peaks), threshold=3
             )
             bin_edges = self.full_bins(bins, hist)
-            r_peaks = self.find_max_indices(predictions, bin_edges)
+            # Fall back on KMeans if the bin edges cannot be idetified using a histogram.
+            if len(bin_edges) < 3:
+                kmeans = KMeans(n_clusters=3, random_state=42)
+                kmeans.fit(r_peaks.reshape(-1, 1))
+                labels = kmeans.labels_
+                clusters = {
+                    i: r_peaks[labels == i].flatten().tolist()
+                    for i in range(kmeans.n_clusters)
+                }
+                bin_edges = [
+                    (min(cluster), max(cluster)) for cluster in clusters.values()
+                ]
+
+            r_peaks = []
+            for bin in bin_edges:
+                peak, _ = self.find_top_peaks(
+                    predictions[bin[0] : bin[1]],
+                    num_peaks=1,
+                    prominence=0,
+                    height=predictions[bin[0] : bin[1]].mean(),
+                )
+                r_peaks.append(peak[0] + bin[0])
 
             # Find peaks within the critical region
             l_peaks, _ = self.find_top_peaks(
