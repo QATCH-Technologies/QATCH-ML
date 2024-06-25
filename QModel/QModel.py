@@ -12,7 +12,10 @@ from sklearn.cluster import KMeans
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score
 from hyperopt import STATUS_OK, fmin, hp, tpe
-from QDataPipline import QDataPipeline
+try:
+    from QDataPipline import QDataPipeline
+except:
+    from QATCH.QModel.QDataPipline import QDataPipeline
 
 """ The following are parameters for QModel to use during training time. """
 """ The percentage of data to include in the validation set. """
@@ -992,8 +995,19 @@ class QModelPredict:
 
             pooler_df = pooler_df.drop(columns=columns_to_drop)
 
+            file_buffer_2 = file_buffer
+            if not isinstance(file_buffer_2, str):
+                if hasattr(file_buffer_2, "seekable") and file_buffer_2.seekable():
+                    file_buffer_2.seek(0) # reset ByteIO buffer to beginning of stream
+                else:
+                    # ERROR: 'file_buffer_2' must be 'BytesIO' type here, but it's not seekable!
+                    raise Exception("Cannot 'seek' stream prior to passing to 'QDataPipeline'.")
+            else:
+                # Assuming 'file_buffer_2' is a string to a file path, this will work fine as-is
+                pass
+
             # Process data using QDataPipeline
-            qdp = QDataPipeline(file_buffer)
+            qdp = QDataPipeline(file_buffer_2)
             qdp.compute_difference()
             pooler_df = qdp.get_dataframe()
 
