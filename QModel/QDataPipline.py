@@ -35,6 +35,7 @@ class QDataPipeline:
         if filepath is not None:
             self.__filepath__ = filepath
             self.__dataframe__ = pd.read_csv(self.__filepath__)
+            self.__interpolation_size__ = 0
         else:
             raise ValueError(
                 f"[QDataPipeline.__init__] filepath required, found {filepath}."
@@ -49,7 +50,7 @@ class QDataPipeline:
         """
         return self.__dataframe__
 
-    def scale(self, column):
+    def standardize(self, column):
         # define standard scaler
         scaler = StandardScaler()
         df = self.__dataframe__
@@ -59,36 +60,58 @@ class QDataPipeline:
             np.array(df[column]).reshape(-1, 1)
         )
 
-    def interpolate(self):
-        data = self.__dataframe__
-        timestamps = self.__dataframe__["Relative_time"].values
-        time_diff = np.diff(timestamps)
-        if timestamps[-1] > DOWNSAMPLE_AFTER:
-            start = next(
-                x + 0 for x, t in enumerate(timestamps) if t > DOWNSAMPLE_AFTER
-            )
-            time_diff = time_diff[start:]
-            interp_idxs = np.where(time_diff > DOWNSAMPLE_THRESHOLD)
-            for idx in interp_idxs:
-                data[idx] = np.NaN
-                data.index = data.index + 1  # shifting index
-                data = data.sort_index()
-            # for idx in interp_idxs[::-1]:
-            #     interp_times = np.linspace(
-            #         timestamps[idx], timestamps[idx + 1], DOWNSAMPLE_COUNT
-            #     )
-            #     for i, t in enumerate(interp_times):
-            #         interp_result = np.interp(
-            #             x=timestamps[t], xp=timestamps[start:], fp=data[start:]
-            #         )
-            #         np.insert(data)
-            print(len(data), len(self.__dataframe__))
-            data.interpolate(axis=1, inplace=True)
-            plt.figure(figsize=(10, 10))
-            plt.plot(self.__dataframe__["Dissipation"], color="b")
-            plt.plot(data["Dissipation"], color="r")
+    def interpolate(self, num_rows=20):
+        if max(self.__dataframe__["Relative_time"].values) > 90:
+            df = self.__dataframe__
+            start_index = df.index[df["Relative_time"] > 90].tolist()[0]
+            result = pd.DataFrame(columns=df.columns)
 
-            plt.show()
+            for i in range(len(df) - 1):
+                # Append the current row to the result DataFrame
+                result = pd.concat(
+                    [
+                        result if not result.empty else None,
+                        pd.DataFrame(df.iloc[i]).transpose(),
+                    ],
+                    ignore_index=True,
+                )
+                # If the current index is greater than or equal to start_index, interpolate rows
+                if i >= start_index:
+                    self.__interpolation_size__ += 1
+                    start_row = df.iloc[i]
+                    end_row = df.iloc[i + 1]
+
+                    # Interpolate columns excluding "Class"
+                    interpolated_rows = pd.DataFrame()
+                    for col in df.columns:
+                        if col == "Class":
+                            # Check if the original value is 0, then interpolate to 0
+                            if start_row[col] == 0:
+                                interpolated_rows[col] = np.linspace(
+                                    start_row[col], end_row[col], num_rows
+                                )[1:-1]
+                            else:
+                                interpolated_rows[col] = start_row[col]
+                        else:
+                            interpolated_rows[col] = np.linspace(
+                                start_row[col], end_row[col], num_rows
+                            )[1:-1]
+
+                    result = pd.concat(
+                        [result, interpolated_rows],
+                        ignore_index=True,
+                    )
+
+            # Append the last row of the original DataFrame
+            result = pd.concat(
+                [
+                    result if not result.empty else None,
+                    pd.DataFrame(df.iloc[-1]).transpose(),
+                ],
+                ignore_index=True,
+            )
+
+            self.__dataframe__ = result
 
     def noise_filter(self, column):
         # Validate `predictions`
@@ -105,37 +128,16 @@ class QDataPipeline:
         b, a = butter(2, Wn=[normal_cutoff], btype="lowpass", analog=False)
 
         # Apply the filter using filtfilt
-        filtered_predictions = filtfilt(b, a, data)
+        filtered = filtfilt(b, a, data)
 
-        self.__dataframe__[column] = filtered_predictions
-        self.__dataframe__[column] = abs(
-            self.__dataframe__[column]
-            - savgol_filter(self.__dataframe__[column], 25, 1)
+        self.__dataframe__[column] = filtered
+        self.__dataframe__[column] = self.__dataframe__[column].apply(
+            lambda x: max(0, x)
         )
-        # xs = self.__dataframe__["Relative_time"]
-        # i = next(x + 0 for x, t in enumerate(xs) if t > 0.5)
-        # j = next(x + 1 for x, t in enumerate(xs) if t > 2.5)
-        # baseline = (
-        #     self.__dataframe__[column][i:j].max()
-        #     - self.__dataframe__[column][i:j].min()
+        # abs(
+        #     self.__dataframe__[column]
+        #     - savgol_filter(self.__dataframe__[column], 25, 1)
         # )
-        # self.__dataframe__[column] = np.where(
-        #     self.__dataframe__[column] < 2 * baseline, 0, self.__dataframe__[column]
-        # )
-        # extrema_indices = argrelextrema(self.__dataframe__[column].values, np.greater)
-        # extrema_data = [data.values[i] for i in extrema_indices]
-        # interpolation_function = interp1d(
-        #     extrema_indices[0], extrema_data[0], fill_value="extrapolate"
-        # )
-        # new_x = np.arange(len(data))
-        # self.__dataframe__["Extrema"] = abs(interpolation_function(new_x))
-        # plt.figure()
-        # plt.plot(self.__dataframe__[column], c="black")
-        # plt.plot(self.__dataframe__["Extrema"], c="y")
-        # plt.axhline(np.std(self.__dataframe__[column]), c="g")
-        # plt.axhline(2 * baseline, c="r")
-        # plt.show()
-        # np.std(self.__dataframe__[column])
 
     def save_dataframe(self, new_filepath=None):
         """
@@ -282,7 +284,10 @@ class QDataPipeline:
 
             # self.__dataframe__["Class"] = 0
             # for poi, idx in enumerate(indices):
-            #     self.__dataframe__.loc[idx, "Class"] = poi + 1
+            #     if poi < 3:
+            #         self.__dataframe__.loc[idx, "Class"] = 1
+            #     else:
+            #         self.__dataframe__.loc[idx, "Class"] = 2
             self.__dataframe__["Class"] = 0
             self.__dataframe__.loc[indices, "Class"] = 1
         else:

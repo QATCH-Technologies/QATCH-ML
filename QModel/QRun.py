@@ -20,59 +20,58 @@ content = []
 for root, dirs, files in os.walk(PATH):
     for file in files:
         content.append(os.path.join(root, file))
-# i = 0
+
+i = 0
 for filename in tqdm(content, desc="Processing Files"):
-    # if i > 50:
-    #     break
-    # i += 1
+    if i > 50:
+        break
+    i += 1
     if filename.endswith(".csv") and not filename.endswith("_poi.csv"):
         data_file = filename
         poi_file = filename.replace(".csv", "_poi.csv")
         qdp = QDataPipeline(data_file)
-        if qdp.__dataframe__["Relative_time"].values[-1] < 90:
-            qdp.__dataframe__.drop(
-                columns=[
-                    "Date",
-                    "Time",
-                    "Ambient",
-                    "Temperature",
-                    "Peak Magnitude (RAW)",
-                ],
-                inplace=True,
-            )
-            poi_vals = pd.read_csv(poi_file, header=None)
-            qdp.compute_difference()
-            # plt.figure()
-            # plt.plot(normalize(qdp.__dataframe__["Cumulative"]), c="b")
-            # plt.plot(normalize(qdp.__dataframe__["Dissipation"]))
-            qdp.noise_filter("Cumulative")
-            # plt.plot(normalize(qdp.__dataframe__["Cumulative"]), c="g")
-            # plt.show()
+        qdp.__dataframe__.drop(
+            columns=[
+                "Date",
+                "Time",
+                "Ambient",
+                "Temperature",
+                "Peak Magnitude (RAW)",
+            ],
+            inplace=True,
+        )
 
-            qdp.compute_smooth(column="Dissipation", winsize=25, polyorder=1)
-            qdp.compute_smooth(column="Difference", winsize=25, polyorder=1)
-            qdp.compute_smooth(column="Resonance_Frequency", winsize=25, polyorder=1)
+        poi_vals = pd.read_csv(poi_file, header=None)
+        qdp.fill_nan()
+        qdp.add_class(poi_file)
+        head_idx = qdp.trim_head()
+        if head_idx > min(poi_vals.values):
+            print(f"head: {head_idx}, min poi: {min(poi_vals.values)}")
+            raise ValueError("Less than 6 POIs; too agressive trim")
+        qdp.interpolate()
+        qdp.compute_difference()
+        qdp.noise_filter("Cumulative")
+        # qdp.normalize_df()
+        qdp.standardize("Cumulative")
+        # qdp.standardize("Dissipation")
+        qdp.compute_smooth(column="Dissipation", winsize=25, polyorder=1)
+        qdp.compute_smooth(column="Difference", winsize=25, polyorder=1)
+        qdp.compute_smooth(column="Resonance_Frequency", winsize=25, polyorder=1)
 
-            # qdp.interpolate()
-            qdp.compute_gradient(column="Dissipation")
-            qdp.compute_gradient(column="Difference")
-            qdp.compute_gradient(column="Resonance_Frequency")
-            # qdp.normalize_df()
-
-            qdp.fill_nan()
-            qdp.add_class(poi_file)
-            head_idx = qdp.trim_head()
-            if head_idx > min(poi_vals.values):
-                print(f"head: {head_idx}, min poi: {min(poi_vals.values)}")
-                raise ValueError("Less than 6 POIs; too agressive trim")
-            qdp.scale("Cumulative")
-            # plt.figure()
-            # plt.plot(qdp.__dataframe__["Cumulative"])
-            # plt.show()
-            data_df = pd.concat([data_df, qdp.get_dataframe()])
-data_df.drop(
-    columns=["Relative_time", "Resonance_Frequency", "Dissipation"], inplace=True
-)
+        qdp.compute_gradient(column="Dissipation")
+        qdp.compute_gradient(column="Difference")
+        qdp.compute_gradient(column="Resonance_Frequency")
+        # print(normalize(qdp.__dataframe__["Dissipation_gradient"].values))
+        indices = qdp.__dataframe__.index[qdp.__dataframe__["Class"] != 0]
+        # plt.figure()
+        # plt.plot(qdp.__dataframe__["Dissipation_gradient"].values, color="g")
+        # plt.plot(normalize(qdp.__dataframe__["Dissipation"].values), color="b")
+        # plt.plot(normalize(qdp.__dataframe__["Cumulative"].values), color="r")
+        # for index in indices:
+        #     plt.axvline(x=index)
+        # plt.show()
+        data_df = pd.concat([data_df, qdp.get_dataframe()])
+# data_df.drop(columns=["Relative_time"], inplace=True)
 print("\rCreating training dataset...Done")
 
 # Calculate the correlation matrix
@@ -85,7 +84,7 @@ plt.title("Feature Correlation Heatmap")
 plt.show()
 
 qmodel = QModel(data_df)
-qmodel.tune(15)
+# qmodel.tune(15)
 qmodel.train_model()
 xgb.plot_importance(qmodel.__model__, importance_type="gain", max_num_features=10)
 plt.show()

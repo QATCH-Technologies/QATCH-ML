@@ -56,13 +56,13 @@ class QModel:
     def __init__(self, dataset):
         self.__params__ = {
             "objective": "binary:logistic",
+            "eval_metric": "auc",
             "eta": 0.175,
             "max_depth": 5,
             "min_child_weight": 4.0,
             "subsample": 0.6,
             "colsample_bytree": 0.75,
             "gamma": 0.8,
-            "eval_metric": "auc",
             "nthread": 12,
             "booster": "gbtree",
             "device": "cuda",
@@ -70,7 +70,7 @@ class QModel:
             "sampling_method": "gradient_based",
             # "objective": "multi:softprob",
             # "eval_metric": "merror",
-            # "num_class": 7,
+            # "num_class": 3,
             "seed": SEED,
         }
         self.__train_df__, self.__test_df__ = train_test_split(
@@ -143,7 +143,9 @@ class QModel:
         #     self.__dvalid__.get_label(), predictions, multi_class="ovr"
         # )
         score = roc_auc_score(
-            self.__dvalid__.get_label(), predictions, average="weighted"
+            self.__dvalid__.get_label(),
+            predictions,
+            average="weighted",
         )
         # print(score)
         loss = 1 - score
@@ -166,7 +168,7 @@ class QModel:
             "sampling_method": "gradient_based",
             # "objective": "multi:softprob",
             # "eval_metric": "merror",
-            # "num_class": 7,
+            "num_class": 3,
             "seed": SEED,
         }
         best = None
@@ -466,7 +468,7 @@ class QModelPredict:
 
         # Check if each element in the array is also a numpy array with 6 elements
         for inner_array in predictions:
-            if not isinstance(inner_array, np.ndarray) or len(inner_array) != 7:
+            if not isinstance(inner_array, np.ndarray) or len(inner_array) != 3:
                 raise ValueError(
                     "Each inner array must be a numpy array with 7 elements"
                 )
@@ -505,19 +507,19 @@ class QModelPredict:
 
         # Process data using QDataPipeline
         qdp = QDataPipeline(file_buffer_2)
+        qdp.fill_nan()
+        qdp.trim_head()
+        qdp.interpolate()
         qdp.compute_difference()
         qdp.noise_filter(column="Cumulative")
         qdp.compute_smooth(column="Dissipation", winsize=25, polyorder=1)
         qdp.compute_smooth(column="Difference", winsize=25, polyorder=1)
         qdp.compute_smooth(column="Resonance_Frequency", winsize=25, polyorder=1)
-
-        # qdp.interpolate()
         qdp.compute_gradient(column="Dissipation")
         qdp.compute_gradient(column="Difference")
         qdp.compute_gradient(column="Resonance_Frequency")
-        qdp.fill_nan()
-        qdp.trim_head()
-        qdp.scale("Cumulative")
+
+        qdp.standardize("Cumulative")
         df = qdp.get_dataframe()
         dissipation = df["Dissipation"]
         # Ensure feature names match for pooling predictions
