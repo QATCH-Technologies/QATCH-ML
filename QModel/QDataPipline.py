@@ -41,6 +41,56 @@ class QDataPipeline:
                 f"[QDataPipeline.__init__] filepath required, found {filepath}."
             )
 
+    def preprocess(self, poi_file=None):
+        self.__dataframe__.drop(
+            columns=[
+                "Date",
+                "Time",
+                "Ambient",
+                "Temperature",
+                "Peak Magnitude (RAW)",
+            ],
+            inplace=True,
+        )
+        if poi_file is not None:
+            self.add_class(poi_file)
+        self.fill_nan()
+        self.trim_head()
+
+        # self.interpolate()
+        self.compute_difference()
+
+        smooth_win = int(0.01 * len(self.__dataframe__["Relative_time"].values))
+        if smooth_win % 2 == 0:
+            smooth_win += 1
+        if smooth_win <= 1:
+            smooth_win = 2
+        self.compute_smooth(column="Dissipation", winsize=smooth_win, polyorder=1)
+        self.compute_smooth(column="Difference", winsize=smooth_win, polyorder=1)
+        self.compute_smooth(
+            column="Resonance_Frequency", winsize=smooth_win, polyorder=1
+        )
+
+        self.compute_gradient(column="Dissipation")
+        self.compute_gradient(column="Difference")
+        self.compute_gradient(column="Resonance_Frequency")
+
+        self.noise_filter("Cumulative")
+        self.noise_filter("Dissipation")
+        self.noise_filter("Difference")
+        self.noise_filter("Resonance_Frequency")
+        self.noise_filter("Difference_gradient")
+        self.noise_filter("Dissipation_gradient")
+        self.noise_filter("Resonance_Frequency_gradient")
+
+        self.standardize("Resonance_Frequency_gradient")
+        self.standardize("Dissipation_gradient")
+        self.standardize("Difference_gradient")
+        self.standardize("Dissipation")
+        self.standardize("Cumulative")
+        self.standardize("Resonance_Frequency")
+        self.standardize("Difference")
+
     def get_dataframe(self):
         """
         Returns the DataFrame containing the loaded data.
@@ -83,19 +133,27 @@ class QDataPipeline:
 
                     # Interpolate columns excluding "Class"
                     interpolated_rows = pd.DataFrame()
+
                     for col in df.columns:
-                        if col == "Class":
+                        if col == "Class_1" or col == "Class_2":
+                            interpolated_rows[col] = np.repeat(
+                                start_row[col], num_rows, axis=0
+                            )
                             # Check if the original value is 0, then interpolate to 0
                             if start_row[col] == 0:
-                                interpolated_rows[col] = np.linspace(
-                                    start_row[col], end_row[col], num_rows
-                                )[1:-1]
+                                interpolated_rows[col] = np.repeat(0, num_rows, axis=0)
                             else:
                                 interpolated_rows[col] = start_row[col]
+                                np.concatenate(
+                                    (
+                                        interpolated_rows[col],
+                                        np.repeat(0, num_rows - 1, axis=0),
+                                    ),
+                                )
                         else:
                             interpolated_rows[col] = np.linspace(
                                 start_row[col], end_row[col], num_rows
-                            )[1:-1]
+                            )
 
                     result = pd.concat(
                         [result, interpolated_rows],
@@ -263,15 +321,6 @@ class QDataPipeline:
         self.__dataframe__[gradient_column_name] = gradient
 
     def add_class(self, poi_filepath=None):
-        """
-        Adds a 'Class' column based on points of interest (POI) from a reference file.
-
-        Args:
-            poi_filepath (str, optional): Path to the POI CSV file. Defaults to None.
-
-        Raises:
-            ValueError: If no POI file path is provided or the file does not exist.
-        """
         if poi_filepath is None:
             raise ValueError(
                 "[QDataPipeline.add_class] Adding class for training requires POI reference file, found None."
@@ -282,12 +331,14 @@ class QDataPipeline:
                 reader = csv.reader(poi_csv)
                 indices = [int(row[0]) - 2 for row in reader]
 
-            # self.__dataframe__["Class"] = 0
-            # for poi, idx in enumerate(indices):
-            #     if poi < 3:
-            #         self.__dataframe__.loc[idx, "Class"] = 1
-            #     else:
-            #         self.__dataframe__.loc[idx, "Class"] = 2
+            self.__dataframe__["Class_1"] = 0
+            self.__dataframe__["Class_2"] = 0
+            self.__dataframe__["Class_3"] = 0
+            self.__dataframe__["Class_4"] = 0
+            self.__dataframe__["Class_5"] = 0
+            self.__dataframe__["Class_6"] = 0
+            for poi, idx in enumerate(indices):
+                self.__dataframe__.loc[idx, "Class_" + str(poi + 1)] = 1
             self.__dataframe__["Class"] = 0
             self.__dataframe__.loc[indices, "Class"] = 1
         else:

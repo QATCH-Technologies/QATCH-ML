@@ -14,6 +14,7 @@ from sklearn.cluster import KMeans
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score, precision_score, accuracy_score
 from hyperopt import STATUS_OK, fmin, hp, tpe, Trials
+from hyperopt.early_stop import no_progress_loss
 from sklearn.ensemble import RandomForestClassifier
 import sys
 
@@ -31,7 +32,7 @@ TEST_SIZE = 0.20
 """ The number of folds to train. """
 NUMBER_KFOLDS = 5
 """ A random seed to set the state of QModel to. """
-SEED = 2018
+SEED = 42
 """ The number of rounds to boost for. """
 MAX_ROUNDS = 1000
 OPT_ROUNDS = 1000
@@ -40,20 +41,10 @@ EARLY_STOP = 50
 """ The number of rounds after which to print a verbose model evaluation. """
 VERBOSE_EVAL = 50
 """ The target supervision feature. """
-TARGET_FEATURES = "Class"
-""" Training features for the pooling model. """
-PREDICTORS = [
-    # "Difference",
-    # "Difference_gradient",
-    # "Dissipation_gradient",
-    # "Resonance_Frequency_gradient",
-    "Cumulative",
-    # "Extrema",
-]
 
 
 class QModel:
-    def __init__(self, dataset):
+    def __init__(self, dataset, predictors, target_features):
         self.__params__ = {
             "objective": "binary:logistic",
             "eval_metric": "auc",
@@ -68,9 +59,6 @@ class QModel:
             "device": "cuda",
             "tree_method": "auto",
             "sampling_method": "gradient_based",
-            # "objective": "multi:softprob",
-            # "eval_metric": "merror",
-            # "num_class": 3,
             "seed": SEED,
         }
         self.__train_df__, self.__test_df__ = train_test_split(
@@ -84,16 +72,16 @@ class QModel:
         )
 
         self.__dtrain__ = xgb.DMatrix(
-            self.__train_df__[PREDICTORS],
-            label=self.__train_df__[TARGET_FEATURES].values,
+            data=self.__train_df__[predictors],
+            label=self.__train_df__[target_features].values,
         )
         self.__dvalid__ = xgb.DMatrix(
-            self.__valid_df__[PREDICTORS],
-            label=self.__valid_df__[TARGET_FEATURES].values,
+            data=self.__valid_df__[predictors],
+            label=self.__valid_df__[target_features].values,
         )
         self.__dtest__ = xgb.DMatrix(
-            self.__test_df__[PREDICTORS],
-            label=self.__test_df__[TARGET_FEATURES].values,
+            data=self.__test_df__[predictors],
+            label=self.__test_df__[target_features].values,
         )
 
         self.__watchlist__ = [
@@ -101,14 +89,9 @@ class QModel:
             (self.__dvalid__, "valid"),
         ]
 
-        # self.__model__ = RandomForestClassifier(verbose=1)
         self.__model__ = None
 
     def train_model(self):
-        # print("Fitting...")
-        # self.__model__.fit(
-        #     self.__train_df__[PREDICTORS], self.__train_df__[TARGET_FEATURES]
-        # )
         self.__model__ = xgb.train(
             self.__params__,
             self.__dtrain__,
@@ -119,46 +102,36 @@ class QModel:
             verbose_eval=VERBOSE_EVAL,
         )
 
-    def score_model(self, params):
-        self.__model__ = xgb.train(
+    def objective(self, params):
+        results = xgb.cv(
             params,
             self.__dtrain__,
             MAX_ROUNDS,
-            evals=self.__watchlist__,
-            early_stopping_rounds=EARLY_STOP,
-            maximize=True,
-            verbose_eval=VERBOSE_EVAL,
+            nfold=NUMBER_KFOLDS,
+            stratified=True,
+            early_stopping_rounds=20,
+            metrics=["logloss", "auc", "aucpr", "error"],
         )
-        predictions = self.__model__.predict(
-            self.__dvalid__,
-            iteration_range=range(0, self.__model__.best_iteration),
-        )
-
-        # score = precision_score(
-        #     self.__dvalid__.get_label(),
-        #     predictions,
-        #     average=None,
-        # )
-        # score = roc_auc_score(
-        #     self.__dvalid__.get_label(), predictions, multi_class="ovr"
-        # )
-        score = roc_auc_score(
-            self.__dvalid__.get_label(),
-            predictions,
-            average="weighted",
-        )
-        # print(score)
-        loss = 1 - score
-        return {"loss": loss, "status": STATUS_OK}
+        best_score = results["test-auc-mean"].max()
+        return {"loss": -best_score, "status": STATUS_OK}
 
     def tune(self, evaluations=250):
         space = {
-            "eta": hp.quniform("eta", 0.025, 0.5, 0.025),
-            "max_depth": hp.choice("max_depth", np.arange(1, 14, dtype=int)),
-            "min_child_weight": hp.quniform("min_child_weight", 1, 6, 1),
-            "subsample": hp.quniform("subsample", 0.5, 1, 0.05),
-            "gamma": hp.quniform("gamma", 0.5, 1, 0.05),
-            "colsample_bytree": hp.quniform("colsample_bytree", 0.5, 1, 0.05),
+            "max_depth": hp.choice("max_depth", np.arange(1, 20, 1, dtype=int)),
+            "eta": hp.uniform("eta", 0, 1),
+            "gamma": hp.uniform("gamma", 0, 10e1),
+            "reg_alpha": hp.uniform("reg_alpha", 10e-7, 10),
+            "reg_lambda": hp.uniform("reg_lambda", 0, 1),
+            "colsample_bytree": hp.uniform("colsample_bytree", 0.5, 1),
+            "colsample_bynode": hp.uniform("colsample_bynode", 0.5, 1),
+            "colsample_bylevel": hp.uniform("colsample_bylevel", 0.5, 1),
+            "min_child_weight": hp.choice(
+                "min_child_weight", np.arange(1, 10, 1, dtype="int")
+            ),
+            "max_delta_step": hp.choice(
+                "max_delta_step", np.arange(1, 10, 1, dtype="int")
+            ),
+            "subsample": hp.uniform("subsample", 0.5, 1),
             "eval_metric": "auc",
             "objective": "binary:logistic",
             "nthread": 12,
@@ -166,24 +139,30 @@ class QModel:
             "device": "cuda",
             "tree_method": "auto",
             "sampling_method": "gradient_based",
-            # "objective": "multi:softprob",
-            # "eval_metric": "merror",
-            "num_class": 3,
             "seed": SEED,
         }
-        best = None
-
-        best = fmin(
-            self.score_model,
-            space,
+        trials = Trials()
+        best_hyperparams = fmin(
+            fn=self.objective,
+            space=space,
             algo=tpe.suggest,
             max_evals=evaluations,
-            trials=Trials(),
+            trials=trials,
+            return_argmin=False,
+            early_stop_fn=no_progress_loss(10),
         )
-        self.__params__ = best
-        print(f"-- best pooling parameters, \n\t{best}")
 
-        return best
+        self.__params__ = best_hyperparams.copy()
+        if "eval_metric" in self.__params__:
+            self.__params__ = {
+                key: self.__params__[key]
+                for key in self.__params__
+                if key != "eval_metric"
+            }
+
+        print(f"-- best parameters, \n\t{best_hyperparams}")
+
+        return best_hyperparams
 
     def save_model(self, model_name="QModel"):
         filename = f"QModel/SavedModels/{model_name}.json"
@@ -507,20 +486,9 @@ class QModelPredict:
 
         # Process data using QDataPipeline
         qdp = QDataPipeline(file_buffer_2)
-        qdp.fill_nan()
-        qdp.trim_head()
-        qdp.interpolate()
-        qdp.compute_difference()
-        qdp.noise_filter(column="Cumulative")
-        qdp.compute_smooth(column="Dissipation", winsize=25, polyorder=1)
-        qdp.compute_smooth(column="Difference", winsize=25, polyorder=1)
-        qdp.compute_smooth(column="Resonance_Frequency", winsize=25, polyorder=1)
-        qdp.compute_gradient(column="Dissipation")
-        qdp.compute_gradient(column="Difference")
-        qdp.compute_gradient(column="Resonance_Frequency")
-
-        qdp.standardize("Cumulative")
+        qdp.preprocess(poi_file=None)
         df = qdp.get_dataframe()
+        df.set_index("Relative_time")
         dissipation = df["Dissipation"]
         # Ensure feature names match for pooling predictions
         f_names = self.__model__.feature_names
