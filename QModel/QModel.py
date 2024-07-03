@@ -10,12 +10,10 @@ from scipy.signal import (
     butter,
     filtfilt,
 )
-from sklearn.cluster import KMeans
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import roc_auc_score, precision_score, accuracy_score
 from hyperopt import STATUS_OK, fmin, hp, tpe, Trials
 from hyperopt.early_stop import no_progress_loss
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.isotonic import IsotonicRegression
 import sys
 
 np.set_printoptions(threshold=sys.maxsize)
@@ -517,27 +515,40 @@ class QModelPredict:
         results = self.__model__.predict(
             d_data,
         )
+        results = self.normalize(results)
         results = np.concatenate(
             (
                 np.zeros(df.index.min()),
                 results,
             )
         )
+        isor = IsotonicRegression(out_of_bounds="clip")
+        isor.fit(
+            results.reshape(-1, 1),
+            self.normalize(
+                np.concatenate(
+                    (
+                        np.zeros(df.index.min()),
+                        df["Cumulative_super"],
+                    )
+                )
+            ),
+        )
+        isor_preds_calibrated = isor.predict(results.reshape(-1, 1))
 
-        results = self.normalize(results)
         indices = np.where(results == 1)[0]
-
         bounds = self.compute_bounds(indices)
         plt.figure(figsize=(10, 10))
         plt.plot(results, c="r")
         plt.plot(dissipation, c="b")
-        plt.plot(self.normalize(df["Dissipation_super"]))
+        plt.plot(self.normalize(isor_preds_calibrated))
         plt.plot(self.normalize(df["Cumulative_super"]))
         for left, right in bounds:
             plt.fill_between(
                 np.arange(len(results))[left : right + 1],
                 results[left : right + 1],
                 alpha=0.7,
+                color="purple",
             )
         plt.show()
         return results, bounds
