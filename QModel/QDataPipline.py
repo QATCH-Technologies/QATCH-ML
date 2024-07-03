@@ -3,9 +3,10 @@ import os
 import csv
 import numpy as np
 import statistics as stats
-from scipy.signal import savgol_filter, butter, filtfilt, argrelextrema
+from scipy.signal import savgol_filter, butter, filtfilt, argrelextrema, detrend
 from scipy.interpolate import interp1d
 import matplotlib.pyplot as plt
+from scipy.stats import pearsonr
 from sklearn.preprocessing import StandardScaler
 
 DOWNSAMPLE_AFTER = 90
@@ -52,24 +53,40 @@ class QDataPipeline:
             ],
             inplace=True,
         )
+
+        self.trim_head()
+        self.compute_difference()
+        opt_diss, opt_res, opt_diff = 0, 0, 0
         if poi_file is not None:
             self.add_class(poi_file)
-        self.fill_nan()
-        self.trim_head()
 
-        # self.interpolate()
-        self.compute_difference()
+            # opt_diss, _ = self.optimal_smooth_values(
+            #     "Dissipation", self.__dataframe__["Class"]
+            # )
+            # opt_res, _ = self.optimal_smooth_values(
+            #     "Resonance_Frequency", self.__dataframe__["Class"]
+            # )
+            # opt_diff, _ = self.optimal_smooth_values(
+            #     "Difference", self.__dataframe__["Class"]
+            # )
 
-        smooth_win = int(0.01 * len(self.__dataframe__["Relative_time"].values))
+        smooth_win = int(0.005 * len(self.__dataframe__["Relative_time"].values))
         if smooth_win % 2 == 0:
             smooth_win += 1
         if smooth_win <= 1:
             smooth_win = 2
-        self.compute_smooth(column="Dissipation", winsize=smooth_win, polyorder=1)
-        self.compute_smooth(column="Difference", winsize=smooth_win, polyorder=1)
-        self.compute_smooth(
-            column="Resonance_Frequency", winsize=smooth_win, polyorder=1
-        )
+        opt_diss, opt_res, opt_diff = smooth_win, smooth_win, smooth_win
+        # print(f"Optimal smoothing, diff:{opt_diff}, diss:{opt_diss}, res:{opt_res}")
+
+        # self.interpolate()
+        self.super_gradient("Dissipation")
+        self.super_gradient("Difference")
+        self.super_gradient("Cumulative")
+        self.super_gradient("Resonance_Frequency")
+
+        self.compute_smooth(column="Dissipation", winsize=opt_diss, polyorder=1)
+        self.compute_smooth(column="Difference", winsize=opt_diff, polyorder=1)
+        self.compute_smooth(column="Resonance_Frequency", winsize=opt_res, polyorder=1)
 
         self.compute_gradient(column="Dissipation")
         self.compute_gradient(column="Difference")
@@ -83,13 +100,10 @@ class QDataPipeline:
         self.noise_filter("Dissipation_gradient")
         self.noise_filter("Resonance_Frequency_gradient")
 
-        self.standardize("Resonance_Frequency_gradient")
-        self.standardize("Dissipation_gradient")
-        self.standardize("Difference_gradient")
-        self.standardize("Dissipation")
-        self.standardize("Cumulative")
-        self.standardize("Resonance_Frequency")
-        self.standardize("Difference")
+        self.remove_trend("Cumulative")
+        self.remove_trend("Dissipation")
+        self.remove_trend("Resonance_Frequency")
+        self.remove_trend("Difference")
 
     def get_dataframe(self):
         """
@@ -100,15 +114,32 @@ class QDataPipeline:
         """
         return self.__dataframe__
 
+    def super_gradient(self, column):
+        name = column + "_super"
+        data = self.__dataframe__[column]
+        window = int(len(data) * 0.01)
+        if window % 2 == 0:
+            window += 1
+        if window <= 1:
+            window = 3
+
+        data = savgol_filter(x=data, window_length=window, polyorder=1, deriv=0)
+        self.__dataframe__[name] = self.normalize_data(
+            savgol_filter(x=data, window_length=window, polyorder=1, deriv=1)
+        )
+
     def standardize(self, column):
         # define standard scaler
         scaler = StandardScaler()
         df = self.__dataframe__
-
         # transform data
         self.__dataframe__[column] = scaler.fit_transform(
             np.array(df[column]).reshape(-1, 1)
         )
+
+    def remove_trend(self, column):
+        name = column + "_detrend"
+        self.__dataframe__[name] = detrend(data=self.__dataframe__[column].values)
 
     def interpolate(self, num_rows=20):
         if max(self.__dataframe__["Relative_time"].values) > 90:
@@ -211,18 +242,33 @@ class QDataPipeline:
         else:
             self.__dataframe__.to_csv(self.__filepath__, index=False)
 
+    def optimal_smooth_values(self, column, poi_points):
+        data = self.__dataframe__[column].values
+        max_corr = -1
+
+        best_window_length = None
+        value = int(len(data) * 0.01)
+        if value % 2 == 0:
+            value += 1
+        window_lengths = range(3, value, 2)  # Window lengths must be odd and at least 3
+        correlations = []
+
+        for window_length in window_lengths:
+            if window_length <= len(data):
+                smoothed_data = savgol_filter(data, window_length, polyorder=1)
+                corr, _ = pearsonr(smoothed_data, poi_points)
+                correlations.append(corr)
+                if corr > max_corr:
+                    max_corr = corr
+                    best_window_length = window_length
+        return best_window_length, max_corr
+
     def compute_smooth(self, column, winsize=5, polyorder=1):
         self.__dataframe__[column] = savgol_filter(
             self.__dataframe__[column], winsize, polyorder
         )
 
     def compute_difference(self):
-        """
-        Computes the 'Difference' column based on 'Dissipation' and 'Resonance_Frequency'.
-
-        Raises:
-            ValueError: If the required columns are not present in the DataFrame.
-        """
         # Ensure the required columns are present
         required_columns = ["Dissipation", "Resonance_Frequency"]
         if not all(column in self.__dataframe__.columns for column in required_columns):
@@ -245,11 +291,6 @@ class QDataPipeline:
         self.__dataframe__["ys_freq"] = (
             avg_resonance_frequency - self.__dataframe__["Resonance_Frequency"]
         )
-        # dynamic_factor = self.__dataframe__["ys_freq"] / self.__dataframe__["ys_diss"]
-        # mask = np.where(
-        #     dynamic_factor > 1.1,
-        # )
-        # diff_factor = np.array(dynamic_factor)[mask].mean()
         diff_factor = 1.5
         self.__dataframe__["Difference"] = (
             self.__dataframe__["ys_freq"] - diff_factor * self.__dataframe__["ys_diss"]
@@ -275,7 +316,10 @@ class QDataPipeline:
     def normalize_data(self, data):
         return (data - np.min(data)) / (np.max(data) - np.min(data))
 
-    def fill_nan(self):
+    def fill_nan(
+        self,
+    ):
+        self.__dataframe__.replace([np.inf, -np.inf], 0)
         self.__dataframe__.replace(np.nan, 0)
 
     def trim_head(self):

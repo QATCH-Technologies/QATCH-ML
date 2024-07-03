@@ -110,7 +110,8 @@ class QModel:
             nfold=NUMBER_KFOLDS,
             stratified=True,
             early_stopping_rounds=20,
-            metrics=["logloss", "auc", "aucpr", "error"],
+            metrics="auc",
+            # metrics=["logloss", "auc", "aucpr", "error"],
         )
         best_score = results["test-auc-mean"].max()
         return {"loss": -best_score, "status": STATUS_OK}
@@ -460,6 +461,24 @@ class QModelPredict:
 
         return max_indices
 
+    def compute_bounds(self, indices):
+        bounds = []
+        start = indices[0]
+        end = indices[0]
+
+        for i in range(1, len(indices)):
+            if indices[i] == indices[i - 1] + 1:
+                end = indices[i]
+            else:
+                bounds.append((start, end))
+                start = indices[i]
+                end = indices[i]
+
+        # Append the last run
+        bounds.append((start, end))
+
+        return bounds
+
     def predict(self, file_buffer):
         # Load CSV data and drop unnecessary columns
         df = pd.read_csv(file_buffer)
@@ -490,39 +509,35 @@ class QModelPredict:
         df = qdp.get_dataframe()
         df.set_index("Relative_time")
         dissipation = df["Dissipation"]
-        # Ensure feature names match for pooling predictions
         f_names = self.__model__.feature_names
-        # df.drop(
-        #     columns=[
-        #         "Relative_time",
-        #         "Resonance_Frequency",
-        #         "Dissipation",
-        #         "Date",
-        #         "Time",
-        #         "Ambient",
-        #         "Temperature",
-        #         "Peak Magnitude (RAW)",
-        #     ],
-        #     inplace=True,
-        # )
         df = df[f_names]
         d_data = xgb.DMatrix(df)
+        dissipation = self.normalize(dissipation)
 
+        results = self.__model__.predict(
+            d_data,
+        )
         results = np.concatenate(
             (
                 np.zeros(df.index.min()),
-                self.__model__.predict(
-                    d_data,
-                ),
+                results,
             )
         )
 
-        # results = self.__model__.predict(d_data)
-        # results = self.classify(results)
-        # for r in results:
-        #     print(r)
+        results = self.normalize(results)
+        indices = np.where(results == 1)[0]
+
+        bounds = self.compute_bounds(indices)
         plt.figure(figsize=(10, 10))
-        plt.plot(self.normalize(results), c="r")
-        plt.plot(self.normalize(dissipation), c="b")
+        plt.plot(results, c="r")
+        plt.plot(dissipation, c="b")
+        plt.plot(self.normalize(df["Dissipation_super"]))
+        plt.plot(self.normalize(df["Cumulative_super"]))
+        for left, right in bounds:
+            plt.fill_between(
+                np.arange(len(results))[left : right + 1],
+                results[left : right + 1],
+                alpha=0.7,
+            )
         plt.show()
-        return results
+        return results, bounds
