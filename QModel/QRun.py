@@ -1,12 +1,13 @@
 import os
 import pandas as pd
 from QModel import QModel, QModelPredict
-from QDataPipline import QDataPipeline
+from QDataPipline import QDataPipeline, QEncoder
 import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
 import seaborn as sns
 import xgboost as xgb
+from tensorflow.keras.models import load_model
 
 # pd.set_option("display.max_rows", None)
 TARGET_1 = "Class_1"
@@ -135,11 +136,7 @@ if TRAINING:
         for file in files:
             content.append(os.path.join(root, file))
 
-    # i = 0
     for filename in tqdm(content, desc="Processing Files"):
-        # if i > 50:
-        #     break
-        # i += 1
         if filename.endswith(".csv") and not filename.endswith("_poi.csv"):
             data_file = filename
             if max(pd.read_csv(data_file)["Relative_time"].values) < 90:
@@ -147,21 +144,47 @@ if TRAINING:
                 qdp = QDataPipeline(data_file)
                 qdp.preprocess(poi_file=poi_file)
 
-                indices = qdp.__dataframe__.index[
-                    qdp.__dataframe__["Class_1"] != 0
-                ].values.tolist()
-                indices.append(
-                    qdp.__dataframe__.index[
-                        qdp.__dataframe__["Class_2"] != 0
-                    ].values.tolist()
-                )
                 has_nan = qdp.__dataframe__.isna().any().any()
                 if not has_nan:
                     data_df = pd.concat([data_df, qdp.get_dataframe()])
+    encoder_df = data_df.drop(
+        columns=[TARGET_1, TARGET_2, TARGET_3, TARGET_4, "Class", TARGET_6]
+    )
+    print(encoder_df.head())
+    QEncoder(
+        encoder_df,
+        TARGET_5,
+    )
+    encoder = load_model("QModel/SavedModels/encoder.h5")
+    for filename in tqdm(content, desc="Processing Files"):
+        if filename.endswith(".csv") and not filename.endswith("_poi.csv"):
+            data_file = filename
+            if max(pd.read_csv(data_file)["Relative_time"].values) < 90:
+                poi_file = filename.replace(".csv", "_poi.csv")
+                qdp = QDataPipeline(data_file)
+                qdp.preprocess(poi_file=poi_file)
 
-    data_df.set_index("Relative_time")
-
+                # encode the train data
+                encoding = encoder.predict(
+                    qdp.__dataframe__.drop(
+                        columns=[
+                            TARGET_1,
+                            TARGET_2,
+                            TARGET_3,
+                            TARGET_4,
+                            TARGET_5,
+                            "Class",
+                            TARGET_6,
+                        ]
+                    )
+                )
+                print(encoding)
+                input()
+                has_nan = qdp.__dataframe__.isna().any().any()
+                if not has_nan:
+                    data_df = pd.concat([data_df, qdp.get_dataframe()])
     # Calculate the correlation matrix
+    data_df.set_index("Relative_time")
     corr_matrix = data_df.corr()
 
     # Plot the heatmap
@@ -171,58 +194,64 @@ if TRAINING:
     plt.show()
     print("\rCreating training dataset...Done")
 
-    qmodel_all = QModel(
-        dataset=data_df, predictors=PREDICTORS_1, target_features="Class"
-    )
-    qmodel_1 = QModel(
-        dataset=data_df, predictors=PREDICTORS_1, target_features=TARGET_1
-    )
-    qmodel_2 = QModel(
-        dataset=data_df, predictors=PREDICTORS_2, target_features=TARGET_2
-    )
-    qmodel_3 = QModel(
-        dataset=data_df, predictors=PREDICTORS_3, target_features=TARGET_3
-    )
-    qmodel_4 = QModel(
-        dataset=data_df, predictors=PREDICTORS_4, target_features=TARGET_4
-    )
+    # qmodel_all = QModel(
+    #     dataset=data_df, predictors=PREDICTORS_1, target_features="Class"
+    # )
+    # qmodel_1 = QModel(
+    #     dataset=data_df, predictors=PREDICTORS_1, target_features=TARGET_1
+    # )
+    # qmodel_2 = QModel(
+    #     dataset=data_df, predictors=PREDICTORS_2, target_features=TARGET_2
+    # )
+    # qmodel_3 = QModel(
+    #     dataset=data_df, predictors=PREDICTORS_3, target_features=TARGET_3
+    # )
+    # qmodel_4 = QModel(
+    #     dataset=data_df, predictors=PREDICTORS_4, target_features=TARGET_4
+    # )
     qmodel_5 = QModel(
         dataset=data_df, predictors=PREDICTORS_5, target_features=TARGET_5
     )
-    qmodel_6 = QModel(
-        dataset=data_df, predictors=PREDICTORS_6, target_features=TARGET_6
-    )
+    # qmodel_6 = QModel(
+    #     dataset=data_df, predictors=PREDICTORS_6, target_features=TARGET_6
+    # )
 
-    qmodel_all.tune(15)
-    qmodel_1.tune(15)
-    qmodel_2.tune(15)
-    qmodel_3.tune(15)
-    qmodel_4.tune(15)
+    # qmodel_all.tune(15)
+    # qmodel_1.tune(15)
+    # qmodel_2.tune(15)
+    # qmodel_3.tune(15)
+    # qmodel_4.tune(15)
     qmodel_5.tune(15)
-    qmodel_6.tune(15)
+    # qmodel_6.tune(15)
 
-    qmodel_all.train_model()
-    qmodel_1.train_model()
-    qmodel_2.train_model()
-    qmodel_3.train_model()
-    qmodel_4.train_model()
+    # qmodel_all.train_model()
+    # qmodel_1.train_model()
+    # qmodel_2.train_model()
+    # qmodel_3.train_model()
+    # qmodel_4.train_model()
     qmodel_5.train_model()
-    qmodel_6.train_model()
-    xgb.plot_importance(qmodel_all.__model__, importance_type="gain")
-    xgb.plot_importance(qmodel_1.__model__, importance_type="gain")
+    # qmodel_6.train_model()
+    # xgb.plot_importance(qmodel_all.__model__, importance_type="gain")
+    # plt.show()
+    # xgb.plot_importance(qmodel_1.__model__, importance_type="gain")
+    # plt.show()
     # xgb.plot_importance(qmodel_2.__model__, importance_type="gain")
+    # plt.show()
     # xgb.plot_importance(qmodel_3.__model__, importance_type="gain")
+    # plt.show()
     # xgb.plot_importance(qmodel_4.__model__, importance_type="gain")
-    xgb.plot_importance(qmodel_5.__model__, importance_type="gain")
-    xgb.plot_importance(qmodel_6.__model__, importance_type="gain")
+    # plt.show()
+    xgb.plot_importance(qmodel_5.__model__, importance_type="weight")
     plt.show()
-    qmodel_all.save_model("QModel_all")
-    qmodel_1.save_model("QModel_1")
-    qmodel_2.save_model("QModel_2")
-    qmodel_3.save_model("QModel_3")
-    qmodel_4.save_model("QModel_4")
+    # xgb.plot_importance(qmodel_6.__model__, importance_type="gain")
+    # plt.show()
+    # qmodel_all.save_model("QModel_all")
+    # qmodel_1.save_model("QModel_1")
+    # qmodel_2.save_model("QModel_2")
+    # qmodel_3.save_model("QModel_3")
+    # qmodel_4.save_model("QModel_4")
     qmodel_5.save_model("QModel_5")
-    qmodel_6.save_model("QModel_6")
+    # qmodel_6.save_model("QModel_6")
 ERROR = 5
 correct = 0
 incorrect = 0

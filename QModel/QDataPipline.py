@@ -2,37 +2,128 @@ import pandas as pd
 import os
 import csv
 import numpy as np
-import statistics as stats
-from scipy.signal import savgol_filter, butter, filtfilt, argrelextrema, detrend
-from scipy.interpolate import interp1d
+from scipy.signal import savgol_filter, butter, filtfilt, detrend
 import matplotlib.pyplot as plt
 from scipy.stats import pearsonr
 from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+
+plt.style.use("ggplot")
+import tensorflow as tf
+from tensorflow import data
+from tensorflow.keras.models import Model, Sequential
+from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras.metrics import mae
+from tensorflow.keras import layers
+from tensorflow import keras
+from sklearn.metrics import (
+    accuracy_score,
+    recall_score,
+    precision_score,
+    confusion_matrix,
+    f1_score,
+    classification_report,
+)
+from matplotlib import pyplot
 
 DOWNSAMPLE_AFTER = 90
 DOWNSAMPLE_COUNT = 20
 DOWNSAMPLE_THRESHOLD = 0.6
 
 
+class QEncoder(Model):
+    def __init__(self, dataset, target):
+        super(QEncoder, self).__init__()
+        self.y = dataset[target]
+        self.X = dataset.drop(columns=[target])
+
+        self.input_dim = self.X.shape[-1]
+        self.latent_dim = 32
+
+        self.encoder = tf.keras.Sequential(
+            [
+                layers.Input(shape=self.input_dim),
+                layers.Reshape((self.input_dim, 1)),  # Reshape to 3D for Conv1D
+                layers.Conv1D(128, 3, strides=1, activation="relu", padding="same"),
+                layers.BatchNormalization(),
+                layers.MaxPooling1D(2, padding="same"),
+                layers.Conv1D(128, 3, strides=1, activation="relu", padding="same"),
+                layers.BatchNormalization(),
+                layers.MaxPooling1D(2, padding="same"),
+                layers.Conv1D(
+                    self.latent_dim, 3, strides=1, activation="relu", padding="same"
+                ),
+                layers.BatchNormalization(),
+                layers.MaxPooling1D(2, padding="same"),
+            ]
+        )
+        self.decoder = tf.keras.Sequential(
+            [
+                layers.Conv1DTranspose(
+                    self.latent_dim, 3, strides=1, activation="relu", padding="same"
+                ),
+                #             layers.UpSampling1D(2),
+                layers.BatchNormalization(),
+                layers.Conv1DTranspose(
+                    128, 3, strides=1, activation="relu", padding="same"
+                ),
+                #             layers.UpSampling1D(2),
+                layers.BatchNormalization(),
+                layers.Conv1DTranspose(
+                    128, 3, strides=1, activation="relu", padding="same"
+                ),
+                #             layers.UpSampling1D(2),
+                layers.BatchNormalization(),
+                layers.Flatten(),
+                layers.Dense(self.input_dim),
+            ]
+        )
+        input_dim = self.X.shape[-1]
+        latent_dim = 32
+
+        model = QEncoder(input_dim, latent_dim)
+        model.build((None, input_dim))
+        model.compile(
+            optimizer=tf.keras.optimizers.Adam(learning_rate=0.01), loss="mae"
+        )
+        model.summary()
+        epochs = 100
+        batch_size = 128
+        early_stopping = EarlyStopping(
+            patience=10, min_delta=1e-3, monitor="val_loss", restore_best_weights=True
+        )
+
+        history = model.fit(
+            self.X,
+            self.y,
+            epochs=epochs,
+            batch_size=batch_size,
+            validation_split=0.1,
+            callbacks=[early_stopping],
+        )
+        plt.plot(history.history["loss"], label="Training loss")
+        plt.plot(history.history["val_loss"], label="Validation loss", ls="--")
+        plt.legend(
+            shadow=True, frameon=True, facecolor="inherit", loc="best", fontsize=9
+        )
+        plt.title("Training loss")
+        plt.ylabel("Loss")
+        plt.xlabel("Epoch")
+        plt.show()
+
+    def call(self, X):
+        encoded = self.encoder(X)
+        decoded = self.decoder(encoded)
+        return decoded
+
+    def predict(self, model, X):
+        pred = model.predict(X, verbose=False)
+        loss = mae(pred, X)
+        return pred, loss
+
+
 class QDataPipeline:
-    """
-    A class to handle data preprocessing for machine learning models.
-
-    Attributes:
-        __filepath__ (str): Path to the CSV file containing the data.
-        __dataframe__ (DataFrame): DataFrame containing the loaded data.
-    """
-
     def __init__(self, filepath=None):
-        """
-        Initializes the QDataPipeline with the given file path.
-
-        Args:
-            filepath (str, optional): Path to the input CSV file. Defaults to None.
-
-        Raises:
-            ValueError: If no file path is provided.
-        """
         if filepath is not None:
             self.__filepath__ = filepath
             self.__dataframe__ = pd.read_csv(self.__filepath__)
