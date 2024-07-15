@@ -13,7 +13,6 @@ from scipy.signal import (
 from sklearn.model_selection import train_test_split
 from hyperopt import STATUS_OK, fmin, hp, tpe, Trials
 from hyperopt.early_stop import no_progress_loss
-from sklearn.isotonic import IsotonicRegression
 import sys
 
 np.set_printoptions(threshold=sys.maxsize)
@@ -522,27 +521,9 @@ class QModelPredict:
                 results,
             )
         )
-        # isor = IsotonicRegression(out_of_bounds="clip")
-        # isor.fit(
-        #     results.reshape(-1, 1),
-        #     self.normalize(
-        #         np.concatenate(
-        #             (
-        #                 np.zeros(df.index.min()),
-        #                 df["Cumulative_super"],
-        #             )
-        #         )
-        #     ),
-        # )
-        # isor_preds_calibrated = isor.predict(results.reshape(-1, 1))
 
         indices = np.where(results == 1)[0]
         bounds = self.compute_bounds(indices)
-        plt.figure(figsize=(10, 10))
-        plt.plot(results, c="r")
-        plt.plot(dissipation, c="b")
-        # plt.plot(self.normalize(isor_preds_calibrated))
-        # plt.plot(self.normalize(df["Cumulative_super"]))
         for left, right in bounds:
             plt.fill_between(
                 np.arange(len(results))[left : right + 1],
