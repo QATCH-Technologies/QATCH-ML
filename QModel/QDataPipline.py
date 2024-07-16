@@ -369,9 +369,9 @@ class QDataPipeline:
             self.__dataframe__["Class_6"] = 0
             for poi, idx in enumerate(indices):
                 self.__dataframe__.loc[idx, "Class_" + str(poi + 1)] = 1
-            self.__dataframe__["Class"] = 0
-            for poi, idx in enumerate(indices):
-                self.__dataframe__.loc[idx, "Class"] = poi + 1
+            # self.__dataframe__["Class"] = 0
+            # for poi, idx in enumerate(indices):
+            #     self.__dataframe__.loc[idx, "Class"] = poi + 1
         else:
             raise ValueError(
                 f"[QDataPipeline.add_class] POI reference file does not exist at {poi_filepath}."

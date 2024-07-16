@@ -15,10 +15,10 @@ import time
 
 parameter_space = {
     "hidden_layer_sizes": [(50, 50, 50), (150, 100, 50), (100,)],
-    "activation": ["logistic", "tanh", "relu"],
-    "solver": ["sgd", "adam", "lbfgs"],
-    "alpha": [0.00001, 0.0001, 0.05],
-    "learning_rate": ["constant", "adaptive", "invscaling"],
+    "activation": ["logistic", "relu"],
+    "solver": ["sgd", "adam"],
+    "alpha": [0.0001, 0.05],
+    "learning_rate": ["constant", "adaptive"],
 }
 # pd.set_option("display.max_rows", None)
 TARGET_ALL = "Class"
@@ -99,35 +99,21 @@ PREDICTORS_4 = [
 ]
 
 PREDICTORS_5 = [
-    # "Relative_time",
-    # "Dissipation",
-    # "Cumulative",
-    # "Difference",
-    # "Resonance_Frequency_gradient",
-    # "Difference_gradient",
-    # "Dissipation_gradient",
-    # "Difference_detrend",
-    # "Resonance_Frequency_detrend",
-    # "Cumulative_detrend",
-    # "Dissipation_detrend",
-    # "Difference_super",
-    # "Resonance_Frequency_super",
-    # "Cumulative_super",
-    # "Dissipation_super",
-    "LDA_1",
-    "LDA_2",
-    "LDA_3",
-    "LDA_4",
-    "LDA_5",
-    "LDA_6",
-    "LDA_all",
-    "QDA_1",
-    "QDA_2",
-    "QDA_3",
-    "QDA_4",
-    "QDA_5",
-    "QDA_6",
-    "QDA_all",
+    "Relative_time",
+    "Dissipation",
+    "Cumulative",
+    "Difference",
+    "Resonance_Frequency_gradient",
+    "Difference_gradient",
+    "Dissipation_gradient",
+    "Difference_detrend",
+    "Resonance_Frequency_detrend",
+    "Cumulative_detrend",
+    "Dissipation_detrend",
+    "Difference_super",
+    "Resonance_Frequency_super",
+    "Cumulative_super",
+    "Dissipation_super",
 ]
 PREDICTORS_6 = [
     "Relative_time",
@@ -159,7 +145,6 @@ NN = True
 XGB = True
 PATH = "content/training_data_with_points"
 data_df = pd.DataFrame()
-pca_df = pd.DataFrame()
 content = []
 
 for root, dirs, files in os.walk(PATH):
@@ -173,12 +158,12 @@ if NN:
     mlp_4 = MLPClassifier(max_iter=100)
     mlp_5 = MLPClassifier(max_iter=100)
     mlp_6 = MLPClassifier(max_iter=100)
-    clf_1 = GridSearchCV(mlp_1, parameter_space, n_jobs=-1, cv=3, verbose=2)
-    clf_2 = GridSearchCV(mlp_2, parameter_space, n_jobs=-1, cv=3, verbose=2)
-    clf_3 = GridSearchCV(mlp_3, parameter_space, n_jobs=-1, cv=3, verbose=2)
-    clf_4 = GridSearchCV(mlp_4, parameter_space, n_jobs=-1, cv=3, verbose=2)
-    clf_5 = GridSearchCV(mlp_5, parameter_space, n_jobs=-1, cv=3, verbose=2)
-    clf_6 = GridSearchCV(mlp_6, parameter_space, n_jobs=-1, cv=3, verbose=2)
+    clf_1 = GridSearchCV(mlp_1, parameter_space, n_jobs=-1, verbose=2)
+    clf_2 = GridSearchCV(mlp_2, parameter_space, n_jobs=-1, verbose=2)
+    clf_3 = GridSearchCV(mlp_3, parameter_space, n_jobs=-1, verbose=2)
+    clf_4 = GridSearchCV(mlp_4, parameter_space, n_jobs=-1, verbose=2)
+    clf_5 = GridSearchCV(mlp_5, parameter_space, n_jobs=-1, verbose=2)
+    clf_6 = GridSearchCV(mlp_6, parameter_space, n_jobs=-1, verbose=2)
     for filename in tqdm(content, desc="<<Processing Files>>"):
         if count > 25:
             break
