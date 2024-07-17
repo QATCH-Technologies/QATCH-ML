@@ -16,9 +16,14 @@ import os
 from tensorflow import keras
 from keras_tuner import HyperModel
 from keras_tuner import RandomSearch
-
+from keras.callbacks import EarlyStopping
+from imblearn.under_sampling import NearMiss, RandomUnderSampler
+from imblearn.over_sampling import  RandomOverSampler, SMOTE
+from imblearn.pipeline import Pipeline
 from tensorflow.python.client import device_lib
-
+from sklearn.preprocessing import LabelEncoder, OneHotEncoder
+from collections import Counter
+from matplotlib import pyplot
 
 def get_available_devices():
     local_device_protos = device_lib.list_local_devices()
@@ -54,34 +59,34 @@ FEATURES = [
     "Difference_detrend",
 ]
 TARGETS = ["Class_1", "Class_2", "Class_3", "Class_4", "Class_5", "Class_6"]
-
+CLASS = "Class"
 
 class MyHyperModel(HyperModel):
     def build(self, hp):
+        
+        learning_rate = hp.Float('learning_rate', min_value=1e-4, max_value=1e-2, sampling='LOG')
+        first_layer_units = hp.Int('first_layer_units', min_value=32, max_value=512, step=32)
+
         model = models.Sequential()
-
-        # Tune the number of layers
-        for i in range(hp.Int("num_layers", 1, 4)):
-            model.add(
-                keras.layers.Dense(
-                    input_dim=len(FEATURES),
-                    units=hp.Int(f"units_{i}", min_value=32, max_value=512, step=32),
-                    activation="relu",
-                )
-            )
-
-        # add the output layer
+        model.add(keras.layers.Dense(units=first_layer_units, activation='relu', input_shape=len(FEATURES)))
         model.add(layers.Dense(input_dim=len(FEATURES), units=1, activation="sigmoid"))
 
         # Tune the learning rate for the optimizer
         hp_learning_rate = hp.Choice("learning_rate", values=[1e-2, 1e-3, 1e-4])
 
         model.compile(
-            optimizer=keras.optimizers.Adam(learning_rate=hp_learning_rate),
-            loss="binary_crossentropy",
-            metrics=[
-                tfa.metrics.F1Score(num_classes=1, threshold=0.5),
-            ],
+            optimizer=keras.optimizers.Adam(learning_rate=learning_rate),
+            loss=hp.Choice('loss', values=['binary_crossentropy', 'hinge']),
+             metrics=[
+                hp.Choice('metrics', values=[
+                    'accuracy', 
+                    tf.keras.metrics.AUC(name='auc'),
+                    tf.keras.metrics.AUC(name='roc'),  
+                    tf.keras.metrics.Precision(name='precision'),  
+                    tf.keras.metrics.Recall(name='recall'),  
+                    tf.keras.metrics.TrueNegatives(name='tnr')  
+                ])
+            ]
         )
         return model
 
@@ -129,11 +134,11 @@ def evaluate_on_dir(test_dir, model, target):
                 if not has_nan:
                     predictions = []
                     predictions = model.predict(qdp.__dataframe__)
-                    print(predictions)
                     plt.figure()
                     plt.plot(
                         normalize(qdp.__dataframe__["Dissipation"]), label="Dissipation"
                     )
+                    plt.plot(normalize(predictions), linestyle='--', label="Predictions")
                     plt.plot(normalize(predictions), label=target)
                     plt.axvline(
                         x=actual_indices[0],
@@ -161,7 +166,7 @@ def load_and_split_data(data_dir):
             content.append(os.path.join(root, file))
     for filename in tqdm(content, desc="<<Processing Files>>"):
         if filename.endswith(".csv") and not filename.endswith("_poi.csv"):
-            # if count > 100:
+            # if count > 25:
             #     break
             data_file = filename
             if max(pd.read_csv(data_file)["Relative_time"].values) < 90:
@@ -173,8 +178,17 @@ def load_and_split_data(data_dir):
                 if not has_nan:
                     count += 1
                     data_df = pd.concat([data_df, qdp.get_dataframe()])
-    y = data_df[TARGETS[4]]
+    
+    
+    y = data_df[TARGETS[4]].values
     X = data_df.drop(columns=TARGETS)
+    
+    over = SMOTE()
+    under = RandomUnderSampler()
+    steps = [('o', over), ('u', under)]
+    pipeline = Pipeline(steps=steps)
+    X, y = pipeline.fit_resample(X, y)
+
     train_X, test_X, train_y, test_y = train_test_split(
         X, y, test_size=0.2, random_state=42
     )
@@ -202,22 +216,46 @@ print("[INFO] accessing data directory...")
 # model = tuner.hypermodel.build(best_hps)
 # model.summary()
 # train the parameters
-
+initial_bias = np.log([np.sum(train_y == 1)/np.sum(train_y == 0)])
 model = models.Sequential()
 
-model.add(layers.Dense(input_dim=len(FEATURES), units=100, activation="relu"))
-model.add(layers.Dense(input_dim=len(FEATURES), units=50, activation="relu"))
+model.add(layers.Dense(input_dim=len(FEATURES), kernel_initializer='he_uniform', units=64, activation="relu", use_bias=True, bias_initializer=tf.keras.initializers.Constant(initial_bias)))
+# model.add(layers.Dense(input_dim=len(FEATURES), units=64, activation="relu"))
+# model.add(layers.Dense(input_dim=len(FEATURES), units=64, activation="relu"))
 # add the output layer
 model.add(layers.Dense(input_dim=len(FEATURES), units=1, activation="sigmoid"))
 model.compile(
     optimizer="adam",
     loss="binary_crossentropy",
     metrics=[
-        tfa.metrics.F1Score(num_classes=1, threshold=0.5),
+        tf.metrics.AUC(curve="PR", num_labels=1, multi_label=True)
+        # tfa.metrics.F1Score(num_classes=1, threshold=0.5)
     ],
 )
-history = model.fit(train_X, train_y, epochs=epochs, batch_size=batch_size)
-evaluate_on_dir("content/VOYAGER_PROD_DATA", model, "Multi-Class")
+overfitCallback = EarlyStopping(monitor='loss', min_delta=0.01, patience=20)
+history = model.fit(train_X, train_y, epochs=epochs, batch_size=batch_size, callbacks=[overfitCallback], validation_data=(test_X, test_y))
+
+# Plot the training and validation accuracy and loss
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+
+# Plot training & validation accuracy values
+ax1.plot(history.history['auc'])
+ax1.plot(history.history['val_auc'])
+ax1.set_title('Model accuracy')
+ax1.set_xlabel('Epoch')
+ax1.set_ylabel('AUC')
+ax1.legend(['Train', 'Validation'], loc='upper left')
+
+# Plot training & validation loss values
+ax2.plot(history.history['loss'])
+ax2.plot(history.history['val_loss'])
+ax2.set_title('Model loss')
+ax2.set_xlabel('Epoch')
+ax2.set_ylabel('Loss')
+ax2.legend(['Train', 'Validation'], loc='upper left')
+
+plt.show()
+evaluate_on_dir("content/VOYAGER_PROD_DATA", model, "Target 5")
 # evaluate accuracy
 train_acc = model.evaluate(train_X, train_y, batch_size=32)[1]
 test_acc = model.evaluate(test_X, test_y, batch_size=32)[1]

@@ -14,6 +14,11 @@ from sklearn.model_selection import train_test_split
 from hyperopt import STATUS_OK, fmin, hp, tpe, Trials
 from hyperopt.early_stop import no_progress_loss
 import sys
+import multiprocessing
+
+# Get the number of threads
+NUM_THREADS = multiprocessing.cpu_count()
+print(f"[INFO] Available {NUM_THREADS} threads.")
 
 np.set_printoptions(threshold=sys.maxsize)
 try:
@@ -51,7 +56,7 @@ class QModel:
             "subsample": 0.6,
             "colsample_bytree": 0.75,
             "gamma": 0.8,
-            "nthread": 12,
+            "nthread": NUM_THREADS,
             "booster": "gbtree",
             "device": "cuda",
             "tree_method": "auto",
@@ -108,10 +113,9 @@ class QModel:
             stratified=True,
             early_stopping_rounds=20,
             metrics="auc",
-            # metrics=["logloss", "auc", "aucpr", "error"],
         )
         best_score = results["test-auc-mean"].max()
-        return {"loss": -best_score, "status": STATUS_OK}
+        return {"auc": best_score, "status": STATUS_OK}
 
     def tune(self, evaluations=250):
         space = {
@@ -132,7 +136,7 @@ class QModel:
             "subsample": hp.uniform("subsample", 0.5, 1),
             "eval_metric": "auc",
             "objective": "binary:logistic",
-            "nthread": 12,
+            "nthread": NUM_THREADS,
             "booster": "gbtree",
             "device": "cuda",
             "tree_method": "auto",
@@ -524,12 +528,4 @@ class QModelPredict:
 
         indices = np.where(results == 1)[0]
         bounds = self.compute_bounds(indices)
-        for left, right in bounds:
-            plt.fill_between(
-                np.arange(len(results))[left : right + 1],
-                results[left : right + 1],
-                alpha=0.7,
-                color="purple",
-            )
-        plt.show()
         return results, bounds

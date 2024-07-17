@@ -360,7 +360,6 @@ class QDataPipeline:
             with open(poi_filepath, "r") as poi_csv:
                 reader = csv.reader(poi_csv)
                 indices = [int(row[0]) - 2 for row in reader]
-
             self.__dataframe__["Class_1"] = 0
             self.__dataframe__["Class_2"] = 0
             self.__dataframe__["Class_3"] = 0
