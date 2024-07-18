@@ -15,6 +15,7 @@ from hyperopt import STATUS_OK, fmin, hp, tpe, Trials
 from hyperopt.early_stop import no_progress_loss
 import sys
 import multiprocessing
+from sklearn.preprocessing import RobustScaler
 
 # Get the number of threads
 NUM_THREADS = multiprocessing.cpu_count()
@@ -112,7 +113,7 @@ class QModel:
             nfold=NUMBER_KFOLDS,
             stratified=True,
             early_stopping_rounds=20,
-            metrics="auc",
+            metrics=["auc", 'aucpr'],
         )
         best_score = results["test-auc-mean"].max()
         return {"auc": best_score, "status": STATUS_OK}
@@ -490,7 +491,7 @@ class QModelPredict:
             )
 
         df = df.drop(columns=columns_to_drop)
-
+        
         file_buffer_2 = file_buffer
         if not isinstance(file_buffer_2, str):
             if hasattr(file_buffer_2, "seekable") and file_buffer_2.seekable():
@@ -508,12 +509,10 @@ class QModelPredict:
         qdp = QDataPipeline(file_buffer_2)
         qdp.preprocess(poi_file=None)
         df = qdp.get_dataframe()
-        df.set_index("Relative_time")
-        dissipation = df["Dissipation"]
+        
         f_names = self.__model__.feature_names
         df = df[f_names]
         d_data = xgb.DMatrix(df)
-        dissipation = self.normalize(dissipation)
 
         results = self.__model__.predict(
             d_data,

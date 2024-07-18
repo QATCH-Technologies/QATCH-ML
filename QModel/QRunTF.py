@@ -24,6 +24,11 @@ from tensorflow.python.client import device_lib
 from sklearn.preprocessing import LabelEncoder, OneHotEncoder
 from collections import Counter
 from matplotlib import pyplot
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
+from sklearn.preprocessing import RobustScaler
+from tensorflow.keras.layers import Input, Dense, BatchNormalization, LeakyReLU
+from tensorflow.keras.models import Model
 
 def get_available_devices():
     local_device_protos = device_lib.list_local_devices()
@@ -36,7 +41,7 @@ hidden_units = 150  # how many neurons in the hidden layer
 activation = "relu"  # activation function for hidden layer
 l2 = 0.01  # regularization - how much we penalize large parameter values
 learning_rate = 0.01  # how big our steps are in gradient descent
-epochs = 5  # how many epochs to train for
+epochs = 10000000  # how many epochs to train for
 batch_size = 128  # how many samples to use for each gradient descent update
 
 CONTENT_PATH = "content/training_data_with_points"
@@ -132,12 +137,15 @@ def evaluate_on_dir(test_dir, model, target):
                 qdp.__dataframe__ = qdp.__dataframe__.drop(columns=["Class", "Pooling"])
                 has_nan = qdp.__dataframe__.isna().any().any()
                 if not has_nan:
-                    predictions = []
-                    predictions = model.predict(qdp.__dataframe__)
                     plt.figure()
                     plt.plot(
                         normalize(qdp.__dataframe__["Dissipation"]), label="Dissipation"
                     )
+
+                    predictions = []
+                    qdp.__dataframe__ = RobustScaler().fit_transform(qdp.__dataframe__)
+                    predictions = model.predict(qdp.__dataframe__)
+
                     plt.plot(normalize(predictions), linestyle='--', label="Predictions")
                     plt.plot(normalize(predictions), label=target)
                     plt.axvline(
@@ -154,7 +162,51 @@ def evaluate_on_dir(test_dir, model, target):
                         )
                     plt.legend()
                     plt.show()
+def tsne_view(X, y):
+    # Perform t-SNE to reduce to 2 dimensions
+    tsne = TSNE(n_components=2, random_state=42)
+    X_tsne = tsne.fit_transform(X)
 
+    # Create scatter plot
+    plt.figure(figsize=(8, 6))
+    scatter = plt.scatter(X_tsne[:, 0], X_tsne[:, 1], c=y, cmap='viridis', edgecolor='k')
+    plt.title('t-SNE')
+    plt.xlabel('Dimension 1')
+    plt.ylabel('Dimension 2')
+    plt.colorbar(scatter, label='Target Value')
+    plt.show()
+
+def pca_view(X, y):
+    print('[INFO] building PCA')
+    pca = PCA(n_components=2)
+    X_pca = pca.fit_transform(X)
+    plt.figure(figsize=(8, 6))
+    scatter = plt.scatter(X_pca[:, 0], X_pca[:, 1], c=y, cmap='viridis', edgecolor='k')
+    plt.title('PCA')
+    plt.xlabel('Principal Component 1')
+    plt.ylabel('Principal Component 2')
+    plt.colorbar(scatter, label='Target Value')
+    plt.show()
+
+
+
+def resample(data, target):
+    print(f'[INFO] resampling {target}')
+    y = data[target].values
+    X = data.drop(columns=TARGETS)
+    
+
+    under = RandomUnderSampler(sampling_strategy='majority')
+    steps = [('under_sample', under)]
+    pipeline = Pipeline(steps=steps)
+    
+    X, y = pipeline.fit_resample(X, y)
+
+    X = RobustScaler().fit_transform(X)
+
+    tsne_view(X, y)
+    pca_view(X, y)
+    return X, y
 
 def load_and_split_data(data_dir):
     count = 0
@@ -182,13 +234,8 @@ def load_and_split_data(data_dir):
     
     y = data_df[TARGETS[4]].values
     X = data_df.drop(columns=TARGETS)
-    
-    over = SMOTE()
-    under = RandomUnderSampler()
-    steps = [('o', over), ('u', under)]
-    pipeline = Pipeline(steps=steps)
-    X, y = pipeline.fit_resample(X, y)
 
+    X, y = resample(data_df, TARGETS[4])
     train_X, test_X, train_y, test_y = train_test_split(
         X, y, test_size=0.2, random_state=42
     )
@@ -200,51 +247,42 @@ def load_and_split_data(data_dir):
 print("[INFO] accessing data directory...")
 
 ((train_X, train_y), (test_X, test_y)) = load_and_split_data(CONTENT_PATH)
+n_inputs = len(FEATURES)
 
-# tuner = RandomSearch(
-#     MyHyperModel(),
-#     objective="val_accuracy",
-#     max_trials=5,  # Number of hyperparameter combinations to try
-#     executions_per_trial=3,  # Number of models to be built and evaluated for each trial
-#     directory="QModel/SavedModels",
-#     project_name="pt5tuning",
-# )
+visible = Input(shape=(n_inputs,))
+# encoder level 1
+e = Dense(n_inputs*2)(visible)
+e = BatchNormalization()(e)
+e = LeakyReLU()(e)
+# encoder level 2
+e = Dense(n_inputs)(e)
+e = BatchNormalization()(e)
+e = LeakyReLU()(e)
+# bottleneck
+n_bottleneck = n_inputs
+bottleneck = Dense(n_bottleneck)(e)
 
-# tuner.search(train_X, train_y, epochs=10, validation_data=(test_X, test_y))
-# best_hps = tuner.get_best_hyperparameters(num_trials=1)[0]
 
-# model = tuner.hypermodel.build(best_hps)
-# model.summary()
-# train the parameters
-initial_bias = np.log([np.sum(train_y == 1)/np.sum(train_y == 0)])
-model = models.Sequential()
+# define decoder, level 1
+d = Dense(n_inputs)(bottleneck)
+d = BatchNormalization()(d)
+d = LeakyReLU()(d)
+# decoder level 2
+d = Dense(n_inputs*2)(d)
+d = BatchNormalization()(d)
+d = LeakyReLU()(d)
+# output layer
+output = Dense(n_inputs, activation='linear')(d)
+# define autoencoder model
+model = Model(inputs=visible, outputs=output)
 
-model.add(layers.Dense(input_dim=len(FEATURES), kernel_initializer='he_uniform', units=64, activation="relu", use_bias=True, bias_initializer=tf.keras.initializers.Constant(initial_bias)))
-# model.add(layers.Dense(input_dim=len(FEATURES), units=64, activation="relu"))
-# model.add(layers.Dense(input_dim=len(FEATURES), units=64, activation="relu"))
-# add the output layer
-model.add(layers.Dense(input_dim=len(FEATURES), units=1, activation="sigmoid"))
-model.compile(
-    optimizer="adam",
-    loss="binary_crossentropy",
-    metrics=[
-        tf.metrics.AUC(curve="PR", num_labels=1, multi_label=True)
-        # tfa.metrics.F1Score(num_classes=1, threshold=0.5)
-    ],
-)
-overfitCallback = EarlyStopping(monitor='loss', min_delta=0.01, patience=20)
+model.compile(optimizer='adam', loss='mse')
+
+overfitCallback = EarlyStopping(monitor='loss', min_delta=0.001, patience=20)
 history = model.fit(train_X, train_y, epochs=epochs, batch_size=batch_size, callbacks=[overfitCallback], validation_data=(test_X, test_y))
 
 # Plot the training and validation accuracy and loss
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
-
-# Plot training & validation accuracy values
-ax1.plot(history.history['auc'])
-ax1.plot(history.history['val_auc'])
-ax1.set_title('Model accuracy')
-ax1.set_xlabel('Epoch')
-ax1.set_ylabel('AUC')
-ax1.legend(['Train', 'Validation'], loc='upper left')
 
 # Plot training & validation loss values
 ax2.plot(history.history['loss'])
