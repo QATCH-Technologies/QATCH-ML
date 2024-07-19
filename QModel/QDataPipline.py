@@ -6,8 +6,7 @@ from scipy.signal import savgol_filter, butter, filtfilt, detrend
 import matplotlib.pyplot as plt
 from scipy.stats import pearsonr
 from sklearn.preprocessing import StandardScaler
-import joblib
-from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from ModelData import ModelData
 
 DOWNSAMPLE_AFTER = 90
 DOWNSAMPLE_COUNT = 20
@@ -23,12 +22,13 @@ TARGET_6 = "Class_6"
 
 
 class QDataPipeline:
-    def __init__(self, filepath=None):
+    def __init__(self, filepath=None, multi_class=False):
         if filepath is not None:
             self.__filepath__ = filepath
             self.__dataframe__ = pd.read_csv(self.__filepath__)
             self.pca_df = pd.DataFrame()
             self.__interpolation_size__ = 0
+            self.__multi_class__ = multi_class
         else:
             raise ValueError(
                 f"[QDataPipeline.__init__] filepath required, found {filepath}."
@@ -86,7 +86,22 @@ class QDataPipeline:
         self.remove_trend("Dissipation")
         self.remove_trend("Resonance_Frequency")
         self.remove_trend("Difference")
-        self.__dataframe__.reset_index()
+        emp_predictor = ModelData()
+        emp_result = emp_predictor.IdentifyPoints(data_path=self.__filepath__)
+        emp_result = [
+            item if isinstance(item, int) else [val[0] for val in item]
+            for item in emp_result
+            if isinstance(item, (int, list))
+        ]
+        emp_result = [
+            item
+            for sublist in emp_result
+            for item in (sublist if isinstance(sublist, list) else [sublist])
+        ]
+        self.__dataframe__["EMP"] = 0
+        for idx in emp_result:
+            self.__dataframe__.loc[idx, "EMP"] = 1
+        # self.__dataframe__.reset_index()
 
     def apply_lda(self, target):
         pass
@@ -360,17 +375,20 @@ class QDataPipeline:
             with open(poi_filepath, "r") as poi_csv:
                 reader = csv.reader(poi_csv)
                 indices = [int(row[0]) - 2 for row in reader]
-            self.__dataframe__["Class_1"] = 0
-            self.__dataframe__["Class_2"] = 0
-            self.__dataframe__["Class_3"] = 0
-            self.__dataframe__["Class_4"] = 0
-            self.__dataframe__["Class_5"] = 0
-            self.__dataframe__["Class_6"] = 0
-            for poi, idx in enumerate(indices):
-                self.__dataframe__.loc[idx, "Class_" + str(poi + 1)] = 1
-            # self.__dataframe__["Class"] = 0
-            # for poi, idx in enumerate(indices):
-            #     self.__dataframe__.loc[idx, "Class"] = poi + 1
+            if self.__multi_class__:
+                self.__dataframe__["Class"] = 0
+                for poi, idx in enumerate(indices):
+                    self.__dataframe__.loc[idx, "Class"] = poi + 1
+            else:
+                self.__dataframe__["Class_1"] = 0
+                self.__dataframe__["Class_2"] = 0
+                self.__dataframe__["Class_3"] = 0
+                self.__dataframe__["Class_4"] = 0
+                self.__dataframe__["Class_5"] = 0
+                self.__dataframe__["Class_6"] = 0
+                for poi, idx in enumerate(indices):
+                    self.__dataframe__.loc[idx, "Class_" + str(poi + 1)] = 1
+
         else:
             raise ValueError(
                 f"[QDataPipeline.add_class] POI reference file does not exist at {poi_filepath}."

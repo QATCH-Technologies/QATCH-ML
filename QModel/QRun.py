@@ -14,7 +14,7 @@ from imblearn.pipeline import Pipeline
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from sklearn.preprocessing import RobustScaler
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.model_selection import train_test_split
 
 
@@ -38,6 +38,7 @@ FEATURES = [
     "Dissipation_detrend",
     "Resonance_Frequency_detrend",
     "Difference_detrend",
+    "EMP",
 ]
 XGB_TARGETS = ["Class_1", "Class_2", "Class_3", "Class_4", "Class_5", "Class_6"]
 META_TARGETS = ["Class_1", "Class_2", "Class_3", "Class_4", "Class_5", "Class_6"]
@@ -93,15 +94,15 @@ def resample_arr(data, target):
 
     X = RobustScaler().fit_transform(X)
 
-    tsne_view(X, y)
-    pca_view(X, y)
+    # tsne_view(X, y)
+    # pca_view(X, y)
     return X, y
 
 
-def resample_df(data, target):
+def resample_df(data, target, droppable):
     print(f"[INFO] resampling df {target}")
     y = data[target].values
-    X = data.drop(columns=XGB_TARGETS)
+    X = data.drop(columns=droppable)
 
     over = SMOTE()
     under = RandomUnderSampler()
@@ -110,7 +111,7 @@ def resample_df(data, target):
 
     X, y = pipeline.fit_resample(X, y)
 
-    resampled_df = pd.DataFrame(X, columns=data.drop(columns=XGB_TARGETS).columns)
+    resampled_df = pd.DataFrame(X, columns=data.drop(columns=droppable).columns)
     resampled_df[target] = y
 
     return resampled_df
@@ -124,7 +125,7 @@ def load_content(data_dir):
             content.append(os.path.join(root, file))
 
     train_content, test_content = train_test_split(
-        content, test_size=0.5, random_state=42
+        content, test_size=0.5, random_state=42, shuffle=True
     )
     return train_content, test_content
 
@@ -220,8 +221,10 @@ def meta_model_builder(dataset):
                 data_df = pd.concat([data_df, predictions])
 
     for target in META_TARGETS:
-        meta_clf = RandomForestClassifier()
-        meta_X, meta_y = resample_arr(data_df, target)
+        meta_clf = RandomForestRegressor()
+        meta_y = data_df[target]
+        meta_X = data_df.drop(columns=META_TARGETS)
+        # meta_X, meta_y = resample_arr(data_df, target)
         meta_clf.fit(meta_X, meta_y)
         yield meta_clf
 

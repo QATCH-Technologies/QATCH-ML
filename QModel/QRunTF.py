@@ -18,7 +18,7 @@ from keras_tuner import HyperModel
 from keras_tuner import RandomSearch
 from keras.callbacks import EarlyStopping
 from imblearn.under_sampling import NearMiss, RandomUnderSampler
-from imblearn.over_sampling import  RandomOverSampler, SMOTE
+from imblearn.over_sampling import RandomOverSampler, SMOTE
 from imblearn.pipeline import Pipeline
 from tensorflow.python.client import device_lib
 from sklearn.preprocessing import LabelEncoder, OneHotEncoder
@@ -28,7 +28,16 @@ from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from sklearn.preprocessing import RobustScaler
 from tensorflow.keras.layers import Input, Dense, BatchNormalization, LeakyReLU
-from tensorflow.keras.models import Model
+from tensorflow.keras.models import Model, Sequential
+from keras.layers.merge import concatenate
+from sklearn.datasets import make_blobs
+from sklearn.metrics import accuracy_score
+from sklearn.linear_model import LogisticRegression
+from keras.models import load_model
+from keras.utils import to_categorical
+from numpy import dstack, argmax
+from keras.utils import plot_model
+
 
 def get_available_devices():
     local_device_protos = device_lib.list_local_devices()
@@ -41,10 +50,12 @@ hidden_units = 150  # how many neurons in the hidden layer
 activation = "relu"  # activation function for hidden layer
 l2 = 0.01  # regularization - how much we penalize large parameter values
 learning_rate = 0.01  # how big our steps are in gradient descent
-epochs = 10000000  # how many epochs to train for
+epochs = 10  # how many epochs to train for
 batch_size = 128  # how many samples to use for each gradient descent update
 
-CONTENT_PATH = "content/training_data_with_points"
+PATH = "content/training_data_with_points"
+
+# pd.set_option("display.max_rows", None)
 FEATURES = [
     "Relative_time",
     "Resonance_Frequency",
@@ -62,62 +73,14 @@ FEATURES = [
     "Dissipation_detrend",
     "Resonance_Frequency_detrend",
     "Difference_detrend",
+    "EMP",
 ]
-TARGETS = ["Class_1", "Class_2", "Class_3", "Class_4", "Class_5", "Class_6"]
-CLASS = "Class"
-
-class MyHyperModel(HyperModel):
-    def build(self, hp):
-        
-        learning_rate = hp.Float('learning_rate', min_value=1e-4, max_value=1e-2, sampling='LOG')
-        first_layer_units = hp.Int('first_layer_units', min_value=32, max_value=512, step=32)
-
-        model = models.Sequential()
-        model.add(keras.layers.Dense(units=first_layer_units, activation='relu', input_shape=len(FEATURES)))
-        model.add(layers.Dense(input_dim=len(FEATURES), units=1, activation="sigmoid"))
-
-        # Tune the learning rate for the optimizer
-        hp_learning_rate = hp.Choice("learning_rate", values=[1e-2, 1e-3, 1e-4])
-
-        model.compile(
-            optimizer=keras.optimizers.Adam(learning_rate=learning_rate),
-            loss=hp.Choice('loss', values=['binary_crossentropy', 'hinge']),
-             metrics=[
-                hp.Choice('metrics', values=[
-                    'accuracy', 
-                    tf.keras.metrics.AUC(name='auc'),
-                    tf.keras.metrics.AUC(name='roc'),  
-                    tf.keras.metrics.Precision(name='precision'),  
-                    tf.keras.metrics.Recall(name='recall'),  
-                    tf.keras.metrics.TrueNegatives(name='tnr')  
-                ])
-            ]
-        )
-        return model
+S_TARGETS = ["Class_1", "Class_2", "Class_3", "Class_4", "Class_5", "Class_6"]
+M_TARGET = "Class"
 
 
 def normalize(arr):
     return (arr - np.min(arr)) / (np.max(arr) - np.min(arr))
-
-
-def train_and_evaluate(model, x_train, y_train, x_test, y_test, n=20):
-    train_accs = []
-    test_accs = []
-    with tqdm(total=n) as progress_bar:
-        for _ in range(n):
-            model.fit(
-                x_train, y_train, epochs=epochs, batch_size=batch_size, verbose=False
-            )
-            train_accs.append(
-                model.evaluate(x_train, y_train, batch_size=32, verbose=False)[1]
-            )
-            test_accs.append(
-                model.evaluate(x_test, y_test, batch_size=32, verbose=False)[1]
-            )
-            progress_bar.update()
-    print("Avgerage Training Accuracy: %s" % np.average(train_accs))
-    print("Avgerage Testing Accuracy: %s" % np.average(test_accs))
-    return train_accs, test_accs
 
 
 def evaluate_on_dir(test_dir, model, target):
@@ -146,7 +109,9 @@ def evaluate_on_dir(test_dir, model, target):
                     qdp.__dataframe__ = RobustScaler().fit_transform(qdp.__dataframe__)
                     predictions = model.predict(qdp.__dataframe__)
 
-                    plt.plot(normalize(predictions), linestyle='--', label="Predictions")
+                    plt.plot(
+                        normalize(predictions), linestyle="--", label="Predictions"
+                    )
                     plt.plot(normalize(predictions), label=target)
                     plt.axvline(
                         x=actual_indices[0],
@@ -162,6 +127,8 @@ def evaluate_on_dir(test_dir, model, target):
                         )
                     plt.legend()
                     plt.show()
+
+
 def tsne_view(X, y):
     # Perform t-SNE to reduce to 2 dimensions
     tsne = TSNE(n_components=2, random_state=42)
@@ -169,141 +136,236 @@ def tsne_view(X, y):
 
     # Create scatter plot
     plt.figure(figsize=(8, 6))
-    scatter = plt.scatter(X_tsne[:, 0], X_tsne[:, 1], c=y, cmap='viridis', edgecolor='k')
-    plt.title('t-SNE')
-    plt.xlabel('Dimension 1')
-    plt.ylabel('Dimension 2')
-    plt.colorbar(scatter, label='Target Value')
+    scatter = plt.scatter(
+        X_tsne[:, 0], X_tsne[:, 1], c=y, cmap="viridis", edgecolor="k"
+    )
+    plt.title("t-SNE")
+    plt.xlabel("Dimension 1")
+    plt.ylabel("Dimension 2")
+    plt.colorbar(scatter, label="Target Value")
     plt.show()
 
+
 def pca_view(X, y):
-    print('[INFO] building PCA')
+    print("[INFO] building PCA")
     pca = PCA(n_components=2)
     X_pca = pca.fit_transform(X)
     plt.figure(figsize=(8, 6))
-    scatter = plt.scatter(X_pca[:, 0], X_pca[:, 1], c=y, cmap='viridis', edgecolor='k')
-    plt.title('PCA')
-    plt.xlabel('Principal Component 1')
-    plt.ylabel('Principal Component 2')
-    plt.colorbar(scatter, label='Target Value')
+    scatter = plt.scatter(X_pca[:, 0], X_pca[:, 1], c=y, cmap="viridis", edgecolor="k")
+    plt.title("PCA")
+    plt.xlabel("Principal Component 1")
+    plt.ylabel("Principal Component 2")
+    plt.colorbar(scatter, label="Target Value")
     plt.show()
 
 
-
-def resample(data, target):
-    print(f'[INFO] resampling {target}')
-    y = data[target].values
-    X = data.drop(columns=TARGETS)
-    
-
-    under = RandomUnderSampler(sampling_strategy='majority')
-    steps = [('under_sample', under)]
-    pipeline = Pipeline(steps=steps)
-    
-    X, y = pipeline.fit_resample(X, y)
-
-    X = RobustScaler().fit_transform(X)
-
-    tsne_view(X, y)
-    pca_view(X, y)
-    return X, y
-
-def load_and_split_data(data_dir):
-    count = 0
-    data_df = pd.DataFrame()
+def load_content(data_dir, size):
     content = []
 
     for root, dirs, files in os.walk(data_dir):
         for file in files:
             content.append(os.path.join(root, file))
-    for filename in tqdm(content, desc="<<Processing Files>>"):
+            if len(content) >= size:
+                break
+    train_content, test_content = train_test_split(
+        content, test_size=0.2, random_state=42, shuffle=True
+    )
+    return train_content, test_content
+
+
+def resample_df(data, target, droppable):
+    print(f"[INFO] resampling df {target}")
+    y = data[target].values
+    X = data.drop(columns=droppable)
+
+    over = SMOTE()
+    under = RandomUnderSampler()
+    steps = [("o", over), ("u", under)]
+    pipeline = Pipeline(steps=steps)
+
+    X, y = pipeline.fit_resample(X, y)
+
+    resampled_df = pd.DataFrame(X, columns=data.drop(columns=droppable).columns)
+    resampled_df[target] = y
+
+    return resampled_df
+
+
+def build_dataset(content, multi_class=False):
+    data_df = pd.DataFrame()
+    for filename in tqdm(content, desc="<<Processing Dataset>>"):
         if filename.endswith(".csv") and not filename.endswith("_poi.csv"):
-            # if count > 25:
-            #     break
             data_file = filename
             if max(pd.read_csv(data_file)["Relative_time"].values) < 90:
                 poi_file = filename.replace(".csv", "_poi.csv")
-                qdp = QDataPipeline(data_file)
+                qdp = QDataPipeline(data_file, multi_class=True)
                 qdp.preprocess(poi_file=poi_file)
 
                 has_nan = qdp.__dataframe__.isna().any().any()
                 if not has_nan:
-                    count += 1
                     data_df = pd.concat([data_df, qdp.get_dataframe()])
-    
-    
-    y = data_df[TARGETS[4]].values
-    X = data_df.drop(columns=TARGETS)
+    if multi_class:
+        return resample_df(data_df, M_TARGET, M_TARGET)
+    else:
+        single_dfs = []
+        for target in S_TARGETS:
+            single_dfs.append(resample_df(data_df, target, S_TARGETS))
+        return single_dfs
 
-    X, y = resample(data_df, TARGETS[4])
-    train_X, test_X, train_y, test_y = train_test_split(
-        X, y, test_size=0.2, random_state=42
+
+def fit_model(trainX, trainy):
+    # define model
+    model = Sequential()
+    model.add(Dense(25, input_dim=len(FEATURES), activation="relu"))
+    model.add(Dense(7, activation="softmax"))
+    model.compile(
+        loss="categorical_crossentropy", optimizer="adam", metrics=["accuracy"]
     )
-    return ((train_X, train_y), (test_X, test_y))
+    # fit model
+    model.fit(trainX, trainy, epochs=500, verbose=0)
+    return model
+
+
+# create stacked model input dataset as outputs from the ensemble
+def stacked_dataset(members, inputX):
+    stackX = None
+    for model in members:
+        # make prediction
+        yhat = model.predict(inputX, verbose=0)
+        # stack predictions into [rows, members, probabilities]
+        if stackX is None:
+            stackX = yhat
+        else:
+            stackX = dstack((stackX, yhat))
+            # flatten predictions to [rows, members x probabilities]
+            stackX = stackX.reshape(
+                (stackX.shape[0], stackX.shape[1] * stackX.shape[2])
+            )
+    return stackX
+
+
+def stacked_prediction(members, model, inputX):
+    # create dataset using ensemble
+    stackedX = stacked_dataset(members, inputX)
+    # make a prediction
+    yhat = model.predict(stackedX)
+    return yhat
+
+
+# load models from file
+def load_all_models(n_models):
+    all_models = list()
+    for i in range(n_models):
+        # define filename for this ensemble
+        filename = "QModel/SavedModels/model_" + str(i + 1) + ".h5"
+        # load model from file
+        model = load_model(filename)
+        # add to list of members
+        all_models.append(model)
+        print(">loaded %s" % filename)
+    return all_models
+
+
+# define stacked model from multiple member input models
+def define_stacked_model(members):
+    # update all layers in all models to not be trainable
+    for i in range(len(members)):
+        model = members[i]
+    for layer in model.layers:
+        # make not trainable
+        layer.trainable = False
+        # rename to avoid 'unique layer name' issue
+        layer._name = "ensemble_" + str(i + 1) + "_" + layer.name
+    # define multi-headed input
+    ensemble_visible = [model.input for model in members]
+    # concatenate merge output from each model
+    ensemble_outputs = [model.output for model in members]
+    merge = concatenate(ensemble_outputs)
+    hidden = Dense(10, activation="relu")(merge)
+    output = Dense(3, activation="softmax")(hidden)
+    model = Model(inputs=ensemble_visible, outputs=output)
+    # plot graph of ensemble
+    plot_model(model, show_shapes=True, to_file="model_graph.png")
+    # compile
+    model.compile(
+        loss="categorical_crossentropy", optimizer="adam", metrics=["accuracy"]
+    )
+    return model
+
+
+# fit a stacked model
+def fit_stacked_model(model, inputX, inputy):
+    # prepare input data
+    X = [inputX for _ in range(len(model.input))]
+    # encode output data
+    inputy_enc = to_categorical(inputy)
+    # fit model
+    model.fit(X, inputy_enc, epochs=300, verbose=0)
+
+
+# make a prediction with a stacked model
+def predict_stacked_model(model, inputX):
+    # prepare input data
+    X = [inputX for _ in range(len(model.input))]
+    # make prediction
+    return model.predict(X, verbose=0)
 
 
 # grab the MNIST dataset (if this is your first time using this
 # dataset then the 11MB download may take a minute)
 print("[INFO] accessing data directory...")
+train_content, test_content = load_content(PATH, size=200)
+train_data = build_dataset(train_content, multi_class=True)
+test_data = build_dataset(test_content, multi_class=True)
 
-((train_X, train_y), (test_X, test_y)) = load_and_split_data(CONTENT_PATH)
+train_X = train_data[FEATURES]
+train_y = to_categorical(train_data[M_TARGET])
+test_X = train_data[FEATURES]
+test_y = to_categorical(train_data[M_TARGET])
 n_inputs = len(FEATURES)
 
-visible = Input(shape=(n_inputs,))
-# encoder level 1
-e = Dense(n_inputs*2)(visible)
-e = BatchNormalization()(e)
-e = LeakyReLU()(e)
-# encoder level 2
-e = Dense(n_inputs)(e)
-e = BatchNormalization()(e)
-e = LeakyReLU()(e)
-# bottleneck
-n_bottleneck = n_inputs
-bottleneck = Dense(n_bottleneck)(e)
+# fit and save models
+n_members = 5
+for i in range(n_members):
+    # fit model
+    model = fit_model(train_X, train_y)
+    # save model
+    filename = "QModel/SavedModels/model_" + str(i + 1) + ".h5"
+    model.save(filename)
+    print(">Saved %s" % filename)
 
 
-# define decoder, level 1
-d = Dense(n_inputs)(bottleneck)
-d = BatchNormalization()(d)
-d = LeakyReLU()(d)
-# decoder level 2
-d = Dense(n_inputs*2)(d)
-d = BatchNormalization()(d)
-d = LeakyReLU()(d)
-# output layer
-output = Dense(n_inputs, activation='linear')(d)
-# define autoencoder model
-model = Model(inputs=visible, outputs=output)
+# load all models
+n_members = 5
+members = load_all_models(n_members)
+print("Loaded %d models" % len(members))
 
-model.compile(optimizer='adam', loss='mse')
+# evaluate standalone models on test dataset
+for model in members:
+    testy_enc = to_categorical(test_y)
+    _, acc = model.evaluate(test_X, testy_enc, verbose=0)
+    print("Model Accuracy: %.3f" % acc)
 
-overfitCallback = EarlyStopping(monitor='loss', min_delta=0.001, patience=20)
-history = model.fit(train_X, train_y, epochs=epochs, batch_size=batch_size, callbacks=[overfitCallback], validation_data=(test_X, test_y))
 
-# Plot the training and validation accuracy and loss
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+# fit stacked model using the ensemble
+model = fit_stacked_model(members, test_X, test_y)
 
-# Plot training & validation loss values
-ax2.plot(history.history['loss'])
-ax2.plot(history.history['val_loss'])
-ax2.set_title('Model loss')
-ax2.set_xlabel('Epoch')
-ax2.set_ylabel('Loss')
-ax2.legend(['Train', 'Validation'], loc='upper left')
+# evaluate model on test set
+yhat = stacked_prediction(members, model, test_X)
+acc = accuracy_score(test_y, yhat)
+print("Stacked Test Accuracy: %.3f" % acc)
 
-plt.show()
-evaluate_on_dir("content/VOYAGER_PROD_DATA", model, "Target 5")
-# evaluate accuracy
-train_acc = model.evaluate(train_X, train_y, batch_size=32)[1]
-test_acc = model.evaluate(test_X, test_y, batch_size=32)[1]
-print("Training accuracy: %s" % train_acc)
-print("Testing accuracy: %s" % test_acc)
-
-losses = history.history["loss"]
-plt.plot(range(len(losses)), losses, "r")
-plt.show()
-
-# _, test_accs = train_and_evaluate(model, train_X, train_y, test_X, test_y)
-# plt.hist(test_accs)
-# plt.show()
+print(train_X.shape, test_X.shape)
+# load all models
+n_members = 5
+members = load_all_models(n_members)
+print("Loaded %d models" % len(members))
+# define ensemble model
+stacked_model = define_stacked_model(members)
+# fit stacked model on test dataset
+fit_stacked_model(stacked_model, test_X, test_y)
+# make predictions and evaluate
+yhat = predict_stacked_model(stacked_model, test_X)
+yhat = argmax(yhat, axis=1)
+acc = accuracy_score(test_y, yhat)
+print("Stacked Test Accuracy: %.3f" % acc)
