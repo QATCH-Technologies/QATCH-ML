@@ -24,10 +24,28 @@ NUM_THREADS = multiprocessing.cpu_count()
 print(f"[INFO] Available {NUM_THREADS} threads.")
 
 np.set_printoptions(threshold=sys.maxsize)
+
+QDataPipeline_found = False
 try:
-    from QDataPipline import QDataPipeline
+    if not QDataPipeline_found:
+        from QDataPipline import QDataPipeline
+    QDataPipeline_found = True
 except:
-    from QATCH.QModel.QDataPipline import QDataPipeline
+    QDataPipeline_found = False
+try:
+    if not QDataPipeline_found:
+        from QModel.QDataPipline import QDataPipeline
+    QDataPipeline_found = True
+except:
+    QDataPipeline_found = False
+try:
+    if not QDataPipeline_found:
+        from QATCH.QModel.QDataPipline import QDataPipeline
+    QDataPipeline_found = True
+except:
+    QDataPipeline_found = False
+if not QDataPipeline_found:
+    raise ImportError("Cannot find 'QDataPipeline' in any expected location.")
 
 """ The following are parameters for QModel to use during training time. """
 """ The percentage of data to include in the validation set. """

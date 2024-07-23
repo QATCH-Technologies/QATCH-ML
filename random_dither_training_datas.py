@@ -2,6 +2,7 @@ import os
 import pandas as pd
 import numpy as np
 from numpy.random import RandomState, MT19937
+from scipy.signal import savgol_filter, argrelextrema, argrelmax, argrelmin
 
 DEBUG_SHOW_PLOTS = False
 DIFF_FACTOR = 1.5 # TODO: dynamic
@@ -20,6 +21,9 @@ MAX_FREQ_DITHER = 2.0
 
 MAX_DISS_OFFSET = 50e-6
 MAX_DISS_DITHER = 2.0
+
+if DEBUG_SHOW_PLOTS:
+    import matplotlib.pyplot as plt
 
 poi_files = []
 xml_files = []
@@ -81,6 +85,37 @@ def dither_file(idx):
         dataset[col] = list(csv_data[col])
 
     total_time = dataset[rel_time][-1]
+
+    if DEBUG_SHOW_PLOTS:
+        plt.figure(figsize=(10,10))
+        winsize = int(0.05 * len(dataset[rel_time]))
+        if winsize % 2 == 0 or winsize == 1:
+            winsize += 1
+        print("winsize = %s" % str(winsize))
+        super_smooth = savgol_filter(dataset[diss], winsize, 1)
+        super_deriv = savgol_filter(dataset[diss], winsize, 1, 1) # np.diff(super_smooth) # / np.diff(dataset[rel_time])
+        all_minima = argrelextrema(super_deriv, np.less)[0]
+        all_maxima = argrelextrema(super_deriv, np.greater)[0]
+        all_extrema = np.concatenate((all_minima, all_maxima))
+        all_extrema.sort()
+        big_extrema = []
+        last_value = -1
+        last_idx = -1
+        threshold = np.std(super_deriv)/4
+        for extrema in all_extrema:
+            if super_deriv[extrema] - last_value > threshold:
+                big_extrema.append(extrema)
+            if last_value - super_deriv[extrema] > threshold:
+                big_extrema.append(last_idx)
+            last_idx = extrema
+            last_value = super_deriv[extrema]
+        for extrema in big_extrema:
+            plt.axvline(dataset[rel_time][extrema])
+        plt.plot(dataset[rel_time], normalize(np.array(dataset[diss])))
+        plt.plot(dataset[rel_time], normalize(super_smooth))
+        plt.plot(dataset[rel_time], 1.0 - normalize(super_deriv))
+        plt.show()
+        return
 
     # 1st step: handle stop dithering
     stop_time = dataset[rel_time][poi_data[-1]]
@@ -167,9 +202,8 @@ def dither_file(idx):
     print(f"Dithered run {idx} to folder {os.path.basename(save_to_folder)}")
 
     if DEBUG_SHOW_PLOTS:
-        import matplotlib.pyplot as plt
         import statistics as stats
-        fig, (before, after) = plt.subplots(1, 2)
+        fig, (before, after) = plt.subplots(1, 2, figsize=(10,10))
         fig.suptitle(os.path.basename(dithered_csv_file))
 
         avg_resonance_frequency = stats.mode(csv_data[freq][:poi_orig[0]])
@@ -178,10 +212,35 @@ def dither_file(idx):
         before_freq = avg_resonance_frequency - csv_data[freq]
         before_diff = before_freq - DIFF_FACTOR * before_diss
 
+        # for wl in [(5, "red"), (15, "orange"), (25, "yellow"), (35, "green"), (45, "blue"), (55, "violet")]:
+        #     big_der = savgol_filter(np.array(before_diss) + np.array(before_freq), wl[0], 1, 1)
+        #     before.plot(csv_data[rel_time][50:], normalize(np.where(big_der[50:] < 0, 0, big_der[50:]), 0, np.amax(before_freq)), color=wl[1])
+
+        # rolling_min_diss = []
+        # min_seen = np.inf
+        # for p in big_der[::-1]:
+        #     if p < min_seen:
+        #         min_seen = p
+        #     rolling_min_diss.append(min_seen)
+        # rolling_min_diss = rolling_min_diss[::-1]
+
+        # rolling_max_diss = []
+        # max_seen = -np.inf
+        # for p in big_der:
+        #     if p > max_seen:
+        #         max_seen = p
+        #     rolling_max_diss.append(max_seen)
+
+        # envelope_size = np.array(rolling_max_diss) - np.array(rolling_min_diss)
+
         before.set_title("Original")
         before.plot(csv_data[rel_time], before_diss, color="red")
         before.plot(csv_data[rel_time], before_freq, color="green")
         before.plot(csv_data[rel_time], before_diff, color="blue")
+        # before.plot(csv_data[rel_time], big_der, color="yellow")
+        # before.plot(csv_data[rel_time], rolling_min_diss, color="pink")
+        # before.plot(csv_data[rel_time], rolling_max_diss, color="pink")
+        # before.plot(csv_data[rel_time], envelope_size, color="purple")
         for pt in poi_orig:
             xs = csv_data[rel_time][pt]
             before.axvline(xs, color="black")
@@ -199,8 +258,8 @@ def dither_file(idx):
         for pt in poi_data:
             xs = dataset[rel_time][pt]
             after.axvline(xs, color="black")
-        mng = plt.get_current_fig_manager()
-        mng.full_screen_toggle()
+        # mng = plt.get_current_fig_manager()
+        # mng.full_screen_toggle()
         plt.show()
 
 
