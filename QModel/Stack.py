@@ -49,14 +49,14 @@ FEATURES = [
     "Difference_super",
     "Cumulative_super",
     "Resonance_Frequency_super",
-    "Dissipation_gradient",
-    "Difference_gradient",
-    "Resonance_Frequency_gradient",
+    # "Dissipation_gradient",
+    # "Difference_gradient",
+    # "Resonance_Frequency_gradient",
     "Cumulative_detrend",
     "Dissipation_detrend",
     "Resonance_Frequency_detrend",
     "Difference_detrend",
-    "EMP",
+    # "EMP",
 ]
 S_TARGETS = ["Class_1", "Class_2", "Class_3", "Class_4", "Class_5", "Class_6"]
 M_TARGET = "Class"
@@ -132,7 +132,7 @@ def load_content(data_dir, size):
             if len(content) >= size:
                 break
     train_content, test_content = train_test_split(
-        content, test_size=0.5, random_state=42, shuffle=True
+        content, test_size=0.20, random_state=42, shuffle=True
     )
     return train_content, test_content
 
@@ -142,14 +142,14 @@ def build_dataset(content, multi_class=False):
     for filename in tqdm(content, desc="<<Processing Dataset>>"):
         if filename.endswith(".csv") and not filename.endswith("_poi.csv"):
             data_file = filename
-            if max(pd.read_csv(data_file)["Relative_time"].values) < 90:
-                poi_file = filename.replace(".csv", "_poi.csv")
-                qdp = QDataPipeline(data_file, multi_class=True)
-                qdp.preprocess(poi_file=poi_file)
+            # if max(pd.read_csv(data_file)["Relative_time"].values) < 90:
+            poi_file = filename.replace(".csv", "_poi.csv")
+            qdp = QDataPipeline(data_file, multi_class=True)
+            qdp.preprocess(poi_file=poi_file)
 
-                has_nan = qdp.__dataframe__.isna().any().any()
-                if not has_nan:
-                    data_df = pd.concat([data_df, qdp.get_dataframe()])
+            has_nan = qdp.__dataframe__.isna().any().any()
+            if not has_nan:
+                data_df = pd.concat([data_df, qdp.get_dataframe()])
     if multi_class:
         return resample_df(data_df, M_TARGET, M_TARGET)
     else:
@@ -183,7 +183,7 @@ class SklearnHelper(object):
         print(self.clf.fit(x, y).feature_importances_)
 
 
-train_content, test_content = load_content(PATH, size=100)
+train_content, test_content = load_content(PATH, size=60)
 train_data = build_dataset(train_content, multi_class=True)
 test_data = build_dataset(test_content, multi_class=True)
 
@@ -252,9 +252,9 @@ et_oof_train, et_oof_test = get_oof(
 rf_oof_train, rf_oof_test = get_oof(
     rf, X_train, y_train, X_test, name="Random Forest"
 )  # Random Forest
-# ada_oof_train, ada_oof_test = get_oof(
-#     ada, X_train, y_train, X_test, name="ADA Boost"
-# )  # AdaBoost
+ada_oof_train, ada_oof_test = get_oof(
+    ada, X_train, y_train, X_test, name="ADA Boost"
+)  # AdaBoost
 gb_oof_train, gb_oof_test = get_oof(
     gb, X_train, y_train, X_test, name="Gradient Boost"
 )  # Gradient Boost
@@ -265,11 +265,11 @@ svc_oof_train, svc_oof_test = get_oof(
 print("Training is complete")
 rf_features = rf.feature_importances(X_train, y_train)
 et_features = et.feature_importances(X_train, y_train)
-# ada_features = ada.feature_importances(X_train, y_train)
+ada_features = ada.feature_importances(X_train, y_train)
 gb_features = gb.feature_importances(X_train, y_train)
 print(rf_features)
 print(et_features)
-# print(ada_features)
+print(ada_features)
 print(gb_features)
 cols = train_data.columns.values
 # Create a dataframe with features
@@ -278,7 +278,7 @@ feature_dataframe = pd.DataFrame(
         "features": cols,
         "Random Forest feature importances": rf_features,
         "Extra Trees  feature importances": et_features,
-        # "AdaBoost feature importances": ada_features,
+        "AdaBoost feature importances": ada_features,
         "Gradient Boost feature importances": gb_features,
     }
 )

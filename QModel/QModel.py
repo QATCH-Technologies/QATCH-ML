@@ -113,10 +113,13 @@ class QModel:
             nfold=NUMBER_KFOLDS,
             stratified=True,
             early_stopping_rounds=20,
-            metrics=["auc", 'aucpr'],
+            metrics=[
+                "auc",
+                # "aucpr",
+            ],
         )
         best_score = results["test-auc-mean"].max()
-        return {"auc": best_score, "status": STATUS_OK}
+        return {"loss": best_score, "status": STATUS_OK}
 
     def tune(self, evaluations=250):
         space = {
@@ -491,7 +494,7 @@ class QModelPredict:
             )
 
         df = df.drop(columns=columns_to_drop)
-        
+
         file_buffer_2 = file_buffer
         if not isinstance(file_buffer_2, str):
             if hasattr(file_buffer_2, "seekable") and file_buffer_2.seekable():
@@ -509,7 +512,7 @@ class QModelPredict:
         qdp = QDataPipeline(file_buffer_2)
         qdp.preprocess(poi_file=None)
         df = qdp.get_dataframe()
-        
+
         f_names = self.__model__.feature_names
         df = df[f_names]
         d_data = xgb.DMatrix(df)

@@ -38,14 +38,33 @@ FEATURES = [
     "Dissipation_detrend",
     "Resonance_Frequency_detrend",
     "Difference_detrend",
-    "EMP",
 ]
 XGB_TARGETS = ["Class_1", "Class_2", "Class_3", "Class_4", "Class_5", "Class_6"]
 META_TARGETS = ["Class_1", "Class_2", "Class_3", "Class_4", "Class_5", "Class_6"]
+S_TARGETS = ["Class_1", "Class_2", "Class_3", "Class_4", "Class_5", "Class_6"]
+M_TARGET = "Class"
+META_FEATURE = ["EMP", "XGB"]
 
 
 def normalize(arr):
     return (arr - np.min(arr)) / (np.max(arr) - np.min(arr))
+
+
+def correlation_view(df):
+    colormap = plt.cm.RdBu
+
+    plt.figure(figsize=(14, 12))
+    plt.title("Pearson Correlation of Features", y=1.05, size=15)
+    sns.heatmap(
+        df.astype(float).corr(),
+        linewidths=0.1,
+        vmax=1.0,
+        square=True,
+        cmap=colormap,
+        linecolor="white",
+        annot=True,
+    )
+    plt.show()
 
 
 def tsne_view(X, y):
@@ -106,14 +125,18 @@ def resample_df(data, target, droppable):
 
     over = SMOTE()
     under = RandomUnderSampler()
-    steps = [("o", over), ("u", under)]
+    steps = [
+        ("o", over),
+        ("u", under),
+    ]
     pipeline = Pipeline(steps=steps)
 
     X, y = pipeline.fit_resample(X, y)
 
     resampled_df = pd.DataFrame(X, columns=data.drop(columns=droppable).columns)
     resampled_df[target] = y
-
+    # tsne_view(X, y)
+    # pca_view(X, y)
     return resampled_df
 
 
@@ -144,7 +167,7 @@ def xgb_pipeline(train_content):
                 if not has_nan:
                     data_df = pd.concat([data_df, qdp.get_dataframe()])
     for target in XGB_TARGETS:
-        resampled_df = resample_df(data_df, target)
+        resampled_df = resample_df(data_df, target, S_TARGETS)
         yield resampled_df
 
 
@@ -180,6 +203,18 @@ def meta_model_builder(dataset):
 
                 emp_predictor = ModelData()
                 emp_result = emp_predictor.IdentifyPoints(data_path=data_file)
+
+                guesses = []
+                for guess in emp_result:
+                    if isinstance(guess, int):
+                        guesses.append((guess, guess))
+                    elif isinstance(guess, list):
+                        integers = [item[0] for item in guess]
+
+                        # Finding the minimum and maximum
+                        min_value = min(integers)
+                        max_value = max(integers)
+                        guesses.append((min_value, max_value))
                 emp_result = [
                     item if isinstance(item, int) else [val[0] for val in item]
                     for item in emp_result
@@ -190,7 +225,6 @@ def meta_model_builder(dataset):
                     for sublist in emp_result
                     for item in (sublist if isinstance(sublist, list) else [sublist])
                 ]
-
                 num_rows = max(
                     max(max(t) for t in ranges),
                     max(emp_result),
@@ -210,22 +244,23 @@ def meta_model_builder(dataset):
                 for poi, (i, j) in enumerate(ranges):
                     for idx in range(i, j):
                         predictions.loc[idx, "XGB"] = poi + 1
-
-                for idx in emp_result:
-                    predictions.loc[idx, "EMP"] = 1
+                for poi, (i, j) in enumerate(guesses):
+                    for idx in range(i, j):
+                        predictions.loc[idx, "EMP"] = poi + 1
 
                 for poi, idx in enumerate(indices):
                     predictions.loc[idx, "Class_" + str(poi + 1)] = 1
 
                 predictions = predictions.fillna(0)
                 data_df = pd.concat([data_df, predictions])
-
+    correlation_view(data_df)
     for target in META_TARGETS:
-        meta_clf = RandomForestRegressor()
-        meta_y = data_df[target]
-        meta_X = data_df.drop(columns=META_TARGETS)
-        # meta_X, meta_y = resample_arr(data_df, target)
-        meta_clf.fit(meta_X, meta_y)
+        meta_df = resample_df(data_df, target, S_TARGETS)
+        meta_clf = QModel(
+            dataset=meta_df, predictors=META_FEATURE, target_features=target
+        )
+        meta_clf.tune(15)
+        meta_clf.train_model()
         yield meta_clf
 
 
@@ -234,14 +269,26 @@ XGB = True
 PATH = "content/training_data_with_points"
 if XGB:
     train_content, test_content = load_content(PATH)
-    (train_1, train_2, train_3, train_4, train_5, train_6) = xgb_pipeline(train_content)
+    # (train_1, train_2, train_3, train_4, train_5, train_6) = xgb_pipeline(train_content)
 
-    # qmodel_1 = QModel(dataset=train_1, predictors=FEATURES, target_features=TARGETS[0])
-    # qmodel_2 = QModel(dataset=train_2, predictors=FEATURES, target_features=TARGETS[1])
-    # qmodel_3 = QModel(dataset=train_3, predictors=FEATURES, target_features=TARGETS[2])
-    # qmodel_4 = QModel(dataset=train_4, predictors=FEATURES, target_features=TARGETS[3])
-    # qmodel_5 = QModel(dataset=train_5, predictors=FEATURES, target_features=TARGETS[4])
-    # qmodel_6 = QModel(dataset=train_6, predictors=FEATURES, target_features=TARGETS[5])
+    # qmodel_1 = QModel(
+    #     dataset=train_1, predictors=FEATURES, target_features=S_TARGETS[0]
+    # )
+    # qmodel_2 = QModel(
+    #     dataset=train_2, predictors=FEATURES, target_features=S_TARGETS[1]
+    # )
+    # qmodel_3 = QModel(
+    #     dataset=train_3, predictors=FEATURES, target_features=S_TARGETS[2]
+    # )
+    # qmodel_4 = QModel(
+    #     dataset=train_4, predictors=FEATURES, target_features=S_TARGETS[3]
+    # )
+    # qmodel_5 = QModel(
+    #     dataset=train_5, predictors=FEATURES, target_features=S_TARGETS[4]
+    # )
+    # qmodel_6 = QModel(
+    #     dataset=train_6, predictors=FEATURES, target_features=S_TARGETS[5]
+    # )
 
     # qmodel_1.tune(15)
     # qmodel_2.tune(15)
@@ -271,12 +318,12 @@ if XGB:
         meta_model_5,
         meta_model_6,
     ) = meta_model_builder(test_content)
-    dump(meta_model_1, "QModel/SavedModels/meta_model_1.joblib")
-    dump(meta_model_2, "QModel/SavedModels/meta_model_2.joblib")
-    dump(meta_model_3, "QModel/SavedModels/meta_model_3.joblib")
-    dump(meta_model_4, "QModel/SavedModels/meta_model_4.joblib")
-    dump(meta_model_5, "QModel/SavedModels/meta_model_5.joblib")
-    dump(meta_model_6, "QModel/SavedModels/meta_model_6.joblib")
+    meta_model_1.save_model("Meta_1")
+    meta_model_2.save_model("Meta_2")
+    meta_model_3.save_model("Meta_3")
+    meta_model_4.save_model("Meta_4")
+    meta_model_5.save_model("Meta_5")
+    meta_model_6.save_model("Meta_6")
 ERROR = 5
 correct = 0
 incorrect = 0
@@ -297,19 +344,19 @@ def compute_error(actual, predicted):
     return return_flag
 
 
-meta_model_1 = load("QModel/SavedModels/meta_model_1.joblib")
-meta_model_2 = load("QModel/SavedModels/meta_model_2.joblib")
-meta_model_3 = load("QModel/SavedModels/meta_model_3.joblib")
-meta_model_4 = load("QModel/SavedModels/meta_model_4.joblib")
-meta_model_5 = load("QModel/SavedModels/meta_model_5.joblib")
-meta_model_6 = load("QModel/SavedModels/meta_model_6.joblib")
-
 qpreditor_1 = QModelPredict(model_path="QModel/SavedModels/QModel_1.json")
 qpreditor_2 = QModelPredict(model_path="QModel/SavedModels/QModel_2.json")
 qpreditor_3 = QModelPredict(model_path="QModel/SavedModels/QModel_3.json")
 qpreditor_4 = QModelPredict(model_path="QModel/SavedModels/QModel_4.json")
 qpreditor_5 = QModelPredict(model_path="QModel/SavedModels/QModel_5.json")
 qpreditor_6 = QModelPredict(model_path="QModel/SavedModels/QModel_6.json")
+
+meta_preditor_1 = QModelPredict(model_path="QModel/SavedModels/Meta_1.json")
+meta_preditor_2 = QModelPredict(model_path="QModel/SavedModels/Meta_2.json")
+meta_preditor_3 = QModelPredict(model_path="QModel/SavedModels/Meta_3.json")
+meta_preditor_4 = QModelPredict(model_path="QModel/SavedModels/Meta_4.json")
+meta_preditor_5 = QModelPredict(model_path="QModel/SavedModels/Meta_5.json")
+meta_preditor_6 = QModelPredict(model_path="QModel/SavedModels/Meta_6.json")
 PATH = "content/VOYAGER_PROD_DATA"
 data_df = pd.DataFrame()
 content = []
@@ -373,13 +420,13 @@ for filename in content:
 
         metadata = metadata.fillna(0)
 
-        predictions_1 = meta_model_1.predict(metadata)
-        predictions_2 = meta_model_2.predict(metadata)
-        predictions_3 = meta_model_3.predict(metadata)
-        predictions_4 = meta_model_4.predict(metadata)
-        predictions_5 = meta_model_5.predict(metadata)
-        predictions_6 = meta_model_6.predict(metadata)
-        # for p in predictions:
+        predictions_1, meta_bound_1 = meta_preditor_1.predict(metadata)
+        predictions_2, meta_bound_2 = meta_preditor_2.predict(metadata)
+        predictions_3, meta_bound_3 = meta_preditor_3.predict(metadata)
+        predictions_4, meta_bound_4 = meta_preditor_4.predict(metadata)
+        predictions_5, meta_bound_5 = meta_preditor_5.predict(metadata)
+        predictions_6, meta_bound_6 = meta_preditor_6.predict(metadata)
+        # for p in predictpredictor
         #     print(p)
         # input()
         if PLOTTING:
