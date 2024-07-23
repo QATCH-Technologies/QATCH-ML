@@ -9,18 +9,20 @@ import seaborn as sns
 from joblib import dump, load
 from imblearn.under_sampling import RandomUnderSampler, NearMiss
 from imblearn.over_sampling import SMOTE
-
+import xgboost as xgb
 from imblearn.pipeline import Pipeline
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from sklearn.preprocessing import RobustScaler
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.model_selection import train_test_split
-
+from scipy.signal import find_peaks
+from scipy.stats import linregress
 
 from ModelData import ModelData
 
-# pd.set_option("display.max_rows", None)
+DISTANCES = [1.15, 1.61, 2.17, 5.00, 10.90, 16.2]
+pd.set_option("display.max_rows", None)
 FEATURES = [
     "Relative_time",
     "Resonance_Frequency",
@@ -43,7 +45,20 @@ XGB_TARGETS = ["Class_1", "Class_2", "Class_3", "Class_4", "Class_5", "Class_6"]
 META_TARGETS = ["Class_1", "Class_2", "Class_3", "Class_4", "Class_5", "Class_6"]
 S_TARGETS = ["Class_1", "Class_2", "Class_3", "Class_4", "Class_5", "Class_6"]
 M_TARGET = "Class"
-META_FEATURE = ["EMP", "XGB"]
+META_FEATURE = [
+    "EMP_1",
+    "EMP_2",
+    "EMP_3",
+    "EMP_4",
+    "EMP_5",
+    "EMP_6",
+    "XGB_1",
+    "XGB_2",
+    "XGB_3",
+    "XGB_4",
+    "XGB_5",
+    "XGB_6",
+]
 
 
 def normalize(arr):
@@ -186,12 +201,77 @@ def meta_model_builder(dataset):
                 poi_file = filename.replace(".csv", "_poi.csv")
                 indices = pd.read_csv(poi_file, header=None).values
                 indices = indices.flatten().tolist()
-                _, bound_1 = qpreditor_1.predict(data_file)
-                _, bound_2 = qpreditor_2.predict(data_file)
-                _, bound_3 = qpreditor_3.predict(data_file)
-                _, bound_4 = qpreditor_4.predict(data_file)
-                _, bound_5 = qpreditor_5.predict(data_file)
-                _, bound_6 = qpreditor_6.predict(data_file)
+                results_1, bound_1 = qpreditor_1.predict(data_file)
+                results_2, bound_2 = qpreditor_2.predict(data_file)
+                results_3, bound_3 = qpreditor_3.predict(data_file)
+                results_4, bound_4 = qpreditor_4.predict(data_file)
+                results_5, bound_5 = qpreditor_5.predict(data_file)
+                results_6, bound_6 = qpreditor_6.predict(data_file)
+                # dissipation = normalize(pd.read_csv(data_file)["Dissipation"].values)
+                # for left, right in bound_1:
+                #     plt.fill_between(
+                #         np.arange(len(results_1))[left : right + 1],
+                #         results_1[left : right + 1],
+                #         alpha=0.5,
+                #         color="red",
+                #         label="1",
+                #     )
+                # for left, right in bound_2:
+                #     plt.fill_between(
+                #         np.arange(len(results_2))[left : right + 1],
+                #         results_2[left : right + 1],
+                #         color="orange",
+                #         label="2",
+                #     )
+                # for left, right in bound_3:
+                #     plt.fill_between(
+                #         np.arange(len(results_3))[left : right + 1],
+                #         results_2[left : right + 1],
+                #         color="yellow",
+                #         label="3",
+                #     )
+                # for left, right in bound_4:
+                #     plt.fill_between(
+                #         np.arange(len(results_4))[left : right + 1],
+                #         results_4[left : right + 1],
+                #         alpha=0.5,
+                #         color="green",
+                #         label="4",
+                #     )
+                # for left, right in bound_5:
+                #     plt.fill_between(
+                #         np.arange(len(results_5))[left : right + 1],
+                #         results_5[left : right + 1],
+                #         alpha=0.5,
+                #         color="blue",
+                #         label="5",
+                #     )
+                # for left, right in bound_6:
+                #     plt.fill_between(
+                #         np.arange(len(results_6))[left : right + 1],
+                #         results_6[left : right + 1],
+                #         alpha=0.5,
+                #         color="purple",
+                #         label="6",
+                #     )
+                # plt.axvline(
+                #     x=indices[0],
+                #     color="black",
+                #     linestyle="--",
+                #     label="Actual",
+                # )
+                # for index in indices:
+                #     plt.axvline(
+                #         x=index,
+                #         color="black",
+                #         linestyle="--",
+                #     )
+                # plt.plot(
+                #     dissipation,
+                #     color="grey",
+                #     label="Dissipation",
+                # )
+                # plt.show()
                 ranges = [
                     bound_1[0],
                     bound_2[0],
@@ -232,8 +312,18 @@ def meta_model_builder(dataset):
                 )
 
                 predictions = pd.DataFrame(index=range(int(num_rows) + 1))
-                predictions["XGB"] = 0
-                predictions["EMP"] = 0
+                predictions["XGB_1"] = 0
+                predictions["XGB_2"] = 0
+                predictions["XGB_3"] = 0
+                predictions["XGB_4"] = 0
+                predictions["XGB_5"] = 0
+                predictions["XGB_6"] = 0
+                predictions["EMP_1"] = 0
+                predictions["EMP_2"] = 0
+                predictions["EMP_3"] = 0
+                predictions["EMP_4"] = 0
+                predictions["EMP_5"] = 0
+                predictions["EMP_6"] = 0
                 predictions["Class_1"] = 0
                 predictions["Class_2"] = 0
                 predictions["Class_3"] = 0
@@ -243,10 +333,10 @@ def meta_model_builder(dataset):
 
                 for poi, (i, j) in enumerate(ranges):
                     for idx in range(i, j):
-                        predictions.loc[idx, "XGB"] = poi + 1
+                        predictions.loc[idx, "XGB_" + str(poi + 1)] = 1
                 for poi, (i, j) in enumerate(guesses):
                     for idx in range(i, j):
-                        predictions.loc[idx, "EMP"] = poi + 1
+                        predictions.loc[idx, "EMP_" + str(poi + 1)] = 1
 
                 for poi, idx in enumerate(indices):
                     predictions.loc[idx, "Class_" + str(poi + 1)] = 1
@@ -265,51 +355,52 @@ def meta_model_builder(dataset):
 
 
 PLOTTING = True
-XGB = True
+XGB = False
+STACK = False
 PATH = "content/training_data_with_points"
+
+train_content, test_content = load_content(PATH)
 if XGB:
-    train_content, test_content = load_content(PATH)
-    # (train_1, train_2, train_3, train_4, train_5, train_6) = xgb_pipeline(train_content)
+    (train_1, train_2, train_3, train_4, train_5, train_6) = xgb_pipeline(train_content)
 
-    # qmodel_1 = QModel(
-    #     dataset=train_1, predictors=FEATURES, target_features=S_TARGETS[0]
-    # )
-    # qmodel_2 = QModel(
-    #     dataset=train_2, predictors=FEATURES, target_features=S_TARGETS[1]
-    # )
-    # qmodel_3 = QModel(
-    #     dataset=train_3, predictors=FEATURES, target_features=S_TARGETS[2]
-    # )
-    # qmodel_4 = QModel(
-    #     dataset=train_4, predictors=FEATURES, target_features=S_TARGETS[3]
-    # )
-    # qmodel_5 = QModel(
-    #     dataset=train_5, predictors=FEATURES, target_features=S_TARGETS[4]
-    # )
-    # qmodel_6 = QModel(
-    #     dataset=train_6, predictors=FEATURES, target_features=S_TARGETS[5]
-    # )
+    qmodel_1 = QModel(
+        dataset=train_1, predictors=FEATURES, target_features=S_TARGETS[0]
+    )
+    qmodel_2 = QModel(
+        dataset=train_2, predictors=FEATURES, target_features=S_TARGETS[1]
+    )
+    qmodel_3 = QModel(
+        dataset=train_3, predictors=FEATURES, target_features=S_TARGETS[2]
+    )
+    qmodel_4 = QModel(
+        dataset=train_4, predictors=FEATURES, target_features=S_TARGETS[3]
+    )
+    qmodel_5 = QModel(
+        dataset=train_5, predictors=FEATURES, target_features=S_TARGETS[4]
+    )
+    qmodel_6 = QModel(
+        dataset=train_6, predictors=FEATURES, target_features=S_TARGETS[5]
+    )
 
-    # qmodel_1.tune(15)
-    # qmodel_2.tune(15)
-    # qmodel_3.tune(15)
-    # qmodel_4.tune(15)
-    # qmodel_5.tune(15)
-    # qmodel_6.tune(15)
-
-    # qmodel_1.train_model()
-    # qmodel_2.train_model()
-    # qmodel_3.train_model()
-    # qmodel_4.train_model()
-    # qmodel_5.train_model()
-    # qmodel_6.train_model()
-
-    # qmodel_1.save_model("QModel_1")
-    # qmodel_2.save_model("QModel_2")
-    # qmodel_3.save_model("QModel_3")
-    # qmodel_4.save_model("QModel_4")
-    # qmodel_5.save_model("QModel_5")
-    # qmodel_6.save_model("QModel_6")
+    qmodel_1.tune(15)
+    qmodel_1.train_model()
+    qmodel_1.save_model("QModel_1")
+    qmodel_2.tune(15)
+    qmodel_2.train_model()
+    qmodel_2.save_model("QModel_2")
+    qmodel_3.tune(15)
+    qmodel_3.train_model()
+    qmodel_3.save_model("QModel_3")
+    qmodel_4.tune(15)
+    qmodel_4.train_model()
+    qmodel_4.save_model("QModel_4")
+    qmodel_5.tune(15)
+    qmodel_5.train_model()
+    qmodel_5.save_model("QModel_5")
+    qmodel_6.tune(15)
+    qmodel_6.train_model()
+    qmodel_6.save_model("QModel_6")
+if STACK:
     (
         meta_model_1,
         meta_model_2,
@@ -344,22 +435,18 @@ def compute_error(actual, predicted):
     return return_flag
 
 
-qpreditor_1 = QModelPredict(model_path="QModel/SavedModels/QModel_1.json")
-qpreditor_2 = QModelPredict(model_path="QModel/SavedModels/QModel_2.json")
-qpreditor_3 = QModelPredict(model_path="QModel/SavedModels/QModel_3.json")
-qpreditor_4 = QModelPredict(model_path="QModel/SavedModels/QModel_4.json")
-qpreditor_5 = QModelPredict(model_path="QModel/SavedModels/QModel_5.json")
-qpreditor_6 = QModelPredict(model_path="QModel/SavedModels/QModel_6.json")
-
-meta_preditor_1 = QModelPredict(model_path="QModel/SavedModels/Meta_1.json")
-meta_preditor_2 = QModelPredict(model_path="QModel/SavedModels/Meta_2.json")
-meta_preditor_3 = QModelPredict(model_path="QModel/SavedModels/Meta_3.json")
-meta_preditor_4 = QModelPredict(model_path="QModel/SavedModels/Meta_4.json")
-meta_preditor_5 = QModelPredict(model_path="QModel/SavedModels/Meta_5.json")
-meta_preditor_6 = QModelPredict(model_path="QModel/SavedModels/Meta_6.json")
 PATH = "content/VOYAGER_PROD_DATA"
 data_df = pd.DataFrame()
 content = []
+qmp = QModelPredict(
+    "QModel/SavedModels/QModel_1.json",
+    "QModel/SavedModels/QModel_2.json",
+    "QModel/SavedModels/QModel_3.json",
+    "QModel/SavedModels/QModel_4.json",
+    "QModel/SavedModels/QModel_5.json",
+    "QModel/SavedModels/QModel_6.json",
+)
+
 for root, dirs, files in os.walk(PATH):
     for file in files:
         content.append(os.path.join(root, file))
@@ -373,125 +460,30 @@ for filename in content:
         qdp.preprocess(poi_file=None)
         qdp.__dataframe__ = qdp.__dataframe__.drop(columns=["Class", "Pooling"])
 
-        results_1, bound_1 = qpreditor_1.predict(data_file)
-        results_2, bound_2 = qpreditor_2.predict(data_file)
-        results_3, bound_3 = qpreditor_3.predict(data_file)
-        results_4, bound_4 = qpreditor_4.predict(data_file)
-        results_5, bound_5 = qpreditor_5.predict(data_file)
-        results_6, bound_6 = qpreditor_6.predict(data_file)
-
-        ranges = [
-            bound_1[0],
-            bound_2[0],
-            bound_3[0],
-            bound_4[0],
-            bound_5[0],
-            bound_6[0],
-        ]
-
-        emp_predictor = ModelData()
-        emp_result = emp_predictor.IdentifyPoints(data_path=data_file)
-        emp_result = [
-            item if isinstance(item, int) else [val[0] for val in item]
-            for item in emp_result
-            if isinstance(item, (int, list))
-        ]
-        emp_result = [
-            item
-            for sublist in emp_result
-            for item in (sublist if isinstance(sublist, list) else [sublist])
-        ]
-
-        num_rows = max(
-            max(max(t) for t in ranges),
-            max(emp_result),
-        )
-
-        metadata = pd.DataFrame(index=range(int(num_rows) + 1))
-        metadata["XGB"] = 0
-        metadata["EMP"] = 0
-
-        for i, j in ranges:
-            for idx in range(i, j):
-                metadata.loc[idx, "XGB"] = 1
-
-        for idx in emp_result:
-            metadata.loc[idx, "EMP"] = 1
-
-        metadata = metadata.fillna(0)
-
-        predictions_1, meta_bound_1 = meta_preditor_1.predict(metadata)
-        predictions_2, meta_bound_2 = meta_preditor_2.predict(metadata)
-        predictions_3, meta_bound_3 = meta_preditor_3.predict(metadata)
-        predictions_4, meta_bound_4 = meta_preditor_4.predict(metadata)
-        predictions_5, meta_bound_5 = meta_preditor_5.predict(metadata)
-        predictions_6, meta_bound_6 = meta_preditor_6.predict(metadata)
-        # for p in predictpredictor
-        #     print(p)
-        # input()
+        predictions = qmp.predict(data_file)
         if PLOTTING:
             df = pd.read_csv(data_file)
             dissipation = normalize(df["Dissipation"])
+            print("Actual, Predicted")
+            for actual, predicted in zip(actual_indices, predictions):
+                print(f"{actual[0]}, {predicted}")
             plt.figure()
-            plt.plot(predictions_1, label="Predictions_1")
-            plt.plot(predictions_2, label="Predictions_2")
-            plt.plot(predictions_3, label="Predictions_3")
-            plt.plot(predictions_4, label="Predictions_4")
-            plt.plot(predictions_5, label="Predictions_5")
-            plt.plot(predictions_6, label="Predictions_6")
-            # plt.plot(results_5)
-            # for left, right in bound_1:
-            #     plt.fill_between(
-            #         np.arange(len(results_1))[left : right + 1],
-            #         results_1[left : right + 1],
-            #         alpha=0.5,
-            #         color="red",
-            #         label="1",
-            #     )
-            # for left, right in bound_2:
-            #     plt.fill_between(
-            #         np.arange(len(results_2))[left : right + 1],
-            #         results_2[left : right + 1],
-            #         color="orange",
-            #         label="2",
-            #     )
-            # for left, right in bound_3:
-            #     plt.fill_between(
-            #         np.arange(len(results_3))[left : right + 1],
-            #         results_2[left : right + 1],
-            #         color="yellow",
-            #         label="3",
-            #     )
-            # for left, right in bound_4:
-            #     plt.fill_between(
-            #         np.arange(len(results_4))[left : right + 1],
-            #         results_4[left : right + 1],
-            #         alpha=0.5,
-            #         color="green",
-            #         label="4",
-            #     )
-            # for left, right in bound_5:
-            #     plt.fill_between(
-            #         np.arange(len(results_5))[left : right + 1],
-            #         results_5[left : right + 1],
-            #         alpha=0.5,
-            #         color="blue",
-            #         label="5",
-            #     )
-            # for left, right in bound_6:
-            #     plt.fill_between(
-            #         np.arange(len(results_6))[left : right + 1],
-            #         results_6[left : right + 1],
-            #         alpha=0.5,
-            #         color="purple",
-            #         label="6",
-            #     )
+
             plt.plot(
                 dissipation,
                 color="grey",
                 label="Dissipation",
             )
-            print(actual_indices)
+            plt.axvline(
+                x=predictions[0],
+                color="red",
+                label="Predicted",
+            )
+            for index in predictions:
+                plt.axvline(
+                    x=index,
+                    color="red",
+                )
             plt.axvline(
                 x=actual_indices[0],
                 color="black",
