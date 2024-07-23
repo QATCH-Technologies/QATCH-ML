@@ -16,6 +16,8 @@ from hyperopt.early_stop import no_progress_loss
 import sys
 import multiprocessing
 from sklearn.preprocessing import RobustScaler
+from ModelData import ModelData
+from scipy.stats import linregress
 
 # Get the number of threads
 NUM_THREADS = multiprocessing.cpu_count()
@@ -44,6 +46,7 @@ EARLY_STOP = 50
 """ The number of rounds after which to print a verbose model evaluation. """
 VERBOSE_EVAL = 50
 """ The target supervision feature. """
+DISTANCES = [1.15, 1.61, 2.17, 5.00, 10.90, 16.2]
 
 
 class QModel:
@@ -172,13 +175,14 @@ class QModel:
 
     def save_model(self, model_name="QModel"):
         filename = f"QModel/SavedModels/{model_name}.json"
+        print(f"[INFO] Saving model {model_name}")
         self.__model__.save_model(filename)
 
     def get_model(self):
         return self.__model__
 
 
-class QModelPredict:
+class QPredictor:
     def __init__(self, model_path=None):
         if model_path is None:
             raise ValueError("[QModelPredict __init__()] No model path given")
@@ -188,283 +192,8 @@ class QModelPredict:
 
         self.__model__.load_model(model_path)
 
-    def histogram_analysis(self, data, num_bins, threshold):
-        # Validate inputs
-        if num_bins <= 0:
-            raise ValueError(
-                "[QModelPredict histrogram_analysis()]: `num_bins` must be greater than zero."
-            )
-        if threshold <= 0:
-            raise ValueError(
-                "[QModelPredict histrogram_analysis()]: `threshold` must be greater than zero."
-            )
-        if num_bins > len(data):
-            raise ValueError(
-                "[QModelPredict histrogram_analysis()]: `num_bins` cannot be greater than the length of `data`."
-            )
-
-        # Make initial partition of data into bins.
-        hist, bins = np.histogram(data, bins=num_bins)
-
-        # While the number of bins is less than the threshold number of bins (typically 3), continue
-        # creating partitions until there are at least a threshold number of bins with values in them.
-        # If there the number of bins gets decremented <= 0, the current number of bins is returned to
-        # the caller.
-        while np.count_nonzero(hist) != threshold:
-            num_bins -= 1
-            if num_bins <= 0:
-                break
-            hist, bins = np.histogram(data, bins=num_bins)
-        return hist, bins
-
     def normalize(self, data):
         return (data - np.min(data)) / (np.max(data) - np.min(data))
-
-    def full_bins(self, bins, hist):
-        try:
-            if not isinstance(bins, np.ndarray) or not isinstance(hist, np.ndarray):
-                raise ValueError(
-                    "[QModelPredict full_bins()]: `bins` and `hist` must be numpy arrays."
-                )
-            if bins.size == 0 or hist.size == 0:
-                raise ValueError(
-                    "[QModelPredict full_bins()]: `bins` and `hist` cannot be empty arrays."
-                )
-
-            full_bins = [
-                (int(bins[i]), int(bins[i + 1]))
-                for i, height in enumerate(hist)
-                if height > 0
-            ]
-            return full_bins
-        except Exception as e:
-            raise ValueError(
-                "[QModelPredict full_bins()]: Invalid `bins` or `hist` input for `full_bins` function."
-            ) from e
-
-    def find_max_indices(self, data, ranges):
-        try:
-            # Validate `data`
-            data = np.array(data)
-            if data.size == 0:
-                raise ValueError(
-                    "[QModelPredict find_max_indices()]: `data` cannot be an empty array."
-                )
-
-            # Validate `ranges`
-            if not isinstance(ranges, list):
-                raise ValueError(
-                    "[QModelPredict find_max_indices()]: `ranges` must be a list of tuples."
-                )
-            for range_tuple in ranges:
-                if not isinstance(range_tuple, tuple) or len(range_tuple) != 2:
-                    raise ValueError(
-                        "[QModelPredict find_max_indices()]: `ranges` must be a list of tuples (start, end)."
-                    )
-                start, end = range_tuple
-                if not (
-                    isinstance(start, (int, np.integer))
-                    and isinstance(end, (int, np.integer))
-                ):
-                    raise ValueError(
-                        "[QModelPredict find_max_indices()]: Values in each tuple of `ranges` must be integers."
-                    )
-                if start < 0 or end >= len(data) or start > end:
-                    raise ValueError(
-                        "[QModelPredict find_max_indices()]: Invalid range (start, end) in `ranges`."
-                    )
-
-            # Find max indices
-            max_indices = []
-            for range_tuple in ranges:
-                start, end = range_tuple
-                sub_array = data[start : end + 1]
-                max_index = np.argmax(sub_array)
-                max_index_in_data = start + max_index
-                max_indices.append(max_index_in_data)
-
-            return max_indices
-        except Exception as e:
-            raise ValueError(
-                "[QModelPredict find_max_indices()]: Invalid input for `find_max_indices` function."
-            ) from e
-
-    def noise_filter(self, data):
-        try:
-            # Validate `predictions`
-            data = np.array(data)
-            if data.size == 0:
-                raise ValueError(
-                    "[QModelPredict noise_filter()]: `predictions` cannot be an empty array."
-                )
-
-            # Butterworth low-pass filter parameters
-            fs = 20
-            normal_cutoff = 2 / (0.5 * fs)
-
-            # Get the filter coefficients
-            b, a = butter(2, normal_cutoff, btype="low", analog=False)
-
-            # Apply the filter using filtfilt
-            filtered_predictions = filtfilt(b, a, data)
-
-            return filtered_predictions
-        except Exception as e:
-            raise ValueError(
-                "[QModelPredict noise_filter()]: Invalid input for `noise_filter` function."
-            ) from e
-
-    def find_top_peaks(self, y, num_peaks=3, prominence=0.1, height=0.1):
-        try:
-            # Validate input signal `y`
-            y = np.asarray(y)
-            if y.size == 0:
-                raise ValueError(
-                    "[QModelPredict find_top_peaks()]: `y` cannot be an empty array."
-                )
-
-            # Validate `num_peaks`
-            if not isinstance(num_peaks, int) or num_peaks <= 0:
-                raise ValueError(
-                    "[QModelPredict find_top_peaks()]: `num_peaks` must be a positive integer."
-                )
-            # Find peaks with their properties
-
-            peaks, properties = find_peaks(y, prominence=prominence, height=height)
-            while len(peaks) < num_peaks:
-                height -= 0.01
-                peaks, properties = find_peaks(y, prominence=prominence, height=height)
-
-            prominences = peak_prominences(y, peaks)[0]
-            widths = peak_widths(y, peaks, rel_height=0.5)[0]
-            heights = y[peaks]
-
-            # Define the weights for height, prominence, and width
-            w_h = 0.5
-            w_p = 0.25
-            w_w = 0.25
-
-            # Normalize the properties
-            H_min, H_max = heights.min(), heights.max()
-            P_min, P_max = prominences.min(), prominences.max()
-            W_min, W_max = widths.min(), widths.max()
-
-            # Compute the scores for each peak
-            scores = (
-                w_h * (heights - H_min) / (H_max - H_min)
-                + w_p * (prominences - P_min) / (P_max - P_min)
-                + w_w * (widths - W_min) / (W_max - W_min)
-            )
-
-            # Find the indices of the top `num_peaks` peaks with the highest scores
-            if len(peaks) > 0:
-                top_peak_indices = np.argsort(scores)[-min(num_peaks, len(peaks)) :]
-            else:
-                top_peak_indices = []
-
-            # Extract the top peaks and their properties
-            top_peaks = peaks[top_peak_indices]
-            top_properties = {
-                key: properties[key][top_peak_indices] for key in properties
-            }
-
-            return top_peaks, top_properties
-
-        except Exception as e:
-            raise ValueError(
-                "[QModelPredict find_top_peaks()]: Invalid input for `find_top_peaks` function."
-            ) from e
-
-    def find_start_stop(self, data):
-        """
-        Finds the start and stop indices of a critical region in the normalized data.
-
-        Args:
-            data (array-like): The input data to analyze.
-
-        Returns:
-            tuple: A tuple containing the start and stop indices of the critical region.
-
-        Raises:
-            ValueError: If `data` is not a valid array-like object or if `data` is empty.
-
-        Notes:
-            - Normalizes `data` to facilitate slope calculations.
-            - Uses a Savitzky-Golay filter for smoothing the normalized data.
-            - Determines the start of the critical region based on significant positive slope changes.
-            - Determines the stop of the critical region based on significant negative slope changes.
-
-        Example:
-            >>> from QModel import QModelPredict
-            >>> analyzer = QModelPredict()
-            >>> data = [0.1, 0.2, 0.3, 0.4, 0.5]
-            >>> start_index, stop_index = analyzer.find_start_stop(data)
-        """
-        # Validate `data`
-        data = np.asarray(data)
-        if data.size == 0:
-            raise ValueError(
-                "[QModelPredict find_start_stop()]: `data` cannot be an empty array."
-            )
-        data = self.normalize(data)
-        savgol_filter(data, int(len(data) * 0.01), 1)
-
-        # The start of the critical region for initial fill.
-        start = 0
-        # Slopes to determine the start of this region.
-        start_slopes = []
-
-        # A buffer for the first 1% of the input data set.
-        # Ensures any sensor interference does not affect the slope
-        # calculation.
-        buffer = int(len(data) * 0.01)
-        start_slopes = np.where(
-            np.arange(start + 1, len(data)) < buffer,
-            0,
-            (data[start + 1 :] - data[start]) / np.arange(start + 1, len(data) - start),
-        )
-
-        # Compute where there is a significant positive change in the start slopes.
-        # This index gets returned as the start index of the critical region.
-        start_slopes = self.normalize(start_slopes)
-        start_tmp = 1
-        for i in range(1, len(start_slopes)):
-            if start_slopes[i] < start_slopes[start] + 0.1:
-                start_tmp = i
-
-        # Compute where there is a significant negative change in the stop slopes.
-        # This index gets returned as the stop index of the critical region.
-        stop_tmp = start_tmp + buffer
-        stop_slopes = [0]
-        for i in range(start_tmp, len(start_slopes)):
-            if not (np.isnan(start_slopes[i]) or np.isnan(start_slopes[start_tmp])):
-                stop_slopes.append(
-                    (start_slopes[i] - start_slopes[start_tmp]) / (i - start_tmp)
-                )
-            if stop_slopes[-1] < stop_slopes[-2] - np.mean(stop_slopes):
-                stop_tmp = i
-                break
-        return (start + start_tmp - buffer, start + stop_tmp)
-
-    def classify(self, predictions):
-        # Check if the input is a numpy array
-        if not isinstance(predictions, np.ndarray):
-            raise TypeError("Input must be a numpy array")
-
-        # Check if each element in the array is also a numpy array with 6 elements
-        for inner_array in predictions:
-            if not isinstance(inner_array, np.ndarray) or len(inner_array) != 3:
-                raise ValueError(
-                    "Each inner array must be a numpy array with 7 elements"
-                )
-
-        # Initialize an array to store indices of maximum values
-        max_indices = []
-        # Loop through each inner array to find the index of the maximum value
-        for inner_array in predictions:
-            max_indices.append(np.argmax(inner_array))
-
-        return max_indices
 
     def compute_bounds(self, indices):
         bounds = []
@@ -531,3 +260,72 @@ class QModelPredict:
         indices = np.where(results == 1)[0]
         bounds = self.compute_bounds(indices)
         return results, bounds
+
+
+class QModelPredict:
+    def __init__(
+        self,
+        predictor_path_1,
+        predictor_path_2,
+        predictor_path_3,
+        predictor_path_4,
+        predictor_path_5,
+        predictor_path_6,
+    ):
+        # self.__data__ = QDataPipeline(data_file).preprocess()
+        self.__p1__ = QPredictor(predictor_path_1)
+        self.__p2__ = QPredictor(predictor_path_2)
+        self.__p3__ = QPredictor(predictor_path_3)
+        self.__p4__ = QPredictor(predictor_path_4)
+        self.__p5__ = QPredictor(predictor_path_5)
+        self.__p6__ = QPredictor(predictor_path_6)
+
+    def top_k_peaks(self, signal, k):
+        peaks, _ = find_peaks(signal)
+        peak_heights = signal[peaks]
+        top_k_indices = np.argsort(peak_heights)[-k:][::-1]
+        top_k_peaks = peaks[top_k_indices]
+        return top_k_peaks
+
+    def find_closest_point(self, x, y, x_values, y_values, slope, intercept):
+        distances = np.abs(y - (slope * np.log(x_values) + intercept))
+        closest_index = np.argmin(distances)
+        return x_values[closest_index], y_values[closest_index]
+
+    def predict(self, data):
+        emp_predictions = ModelData().IdentifyPoints(data)
+        emp_points = []
+        for pt in emp_predictions:
+            if isinstance(pt, int):
+                emp_points.append(pt)
+            elif isinstance(pt, list):
+                max_pair = max(pt, key=lambda x: x[1])
+                emp_points.append(max_pair[0])
+
+        k = 10
+        results_1, bound_1 = self.__p1__.predict(data)
+        results_2, bound_2 = self.__p2__.predict(data)
+        results_3, bound_3 = self.__p3__.predict(data)
+        results_4, bound_4 = self.__p4__.predict(data)
+        results_5, bound_5 = self.__p5__.predict(data)
+        results_6, bound_6 = self.__p6__.predict(data)
+        model_results = [
+            emp_points[0],
+            # emp_points[1],
+            # emp_points[2],
+            bound_2[0][0],
+            bound_3[0][0],
+            bound_4[0][0],
+            bound_5[0][0],
+            bound_6[0][0],
+        ]
+        peaks_1 = self.top_k_peaks(results_1, k)
+        peaks_2 = self.top_k_peaks(results_2, k)
+        peaks_3 = self.top_k_peaks(results_3, k)
+        peaks_4 = self.top_k_peaks(results_4, k)
+        peaks_5 = self.top_k_peaks(results_5, k)
+        peaks_6 = self.top_k_peaks(results_6, k)
+        all_peaks = [peaks_1, peaks_2, peaks_3, peaks_4, peaks_5, peaks_6]
+
+        print(model_results)
+        return model_results
