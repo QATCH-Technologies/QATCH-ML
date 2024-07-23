@@ -311,9 +311,9 @@ class QModelPredict:
         results_6, bound_6 = self.__p6__.predict(data)
         model_results = [
             emp_points[0],
-            # emp_points[1],
+            emp_points[1],
             # emp_points[2],
-            bound_2[0][0],
+            # bound_2[0][0],
             bound_3[0][0],
             bound_4[0][0],
             bound_5[0][0],
