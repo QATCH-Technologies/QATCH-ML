@@ -1,33 +1,52 @@
-import xgboost as xgb
-import pandas as pd
-import numpy as np
+import multiprocessing
+import sys
+
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import xgboost as xgb
+from hyperopt import STATUS_OK, Trials, fmin, hp, tpe
+from hyperopt.early_stop import no_progress_loss
+from ModelData import ModelData
 from scipy.signal import (
-    find_peaks,
-    peak_widths,
-    peak_prominences,
-    savgol_filter,
     butter,
     filtfilt,
+    find_peaks,
+    peak_prominences,
+    peak_widths,
+    savgol_filter,
 )
-from sklearn.model_selection import train_test_split
-from hyperopt import STATUS_OK, fmin, hp, tpe, Trials
-from hyperopt.early_stop import no_progress_loss
-import sys
-import multiprocessing
-from sklearn.preprocessing import RobustScaler
-from ModelData import ModelData
 from scipy.stats import linregress
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import RobustScaler
 
 # Get the number of threads
 NUM_THREADS = multiprocessing.cpu_count()
 print(f"[INFO] Available {NUM_THREADS} threads.")
 
 np.set_printoptions(threshold=sys.maxsize)
+
+QDataPipeline_found = False
 try:
-    from QDataPipline import QDataPipeline
+    if not QDataPipeline_found:
+        from QDataPipline import QDataPipeline
+    QDataPipeline_found = True
 except:
-    from QATCH.QModel.QDataPipline import QDataPipeline
+    QDataPipeline_found = False
+try:
+    if not QDataPipeline_found:
+        from QModel.QDataPipline import QDataPipeline
+    QDataPipeline_found = True
+except:
+    QDataPipeline_found = False
+try:
+    if not QDataPipeline_found:
+        from QATCH.QModel.QDataPipline import QDataPipeline
+    QDataPipeline_found = True
+except:
+    QDataPipeline_found = False
+if not QDataPipeline_found:
+    raise ImportError("Cannot find 'QDataPipeline' in any expected location.")
 
 """ The following are parameters for QModel to use during training time. """
 """ The percentage of data to include in the validation set. """
@@ -310,15 +329,16 @@ class QModelPredict:
         results_5, bound_5 = self.__p5__.predict(data)
         results_6, bound_6 = self.__p6__.predict(data)
         model_results = [
-            emp_points[0],
+            # emp_points[0],
             # emp_points[1],
-            # emp_points[2],
+            bound_1[0][0],
             bound_2[0][0],
             bound_3[0][0],
             bound_4[0][0],
             bound_5[0][0],
             bound_6[0][0],
         ]
+        model_results = [int(x) for x in model_results]
         peaks_1 = self.top_k_peaks(results_1, k)
         peaks_2 = self.top_k_peaks(results_2, k)
         peaks_3 = self.top_k_peaks(results_3, k)
@@ -327,5 +347,4 @@ class QModelPredict:
         peaks_6 = self.top_k_peaks(results_6, k)
         all_peaks = [peaks_1, peaks_2, peaks_3, peaks_4, peaks_5, peaks_6]
 
-        print(model_results)
         return model_results
