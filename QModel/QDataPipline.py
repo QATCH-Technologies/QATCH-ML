@@ -6,7 +6,22 @@ from scipy.signal import savgol_filter, butter, filtfilt, detrend
 import matplotlib.pyplot as plt
 from scipy.stats import pearsonr
 from sklearn.preprocessing import StandardScaler
-from ModelData import ModelData
+
+# ModelData_found = False
+# try:
+#     if not ModelData_found:
+#         from ModelData import ModelData
+#     ModelData_found = True
+# except:
+#     ModelData_found = False
+# try:
+#     if not ModelData_found:
+#         from QATCH.models.ModelData import ModelData
+#     ModelData_found = True
+# except:
+#     ModelData_found = False
+# if not ModelData_found:
+#     raise ImportError("Cannot find 'ModelData' in any expected location.")
 
 DOWNSAMPLE_AFTER = 90
 DOWNSAMPLE_COUNT = 20

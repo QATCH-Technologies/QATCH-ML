@@ -7,7 +7,6 @@ import pandas as pd
 import xgboost as xgb
 from hyperopt import STATUS_OK, Trials, fmin, hp, tpe
 from hyperopt.early_stop import no_progress_loss
-from ModelData import ModelData
 from scipy.signal import (
     butter,
     filtfilt,
@@ -25,6 +24,22 @@ NUM_THREADS = multiprocessing.cpu_count()
 print(f"[INFO] Available {NUM_THREADS} threads.")
 
 np.set_printoptions(threshold=sys.maxsize)
+
+ModelData_found = False
+try:
+    if not ModelData_found:
+        from ModelData import ModelData
+    ModelData_found = True
+except:
+    ModelData_found = False
+try:
+    if not ModelData_found:
+        from QATCH.models.ModelData import ModelData
+    ModelData_found = True
+except:
+    ModelData_found = False
+if not ModelData_found:
+    raise ImportError("Cannot find 'ModelData' in any expected location.")
 
 QDataPipeline_found = False
 try:
@@ -321,7 +336,6 @@ class QModelPredict:
         return norm_arr
 
     def generate_zone_probabilities(self, t):
-        t = self.normalize(t)
         amplitude = 1.0
         poi4_min_val = 0.2
         periodicity4 = 9
@@ -329,7 +343,7 @@ class QModelPredict:
         poi5_min_val = 0.3
         periodicity5 = 6
         period_skip5 = True
-        # t = np.linspace(0, 1, region_size)
+        t = self.normalize(t)
 
         signal_region_equation_POI4 = 1 - np.cos(periodicity4 * t * np.pi)
         signal_region_equation_POI4 = self.normalize_gen(
@@ -392,7 +406,30 @@ class QModelPredict:
         return x_values[closest_index], y_values[closest_index]
 
     def predict(self, data):
-        emp_predictions = ModelData().IdentifyPoints(data)
+        if not isinstance(data, str):
+            csv_headers = next(data)
+
+            if isinstance(csv_headers, bytes):
+                csv_headers = csv_headers.decode()
+
+            if "Ambient" in csv_headers:
+                csv_cols = (2,4,6,7)
+            else:
+                csv_cols = (2,3,5,6)
+
+            file_data  = np.loadtxt(data.readlines(), delimiter = ',', skiprows = 0, usecols = csv_cols)
+            data_path = "QModel Passthrough"
+            relative_time = file_data[:,0]
+            # temperature = file_data[:,1]
+            resonance_frequency = file_data[:,2]
+            dissipation = file_data[:,3]
+
+            emp_predictions = ModelData().IdentifyPoints(data_path=data_path, 
+                                                         times=relative_time,
+                                                         freq=resonance_frequency,
+                                                         diss=dissipation)
+        else:    
+            emp_predictions = ModelData().IdentifyPoints(data)
         emp_points = []
         for pt in emp_predictions:
             if isinstance(pt, int):
@@ -401,22 +438,37 @@ class QModelPredict:
                 max_pair = max(pt, key=lambda x: x[1])
                 emp_points.append(max_pair[0])
 
+        k = 10
+        data = self.reset_file_buffer(data)
         results_1, bound_1, rel_time = self.__p1__.predict(data)
+        data = self.reset_file_buffer(data)
         results_2, bound_2, rel_time = self.__p2__.predict(data)
+        data = self.reset_file_buffer(data)
         results_3, bound_3, rel_time = self.__p3__.predict(data)
+        data = self.reset_file_buffer(data)
         results_4, bound_4, rel_time = self.__p4__.predict(data)
+        data = self.reset_file_buffer(data)
         results_5, bound_5, rel_time = self.__p5__.predict(data)
+        data = self.reset_file_buffer(data)
         results_6, bound_6, rel_time = self.__p6__.predict(data)
 
         model_results = [
             emp_points[0],
-            emp_points[1],
-            # emp_points[2],
             # bound_1[0][0],
-            # bound_2[0][0],
+
+            # emp_points[1],
+            bound_2[0][0],
+
+            # emp_points[2],
             bound_3[0][0],
+
+            # emp_points[3],
             bound_4[0][0],
+
+            # emp_points[4],
             bound_5[0][0],
+
+            # emp_points[5],
             bound_6[0][0],
         ]
         approx_4, approx_5 = self.generate_zone_probabilities(
@@ -455,3 +507,14 @@ class QModelPredict:
         # plt.show()
 
         return model_results
+
+    def reset_file_buffer(self, data):
+        if not isinstance(data, str):
+            if hasattr(data, "seekable") and data.seekable():
+                data.seek(0)  # reset ByteIO buffer to beginning of stream
+            else:
+                # ERROR: 'data' must be 'BytesIO' type here, but it's not seekable!
+                raise Exception(
+                    "Cannot 'seek' stream when attempting to reset file buffer."
+                )
+        return data

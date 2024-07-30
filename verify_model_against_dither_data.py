@@ -2,9 +2,11 @@ from io import BytesIO
 import os
 import numpy as np
 import matplotlib.pylab as plt
+import matplotlib.patches as patches
 import random
 from datetime import datetime
 from tqdm import tqdm
+# from scipy.optimize import curve_fit
 
 MAX_TRUE_DIFF_ERROR = 5
 EXPONENTIAL_DIFF_ERROR = False
@@ -186,7 +188,7 @@ class VerifyQModel():
                 print("Things went so wrong, I can't even begin to explain it to you...")
             return [-1], [-1], -1 # invalid result
 
-    def run(self):
+    def benchmark_model(self):
         training_data_path = r"C:\Users\Alexander J. Ross\Documents\QATCH Work\ML\training_data"
         dithered_data_path = os.path.join(training_data_path, "Dithered_Data")
         num_runs = self.find_files(dithered_data_path)
@@ -378,6 +380,224 @@ class VerifyQModel():
 
         input() # pause, keep fig open
 
+
+    def plot_time_vs_distance(self):
+        training_data_path = r"C:\Users\Alexander J. Ross\Documents\QATCH Work\ML\training_data"
+        dithered_data_path = os.path.join(training_data_path, "Dithered_Data")
+        num_runs = self.find_files(dithered_data_path)
+
+        self.random_order = np.arange(0, num_runs, 1)
+        random.shuffle(self.random_order)
+        self.run_count = 0
+
+        self.show_next_plot()
+        input() # wait for user prompted close
+
+        fig, ax1 = plt.subplots(nrows=1, ncols=1)
+        fig.suptitle("Time vs. Distance fit line")
+        ax1.set_xlabel('Time (normalized)')
+        ax1.set_ylabel('Distance (mm)')
+
+        distances = [1.15, 1.61, 2.17, 5.00, 10.90, 16.2]
+        ax1.add_patch(
+            patches.Rectangle((-0.01, distances[0]-0.5), 0.04, 2, edgecolor='g', facecolor='g')
+        )
+        ax1.add_patch(
+            patches.Rectangle((0.03, distances[3]-0.5), 0.17, 1, edgecolor='g', facecolor='g')
+        )
+        ax1.add_patch(
+            patches.Rectangle((0.35, distances[4]-0.5), 0.40, 1, edgecolor='g', facecolor='g')
+        )
+        ax1.add_patch(
+            patches.Rectangle((0.20, distances[3]-0.5), 0.15, 6.9, edgecolor='r', facecolor='none')
+        )
+        ax1.add_patch(
+            patches.Rectangle((0.75, distances[4]-0.5), 0.15, 6.3, edgecolor='r', facecolor='none')
+        )
+
+        run_count = 0
+        desc_text = "Time vs. Distance"
+        for run in tqdm(self.random_order, desc=desc_text, unit="runs"):
+            run_count += 1
+
+            data_path = self.csv_files[run]
+            with open(data_path, 'r') as f:
+                csv_headers = next(f)
+                if isinstance(csv_headers, bytes):
+                    csv_headers = csv_headers.decode()
+                if "Ambient" in csv_headers:
+                    csv_cols = (2,4,6,7)
+                else:
+                    csv_cols = (2,3,5,6)
+                data  = np.loadtxt(f.readlines(), delimiter = ',', skiprows = 0, usecols = csv_cols)
+            
+            poi_path = self.poi_files[run]
+            poi_expected = np.loadtxt(poi_path, dtype=int)
+
+            try:
+                all_times = data[:,0]
+                times = all_times[poi_expected]
+                times = self.normalize(times)
+                distances = [1.15, 1.61, 2.17, 5.00, 10.90, 16.2]
+            except:
+                print("\n ERROR skipping run:", os.path.basename(data_path))
+                continue
+
+            D0 = 0 # distances[0]
+            Dss = 1 # 20 - D0
+            RC = times[-1]
+            t0 = times[0]
+            t = np.linspace(times[0], times[-1], 1000)
+            fit_curve_y = Dss*(1-np.exp(-(t-t0)/RC))+D0
+            fit_curve_y = self.normalize(fit_curve_y, distances[0]+distances[2], distances[-1])
+
+            i = next(x for x,y in enumerate(fit_curve_y) if y >= distances[3])
+            x_offset = np.linspace(distances[2], 0, i)
+            for x,y in enumerate(x_offset):
+                fit_curve_y[x] -= y
+
+            if run_count == 1:
+                ax1.plot(times, distances, color="blue", marker="x", mec="black", label="Actual Data")
+                ax1.plot(t, fit_curve_y, color="red", label="Trendline")
+            else:
+                ax1.plot(times, distances, color="blue", marker="x", mec="black")
+                ax1.plot(t, fit_curve_y, color="red")
+
+        def generate_zone_probabilities(region_size):
+            amplitude = distances[-1]
+            poi4_min_val = 0.2 * amplitude
+            periodicity4 = 9
+            period_skip4 = False
+            poi5_min_val = 0.3 * amplitude
+            periodicity5 = 6
+            period_skip5 = True
+            t = np.linspace(0, 1, region_size)
+            
+            signal_region_equation_POI4 = 1 - np.cos(periodicity4*t*np.pi)
+            signal_region_equation_POI4 = self.normalize(signal_region_equation_POI4, poi4_min_val, amplitude)
+            if period_skip4:
+                signal_region_equation_POI4 = np.where(t < 2/periodicity4, poi4_min_val, signal_region_equation_POI4)
+                signal_region_equation_POI4 = np.where(t > 4/periodicity4, poi4_min_val, signal_region_equation_POI4)
+            else:
+                signal_region_equation_POI4 = np.where(t > 2/periodicity4, poi4_min_val, signal_region_equation_POI4)
+
+            signal_region_equation_POI5 = 1 - np.cos(periodicity5*t*np.pi)
+            signal_region_equation_POI5 = self.normalize(signal_region_equation_POI5, poi5_min_val, amplitude)
+            if period_skip5:
+                signal_region_equation_POI5 = np.where(t < 2/periodicity5, poi5_min_val, signal_region_equation_POI5)
+                signal_region_equation_POI5 = np.where(t > 4/periodicity5, poi5_min_val, signal_region_equation_POI5)
+            else:
+                signal_region_equation_POI5 = np.where(t > 2/periodicity5, poi5_min_val, signal_region_equation_POI5)
+
+            signal_region_equation_POI4 = np.where(t < 0.03, 0, signal_region_equation_POI4)
+            if period_skip5:
+                signal_region_equation_POI4 = np.where(t > 2/periodicity5, 0, signal_region_equation_POI4)
+            if not period_skip4:
+                signal_region_equation_POI5 = np.where(t < 2/periodicity4, 0, signal_region_equation_POI5)
+            signal_region_equation_POI5 = np.where(t > 0.75, poi4_min_val, signal_region_equation_POI5)
+            signal_region_equation_POI5 = np.where(t > 0.90, 0, signal_region_equation_POI5)
+
+            return [signal_region_equation_POI4, signal_region_equation_POI5]
+        
+        signal_region_equation_POI4, signal_region_equation_POI5 = generate_zone_probabilities(1000)
+
+        ax1.plot(t, signal_region_equation_POI4, color="lime", label="POI4 probability")
+        ax1.plot(t, signal_region_equation_POI5, color="orange", label="POI5 probability")
+
+        fig.legend(loc="lower right")
+        fig.show()
+        input()
+
+    def normalize(self, arr, t_min = 0, t_max = 1):
+        norm_arr = arr.copy()
+        try:
+            diff = t_max - t_min
+            diff_arr = max(arr) - min(arr)
+            if diff_arr == 0:
+                diff_arr = 1
+            norm_arr -= min(arr)
+            norm_arr *= diff
+            norm_arr /= diff_arr
+            norm_arr += t_min
+        except Exception as e:
+            print("ERROR:" + str(e))
+        return norm_arr
+
+    def show_next_plot(self, event = None):
+        try:
+            run = self.random_order[self.run_count]
+        except:
+            print("Finished!")
+        self.run_count += 1
+        data_path = self.csv_files[run]
+        with open(data_path, 'r') as f:
+            csv_headers = next(f)
+            if isinstance(csv_headers, bytes):
+                csv_headers = csv_headers.decode()
+            if "Ambient" in csv_headers:
+                csv_cols = (2,4,6,7)
+            else:
+                csv_cols = (2,3,5,6)
+            data  = np.loadtxt(f.readlines(), delimiter = ',', skiprows = 0, usecols = csv_cols)
+        
+        poi_path = self.poi_files[run]
+        poi_expected = np.loadtxt(poi_path, dtype=int)
+
+        try:
+            all_times = data[:,0]
+            times = all_times[poi_expected]
+            distances = [1.15, 1.61, 2.17, 5.00, 10.90, 16.2]
+        except:
+            print("\n ERROR skipping run:", os.path.basename(data_path))
+            self.show_next_plot()
+            return
+
+        if True:
+            D0 = 0 # distances[0]
+            Dss = 1 # 20 - D0
+            RC = times[-1]
+            t0 = times[0]
+            t = np.linspace(times[0], times[-1], 1000)
+            fit_curve_y = Dss*(1-np.exp(-(t-t0)/RC))+D0
+            fit_curve_y = self.normalize(fit_curve_y, distances[0]+distances[2], distances[-1])
+
+            i = next(x for x,y in enumerate(fit_curve_y) if y >= distances[3])
+            x_offset = np.linspace(distances[2], 0, i)
+            for x,y in enumerate(x_offset):
+                fit_curve_y[x] -= y
+
+        # def curveCapChargeFit(x, a, b, c, d):
+        #     return a*(1-np.exp(-(x-b)/c))+d
+        # 
+        # p0 = (Dss, t0, RC, D0) # start with values near those we expect
+        # a, b, c, d = p0 # default, not yet optimized
+        # best_fit_pts = fit_curve_y # default, not yet optimized
+        # try:
+        #     params, cv = curve_fit(curveCapChargeFit, times, distances, p0)
+        #     a, b, c, d = params
+        #     best_fit_pts = curveCapChargeFit(t, a, b, c, d)
+        #     print(f"Normalized fit coeffs: {params}")
+        # except Exception as e:
+        #     print("Curve fit failed to find optimal parameters")
+        #     # raise e
+
+        fig, ax1 = plt.subplots(nrows=1, ncols=1)
+        fig.suptitle("Time vs. Distance fit line")
+        ax1.set_title(os.path.basename(data_path))
+        ax1.set_xlabel('Time (sec)')
+        ax1.set_ylabel('Distance (mm)')
+
+        ax1.plot(times, distances, color="blue", marker="x", mec="black")
+        ax1.plot(t, fit_curve_y, color="red")
+        # ax1.plot(t, best_fit_pts, color="green")
+
+        fig.canvas.mpl_connect('close_event', self.show_next_plot)
+        fig.show()
+
+
+    def run(self):
+        # self.benchmark_model()
+        self.plot_time_vs_distance()
 
 
 if __name__ == '__main__':
