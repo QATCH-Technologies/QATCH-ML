@@ -258,6 +258,7 @@ class QPredictor:
 
         # Process data using QDataPipeline
         qdp = QDataPipeline(file_buffer_2)
+        rel_time = qdp.__dataframe__["Relative_time"]
         qdp.preprocess(poi_file=None)
         df = qdp.get_dataframe()
 
@@ -278,7 +279,7 @@ class QPredictor:
 
         indices = np.where(results == 1)[0]
         bounds = self.compute_bounds(indices)
-        return results, bounds
+        return results, bounds, rel_time
 
 
 class QModelPredict:
@@ -298,6 +299,85 @@ class QModelPredict:
         self.__p4__ = QPredictor(predictor_path_4)
         self.__p5__ = QPredictor(predictor_path_5)
         self.__p6__ = QPredictor(predictor_path_6)
+
+    def normalize(self, data):
+        return np.array(
+            ((data - np.min(data)) / (np.max(data) - np.min(data))).tolist()
+        ).astype(float)
+
+    def normalize_gen(self, arr, t_min=0, t_max=1):
+        norm_arr = arr.copy()
+        try:
+            diff = t_max - t_min
+            diff_arr = max(arr) - min(arr)
+            if diff_arr == 0:
+                diff_arr = 1
+            norm_arr -= min(arr)
+            norm_arr *= diff
+            norm_arr /= diff_arr
+            norm_arr += t_min
+        except Exception as e:
+            print("ERROR:" + str(e))
+        return norm_arr
+
+    def generate_zone_probabilities(self, t):
+        t = self.normalize(t)
+        amplitude = 1.0
+        poi4_min_val = 0.2
+        periodicity4 = 9
+        period_skip4 = False
+        poi5_min_val = 0.3
+        periodicity5 = 6
+        period_skip5 = True
+        # t = np.linspace(0, 1, region_size)
+
+        signal_region_equation_POI4 = 1 - np.cos(periodicity4 * t * np.pi)
+        signal_region_equation_POI4 = self.normalize_gen(
+            signal_region_equation_POI4, poi4_min_val, amplitude
+        )
+        if period_skip4:
+            signal_region_equation_POI4 = np.where(
+                t < 2 / periodicity4, poi4_min_val, signal_region_equation_POI4
+            )
+            signal_region_equation_POI4 = np.where(
+                t > 4 / periodicity4, poi4_min_val, signal_region_equation_POI4
+            )
+        else:
+            signal_region_equation_POI4 = np.where(
+                t > 2 / periodicity4, poi4_min_val, signal_region_equation_POI4
+            )
+
+        signal_region_equation_POI5 = 1 - np.cos(periodicity5 * t * np.pi)
+        signal_region_equation_POI5 = self.normalize_gen(
+            signal_region_equation_POI5, poi5_min_val, amplitude
+        )
+        if period_skip5:
+            signal_region_equation_POI5 = np.where(
+                t < 2 / periodicity5, poi5_min_val, signal_region_equation_POI5
+            )
+            signal_region_equation_POI5 = np.where(
+                t > 4 / periodicity5, poi5_min_val, signal_region_equation_POI5
+            )
+        else:
+            signal_region_equation_POI5 = np.where(
+                t > 2 / periodicity5, poi5_min_val, signal_region_equation_POI5
+            )
+
+        signal_region_equation_POI4 = np.where(t < 0.03, 0, signal_region_equation_POI4)
+        if period_skip5:
+            signal_region_equation_POI4 = np.where(
+                t > 2 / periodicity5, 0, signal_region_equation_POI4
+            )
+        if not period_skip4:
+            signal_region_equation_POI5 = np.where(
+                t < 2 / periodicity4, 0, signal_region_equation_POI5
+            )
+        signal_region_equation_POI5 = np.where(
+            t > 0.75, poi4_min_val, signal_region_equation_POI5
+        )
+        signal_region_equation_POI5 = np.where(t > 0.90, 0, signal_region_equation_POI5)
+
+        return [signal_region_equation_POI4, signal_region_equation_POI5]
 
     def top_k_peaks(self, signal, k):
         peaks, _ = find_peaks(signal)
@@ -321,30 +401,57 @@ class QModelPredict:
                 max_pair = max(pt, key=lambda x: x[1])
                 emp_points.append(max_pair[0])
 
-        k = 10
-        results_1, bound_1 = self.__p1__.predict(data)
-        results_2, bound_2 = self.__p2__.predict(data)
-        results_3, bound_3 = self.__p3__.predict(data)
-        results_4, bound_4 = self.__p4__.predict(data)
-        results_5, bound_5 = self.__p5__.predict(data)
-        results_6, bound_6 = self.__p6__.predict(data)
+        results_1, bound_1, rel_time = self.__p1__.predict(data)
+        results_2, bound_2, rel_time = self.__p2__.predict(data)
+        results_3, bound_3, rel_time = self.__p3__.predict(data)
+        results_4, bound_4, rel_time = self.__p4__.predict(data)
+        results_5, bound_5, rel_time = self.__p5__.predict(data)
+        results_6, bound_6, rel_time = self.__p6__.predict(data)
+
         model_results = [
-            # emp_points[0],
-            # emp_points[1],
-            bound_1[0][0],
-            bound_2[0][0],
+            emp_points[0],
+            emp_points[1],
+            # emp_points[2],
+            # bound_1[0][0],
+            # bound_2[0][0],
             bound_3[0][0],
             bound_4[0][0],
             bound_5[0][0],
             bound_6[0][0],
         ]
-        model_results = [int(x) for x in model_results]
-        peaks_1 = self.top_k_peaks(results_1, k)
-        peaks_2 = self.top_k_peaks(results_2, k)
-        peaks_3 = self.top_k_peaks(results_3, k)
-        peaks_4 = self.top_k_peaks(results_4, k)
-        peaks_5 = self.top_k_peaks(results_5, k)
-        peaks_6 = self.top_k_peaks(results_6, k)
-        all_peaks = [peaks_1, peaks_2, peaks_3, peaks_4, peaks_5, peaks_6]
+        approx_4, approx_5 = self.generate_zone_probabilities(
+            rel_time[model_results[0] : model_results[5]]
+        )
+
+        approx_4 = np.concatenate(
+            (
+                np.zeros(model_results[0]),
+                approx_4,
+                np.zeros(len(results_5) - model_results[5]),
+            )
+        )
+        approx_5 = np.concatenate(
+            (
+                np.zeros(model_results[0]),
+                approx_5,
+                np.zeros(len(results_5) - model_results[5]),
+            )
+        )
+        model_results[3] = np.argmax(approx_4 * results_4)
+        model_results[4] = np.argmax(approx_5 * results_5)
+        # plt.figure()
+        # plt.title("POI 4")
+        # plt.axvline(x=model_results[3])
+        # plt.plot(approx_4 * results_4, label="Results_4")
+        # plt.plot(approx_4, label="approx_4")
+        # plt.legend()
+        # plt.show()
+        # plt.figure()
+        # plt.title("POI 5")
+        # plt.axvline(x=model_results[4])
+        # plt.plot(approx_5 * results_5, label="Results_5")
+        # plt.plot(approx_5, label="approx_5")
+        # plt.legend()
+        # plt.show()
 
         return model_results

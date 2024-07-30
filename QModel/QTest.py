@@ -11,8 +11,8 @@ from tqdm import tqdm
 
 from QModel import QModelPredict
 
-TEST_BATCH_SIZE = 0.2
-VALIDATION_DATASETS_PATH = "QModel/validation_datasets"
+TEST_BATCH_SIZE = 0.95
+VALIDATION_DATASETS_PATH = "content/good_runs"
 PREDICTOR = QModelPredict(
     "QModel/SavedModels/QModel_1.json",
     "QModel/SavedModels/QModel_2.json",
@@ -41,27 +41,39 @@ def load_test_dataset(path, test_size):
 
 
 def test_md_on_file(filename, act_poi):
-    md_predictor = ModelData()
-    md_result = md_predictor.IdentifyPoints(data_path=filename)
-    predictions = []
-    for item in md_result:
-        if isinstance(item, list):
-            predictions.append(item[0][0])
-        else:
-            predictions.append(item)
-    return list(zip(predictions, act_poi))
+    qdp = QDataPipeline(filename)
+    time_delta = qdp.find_time_delta()
+    if time_delta == -1:
+        md_predictor = ModelData()
+        md_result = md_predictor.IdentifyPoints(data_path=filename)
+        predictions = []
+        for item in md_result:
+            if isinstance(item, list):
+                predictions.append(item[0][0])
+            else:
+                predictions.append(item)
+        return list(zip(predictions, act_poi))
+    else:
+        print("[INFO] MD Skipping due to time delta")
 
 
 def test_qmp_on_file(filename, act_poi):
     qdp = QDataPipeline(filename)
-    qdp.preprocess(poi_file=None)
+    time_delta = qdp.find_time_delta()
+    if time_delta == -1:
+        qdp.preprocess(poi_file=None)
 
-    predictions = PREDICTOR.predict(filename)
-    return list(zip(predictions, act_poi))
+        predictions = PREDICTOR.predict(filename)
+        return list(zip(predictions, act_poi))
+    else:
+        print("[INFO] QM Skipping due to time delta")
 
 
 def compute_deltas(results):
-    deltas = [abs((actual - prediction)) for prediction, actual in results]
+    deltas = []
+    if results is not None:
+        for prediction, actual in results:
+            deltas.append(abs((actual - prediction)))
     return deltas
 
 
@@ -72,13 +84,15 @@ def accuracy_scatter_view(results, name):
     # Create a figure and axis
 
     # Collect all data for each index position
-    index_data = {i: {"predicted": [], "actual": []} for i in range(6)}
+    index_data = {i: {"predicted": [], "actual": [], "length": []} for i in range(6)}
 
     # Gather data from all datasets
     for dataset in results:
-        for i, (pred, actual) in enumerate(dataset):
-            index_data[i]["predicted"].append(pred)
-            index_data[i]["actual"].append(actual)
+        if dataset is not None:
+            for i, (pred, actual) in enumerate(dataset):
+                index_data[i]["predicted"].append(pred)
+                index_data[i]["actual"].append(actual)
+                index_data[i]["length"].append(len(dataset))
 
     # Plot the predicted data with the corresponding color for each index
     for i in range(6):
@@ -95,8 +109,16 @@ def accuracy_scatter_view(results, name):
             )
             # Add a line representing perfect predictions (y = x)
             lims = [
-                min(min(pred for pred, _ in dataset) for dataset in results),
-                max(max(pred for pred, _ in dataset) for dataset in results),
+                min(
+                    min(pred for pred, _ in dataset)
+                    for dataset in results
+                    if dataset is not None
+                ),
+                max(
+                    max(pred for pred, _ in dataset)
+                    for dataset in results
+                    if dataset is not None
+                ),
             ]
 
             ax.plot(
@@ -105,32 +127,44 @@ def accuracy_scatter_view(results, name):
                 linestyle="dotted",
                 label="Perfect Predictions",
                 color="grey",
-            )  # 'k--' for black dashed line
+            )
 
-            # Add labels and title
             ax.set_xlabel("Predicted Values")
             ax.set_ylabel("Actual Values")
             ax.set_title(f"{name} Predicted/Actual Values POI={i + 1}")
             ax.legend()
-
-            # Show the plot
             plt.show()
     # Calculate average deviance for each index
     average_deviance = {}
+    std = {}
+    rng = {}
     for i in range(6):
         if index_data[i]["predicted"]:
             deviance = [
-                abs(pred - actual)
-                for pred, actual in zip(
-                    index_data[i]["predicted"], index_data[i]["actual"]
+                (abs(pred - actual) / length)
+                for pred, actual, length in zip(
+                    index_data[i]["predicted"],
+                    index_data[i]["actual"],
+                    index_data[i]["length"],
                 )
             ]
             average_deviance[i] = np.mean(deviance)
+            std[i] = np.std(deviance)
+            rng[i] = max(deviance) - min(deviance)
 
     # Print average deviance
-    print("Average Deviance for each index:")
-    for i, deviance in average_deviance.items():
-        print(f"Index {i}: {deviance:.2f}")
+    print(f"{name} Average Deviance/STD for each index:")
+    for deviance, standard_deviation, gaps in zip(
+        average_deviance.items(), std.items(), rng.items()
+    ):
+        print(f"POI {deviance[0]}:")
+        print(f" - Average % Error {float(deviance[1])}")
+        print(f" - STD {float(standard_deviation[1])}")
+        print(f" - Maximum Range {gaps[1]}")
+        # print(
+        #     f"POI {1}:\n\t - Deviance={deviance:.2f}\n\t - STD={standard_deviation}\n\t - Range={gaps}"
+        # )
+    print()
 
 
 def delta_distribution_view(deltas, name):

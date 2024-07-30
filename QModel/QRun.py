@@ -4,17 +4,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
-import xgboost as xgb
 from imblearn.over_sampling import SMOTE
 from imblearn.pipeline import Pipeline
-from imblearn.under_sampling import NearMiss, RandomUnderSampler
+from imblearn.under_sampling import RandomUnderSampler
 from joblib import dump, load
-from ModelData import ModelData
 from QDataPipline import QDataPipeline
-from scipy.signal import find_peaks
-from scipy.stats import linregress
 from sklearn.decomposition import PCA
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.manifold import TSNE
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import RobustScaler
@@ -174,10 +169,13 @@ def xgb_pipeline(train_content):
     for filename in tqdm(train_content, desc="<<Processing XGB>>"):
         if filename.endswith(".csv") and not filename.endswith("_poi.csv"):
             data_file = filename
-            if max(pd.read_csv(data_file)["Relative_time"].values) < 90:
+            qdp = QDataPipeline(data_file)
+            time_delta = qdp.find_time_delta()
+            print(time_delta)
+            if time_delta == -1:
                 poi_file = filename.replace(".csv", "_poi.csv")
                 actual_indices = pd.read_csv(poi_file, header=None).values
-                qdp = QDataPipeline(data_file)
+
                 qdp.preprocess(poi_file=poi_file)
                 df = qdp.__dataframe__.drop(columns=S_TARGETS)
                 palette = sns.color_palette("husl", len(df.columns))
@@ -265,7 +263,7 @@ if XGB:
     qmodel_6.save_model("QModel_6")
 
 
-PATH = "QModel/validation_datasets"
+PATH = "content/validation_datasets"
 data_df = pd.DataFrame()
 content = []
 qmp = QModelPredict(
