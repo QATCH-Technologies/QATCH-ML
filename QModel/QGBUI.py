@@ -63,13 +63,28 @@ class CSVSorterApp:
         poi = pd.read_csv(filepath.replace(".csv", "_poi.csv"), header=None).values
         self.ax.clear()
         self.ax.plot(df["Dissipation"])
+        self.ax.axvline(
+            x=poi[0],
+            color="grey",
+            linestyle="dashed",
+            label=f"Actual POI {1}",
+        )
         for i, index in enumerate(poi):
             self.ax.axvline(
                 x=index,
                 color="grey",
                 linestyle="dashed",
-                label=f"Actual POI {i}",
+                label=f"Actual POI {i + 1}",
             )
+        self.ax.annotate(
+            poi,
+            xy=(0.02, 0.98),
+            xycoords="axes fraction",
+            ha="left",
+            va="top",
+            fontsize=10,
+            bbox=dict(boxstyle="round", facecolor="white", edgecolor="black"),
+        )
         self.ax.set_title(os.path.basename(filepath))
         self.canvas.draw()
 
