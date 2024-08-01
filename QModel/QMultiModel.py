@@ -250,6 +250,90 @@ class QPredictor:
 
         return bounds
 
+    def extract_results(self, results):
+
+        num_indices = len(results[0])
+        extracted = [[] for _ in range(num_indices)]
+
+        for sublist in results:
+            for idx in range(num_indices):
+                extracted[idx].append(sublist[idx])
+
+        return extracted
+
+    def normalize_gen(self, arr, t_min=0, t_max=1):
+        norm_arr = arr.copy()
+        try:
+            diff = t_max - t_min
+            diff_arr = max(arr) - min(arr)
+            if diff_arr == 0:
+                diff_arr = 1
+            norm_arr -= min(arr)
+            norm_arr *= diff
+            norm_arr /= diff_arr
+            norm_arr += t_min
+        except Exception as e:
+            print("ERROR:" + str(e))
+        return norm_arr
+
+    def generate_zone_probabilities(self, t):
+        amplitude = 1.0
+        poi4_min_val = 0.2
+        periodicity4 = 9
+        period_skip4 = False
+        poi5_min_val = 0.3
+        periodicity5 = 6
+        period_skip5 = True
+        t = self.normalize(t)
+
+        signal_region_equation_POI4 = 1 - np.cos(periodicity4 * t * np.pi)
+        signal_region_equation_POI4 = self.normalize_gen(
+            signal_region_equation_POI4, poi4_min_val, amplitude
+        )
+        if period_skip4:
+            signal_region_equation_POI4 = np.where(
+                t < 2 / periodicity4, poi4_min_val, signal_region_equation_POI4
+            )
+            signal_region_equation_POI4 = np.where(
+                t > 4 / periodicity4, poi4_min_val, signal_region_equation_POI4
+            )
+        else:
+            signal_region_equation_POI4 = np.where(
+                t > 2 / periodicity4, poi4_min_val, signal_region_equation_POI4
+            )
+
+        signal_region_equation_POI5 = 1 - np.cos(periodicity5 * t * np.pi)
+        signal_region_equation_POI5 = self.normalize_gen(
+            signal_region_equation_POI5, poi5_min_val, amplitude
+        )
+        if period_skip5:
+            signal_region_equation_POI5 = np.where(
+                t < 2 / periodicity5, poi5_min_val, signal_region_equation_POI5
+            )
+            signal_region_equation_POI5 = np.where(
+                t > 4 / periodicity5, poi5_min_val, signal_region_equation_POI5
+            )
+        else:
+            signal_region_equation_POI5 = np.where(
+                t > 2 / periodicity5, poi5_min_val, signal_region_equation_POI5
+            )
+
+        signal_region_equation_POI4 = np.where(t < 0.03, 0, signal_region_equation_POI4)
+        if period_skip5:
+            signal_region_equation_POI4 = np.where(
+                t > 2 / periodicity5, 0, signal_region_equation_POI4
+            )
+        if not period_skip4:
+            signal_region_equation_POI5 = np.where(
+                t < 2 / periodicity4, 0, signal_region_equation_POI5
+            )
+        signal_region_equation_POI5 = np.where(
+            t > 0.75, poi4_min_val, signal_region_equation_POI5
+        )
+        signal_region_equation_POI5 = np.where(t > 0.90, 0, signal_region_equation_POI5)
+
+        return [signal_region_equation_POI4, signal_region_equation_POI5]
+
     def predict(self, file_buffer):
         # Load CSV data and drop unnecessary columns
         df = pd.read_csv(file_buffer)
@@ -288,23 +372,48 @@ class QPredictor:
             d_data,
         )
         results = self.normalize(results)
-        plt.figure()
-        plt.plot(results, label="Results")
-        plt.plot(
-            df["Dissipation"], label="Dissipation", linestyle="dashed", color="black"
-        )
-        plt.legend()
-        plt.show()
-        results = np.concatenate(
+        extracted_results = self.extract_results(results)
+        # plt.figure()
+        # plt.plot(extracted_results[1], label="POI 1")
+        # plt.plot(extracted_results[2], label="POI 2")
+        # plt.plot(extracted_results[3], label="POI 3")
+        # plt.plot(extracted_results[4], label="POI 4")
+        # plt.plot(extracted_results[5], label="POI 5")
+        # plt.plot(extracted_results[6], label="POI 6")
+        # plt.plot(
+        #     self.normalize(df["Dissipation"]),
+        #     label="Dissipation",
+        #     linestyle="dashed",
+        #     color="black",
+        # )
+        # plt.legend()
+        # plt.show()
+        poi_1 = np.argmax(extracted_results[1])
+        poi_2 = np.argmax(extracted_results[2])
+        poi_3 = np.argmax(extracted_results[3])
+        poi_4 = np.argmax(extracted_results[4])
+        poi_5 = np.argmax(extracted_results[5])
+        poi_6 = np.argmax(extracted_results[6])
+
+        approx_4, approx_5 = self.generate_zone_probabilities(rel_time[poi_1:poi_6])
+
+        approx_4 = np.concatenate(
             (
-                np.zeros(df.index.min()),
-                results,
+                np.zeros(poi_1),
+                approx_4,
+                np.zeros(len(extracted_results[4]) - poi_6),
             )
         )
-
-        indices = np.where(results == 1)[0]
-        bounds = self.compute_bounds(indices)
-        return results, bounds, rel_time
+        approx_5 = np.concatenate(
+            (
+                np.zeros(poi_1),
+                approx_5,
+                np.zeros(len(extracted_results[5]) - poi_6),
+            )
+        )
+        poi_4 = np.argmax(approx_4 * extracted_results[4])
+        poi_5 = np.argmax(approx_5 * extracted_results[5])
+        return poi_1, poi_2, poi_3, poi_4, poi_5, poi_6
 
 
 class QModelPredict:

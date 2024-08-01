@@ -18,7 +18,7 @@ from tqdm import tqdm
 from QMultiModel import QModel, QPredictor
 
 PLOTTING = True
-TRAINING = True
+TRAINING = False
 PATH = "content/training_data_with_points"
 FEATURES = [
     "Relative_time",
@@ -132,31 +132,42 @@ def load_content(data_dir, size=0.5):
 
 def xgb_pipeline(train_content):
     print(f"[INFO] XGB Preprocessing on {len(train_content)} datasets")
-    data_df = pd.DataFrame()
-
+    data_df_short = pd.DataFrame()
+    data_df_long = pd.DataFrame()
     for filename in tqdm(train_content, desc="<<Processing XGB>>"):
         if filename.endswith(".csv") and not filename.endswith("_poi.csv"):
             data_file = filename
             qdp = QDataPipeline(data_file, multi_class=True)
+            poi_file = filename.replace(".csv", "_poi.csv")
             time_delta = qdp.find_time_delta()
-            if time_delta == -1:
-                poi_file = filename.replace(".csv", "_poi.csv")
-                qdp.preprocess(poi_file=poi_file)
-                has_nan = qdp.__dataframe__.isna().any().any()
-                if not has_nan:
-                    data_df = pd.concat([data_df, qdp.get_dataframe()])
-    resampled_df = resample_df(data_df, M_TARGET, M_TARGET)
-    return resampled_df
+            qdp.preprocess(poi_file=poi_file)
+            has_nan = qdp.__dataframe__.isna().any().any()
+            if not has_nan:
+
+                if time_delta == -1:
+                    data_df_short = pd.concat([data_df_short, qdp.get_dataframe()])
+                else:
+                    data_df_long = pd.concat([data_df_long, qdp.get_dataframe()])
+    resampled_df_short = resample_df(data_df_short, M_TARGET, M_TARGET)
+    resampled_df_long = resample_df(data_df_long, M_TARGET, M_TARGET)
+    return resampled_df_short, resampled_df_long
 
 
 train_content, test_content = load_content(PATH, size=0.8)
 if TRAINING:
-    training_set = xgb_pipeline(train_content)
-    qmodel = QModel(dataset=training_set, predictors=FEATURES, target_features=M_TARGET)
-    qmodel.tune()
-    qmodel.train_model()
-    qmodel.save_model()
-
+    short_set, long_set = xgb_pipeline(train_content)
+    qmodel_short = QModel(
+        dataset=short_set, predictors=FEATURES, target_features=M_TARGET
+    )
+    qmodel_long = QModel(
+        dataset=long_set, predictors=FEATURES, target_features=M_TARGET
+    )
+    qmodel_short.tune()
+    qmodel_short.train_model()
+    qmodel_short.save_model("QMulti_S")
+    qmodel_short.tune()
+    qmodel_short.train_model()
+    qmodel_short.save_model("QMulti_L")
 
 PATH = "content/validation_datasets"
 data_df = pd.DataFrame()
@@ -173,8 +184,6 @@ for filename in content:
         actual_indices = pd.read_csv(poi_file, header=None).values
         qdp = QDataPipeline(data_file)
         qdp.preprocess(poi_file=None)
-        # qdp.__dataframe__ = qdp.__dataframe__.drop(columns=["Class", "Pooling"])
-
         predictions = qmp.predict(data_file)
         if PLOTTING:
             palette = sns.color_palette("husl", 6)
@@ -190,25 +199,14 @@ for filename in content:
                 color="grey",
                 label="Dissipation",
             )
-            plt.axvline(
-                x=predictions[0],
-                color=palette[0],
-                label="Predicted POI 0",
-            )
             for i, index in enumerate(predictions):
-                plt.axvline(x=index, color=palette[i], label=f"Predicted POI {i}")
-            plt.axvline(
-                x=actual_indices[0],
-                color=palette[0],
-                linestyle="dashed",
-                label="Actual POI 0",
-            )
+                plt.axvline(x=index, color=palette[i], label=f"Predicted POI {i + 1}")
             for i, index in enumerate(actual_indices):
                 plt.axvline(
                     x=index,
                     color=palette[i],
                     linestyle="dashed",
-                    label=f"Actual POI {i}",
+                    label=f"Actual POI {i + 1}",
                 )
             plot_name = data_file.replace(PATH, "")
             plt.xlabel("POIs")
