@@ -101,25 +101,6 @@ class QDataPipeline:
         self.remove_trend("Dissipation")
         self.remove_trend("Resonance_Frequency")
         self.remove_trend("Difference")
-        # emp_predictor = ModelData()
-        # emp_result = emp_predictor.IdentifyPoints(data_path=self.__filepath__)
-        # emp_result = [
-        #     item if isinstance(item, int) else [val[0] for val in item]
-        #     for item in emp_result
-        #     if isinstance(item, (int, list))
-        # ]
-        # emp_result = [
-        #     item
-        #     for sublist in emp_result
-        #     for item in (sublist if isinstance(sublist, list) else [sublist])
-        # ]
-        # self.__dataframe__["EMP"] = 0
-        # for idx in emp_result:
-        #     self.__dataframe__.loc[idx, "EMP"] = 1
-        # self.__dataframe__.reset_index()
-
-    def apply_lda(self, target):
-        pass
 
     def find_time_delta(self):
         time_df = pd.DataFrame()
