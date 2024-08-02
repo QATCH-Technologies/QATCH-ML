@@ -53,13 +53,13 @@ FEATURES = [
     "Shannon_Entropy",
     "Signal_Energy",
     "Variance",
-    # "Wavelet_Energy",
+    "Wavelet_Energy",
     # "Zero_Crossing_Rate",
 ]
 TARGET = "Class"
 GOOD_LABEL = 0
 BAD_LABEL = 1
-BATCH_SIZE = 20
+BATCH_SIZE = np.inf
 
 
 class SignalMetrics:
@@ -127,7 +127,6 @@ class SignalMetrics:
 
     def wavelet_energy(self, wavelet="db1"):
         coeffs = pywt.wavedec(cp.asnumpy(self.__signal__), wavelet)
-        coeffs = cp.asarray(coeffs)
         return sum(cp.sum(c**2) for c in coeffs)
 
     def normalize_data(self, data):
@@ -143,14 +142,15 @@ def extract_features(file_path):
             "Time",
             "Ambient",
             "Temperature",
-            "Resonance_Frequency",
             "Peak Magnitude (RAW)",
         ],
         inplace=True,
     )
 
     features = []
-    dissipation = df["Dissipation"].values  # Convert to NumPy array for compatibility
+    dissipation = df[
+        "Resonance_Frequency"
+    ].values  # Convert to NumPy array for compatibility
     sm = SignalMetrics(dissipation)
     features.append(float(cp.asnumpy(sm.approximate_entropy())))
     features.append(float(cp.asnumpy(sm.autocorrelation())))
@@ -166,7 +166,7 @@ def extract_features(file_path):
     features.append(float(cp.asnumpy(sm.shannon_entropy())))
     features.append(float(cp.asnumpy(sm.signal_energy())))
     features.append(float(cp.asnumpy(sm.variance())))
-    # features.append(cp.asnumpy(sm.wavelet_energy()))
+    features.append(float(cp.asnumpy(sm.wavelet_energy())))
     features_df = pd.DataFrame([features], columns=FEATURES)
     # Cleanup
     cp.get_default_memory_pool().free_all_blocks()
@@ -211,12 +211,6 @@ def resample_df(data, target, droppable):
     return resampled_df
 
 
-def cluster_data(features, n_clusters=3):
-    kmeans = KMeans(n_clusters=n_clusters)
-    labels = kmeans.fit_predict(features)
-    return labels, kmeans
-
-
 def load_content(data_dir, label):
     df = pd.DataFrame()
     total_files = min(
@@ -236,7 +230,7 @@ def load_content(data_dir, label):
                 ):
                     extraction = extract_features(os.path.join(root, file_path))
                     df = pd.concat([df, extraction], ignore_index=True)
-                    # df[TARGET] = label
+                    df[TARGET] = label
                     count += 1
                     pbar.update(1)
                 cp.get_default_memory_pool().free_all_blocks()
@@ -273,14 +267,10 @@ if __name__ == "__main__":
         plt.show()
         dataset = resample_df(shuffled_df, TARGET, TARGET)
         tsne_view(dataset[FEATURES], dataset[TARGET])
-        # print(dataset)
-        # qm = QModel(dataset=dataset, predictors=FEATURES, target_features=TARGET)
-        # qm.tune()
-        # qm.train_model()
-        # qm.save_model("QGBClassifier")
-
-        labels, kmeans = cluster_data(dataset, 2)
-        # representative_samples = get_representative_samples(labels, dataset, 2)
+        qm = QModel(dataset=dataset, predictors=FEATURES, target_features=TARGET)
+        qm.tune()
+        qm.train_model()
+        qm.save_model("QGBClassifier")
 
     if TESTING:
         qmp = xgb.Booster()
@@ -299,5 +289,3 @@ if __name__ == "__main__":
                     d_data = xgb.DMatrix(df)
                     prediction = qmp.predict(d_data)
                     print(prediction)
-                    result = kmeans.predict(df)
-                    input(result)
