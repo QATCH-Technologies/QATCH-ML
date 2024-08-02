@@ -12,7 +12,7 @@ from tqdm import tqdm
 from QModel import QModelPredict
 
 TEST_BATCH_SIZE = 0.95
-VALIDATION_DATASETS_PATH = "content/data_dump"
+VALIDATION_DATASETS_PATH = "content/bad_runs/validate"
 PREDICTOR = QModelPredict(
     "QModel/SavedModels/QModel_1.json",
     "QModel/SavedModels/QModel_2.json",

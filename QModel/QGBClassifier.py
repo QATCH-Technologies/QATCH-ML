@@ -20,6 +20,7 @@ from imblearn.over_sampling import SMOTE
 from imblearn.pipeline import Pipeline
 from imblearn.under_sampling import RandomUnderSampler
 from QModel import QModel
+from sklearn.cluster import KMeans
 
 import pywt
 import seaborn as sns
@@ -41,8 +42,10 @@ FEATURES = [
     "Approx_Entropy",
     "Autocorrelation",
     "First_Derivative_Mean",
+    "Max_Amp",
     "Max_Time",
     "Mean_Absolute_Deviation",
+    "Min_Amp",
     "N_Peaks",
     "PTP_Jitter",
     "RMS_Jitter",
@@ -149,18 +152,20 @@ def extract_features(file_path):
     features = []
     dissipation = df["Dissipation"].values  # Convert to NumPy array for compatibility
     sm = SignalMetrics(dissipation)
-    features.append(cp.asnumpy(sm.approximate_entropy()))
-    features.append(cp.asnumpy(sm.autocorrelation()))
-    features.append(cp.asnumpy(sm.first_derivative_mean()))
+    features.append(float(cp.asnumpy(sm.approximate_entropy())))
+    features.append(float(cp.asnumpy(sm.autocorrelation())))
+    features.append(float(cp.asnumpy(sm.first_derivative_mean())))
+    features.append(dissipation.max())
     features.append(df["Relative_time"].max())
-    features.append(cp.asnumpy(sm.mean_absolute_deviation()))
+    features.append(float(cp.asnumpy(sm.mean_absolute_deviation())))
+    features.append(dissipation.min())
     features.append(sm.number_of_peaks())
-    features.append(cp.asnumpy(sm.peak_to_peak_jitter()))
-    features.append(cp.asnumpy(sm.rms_jitter()))
-    features.append(cp.asnumpy(sm.second_derivative_mean()))
-    features.append(cp.asnumpy(sm.shannon_entropy()))
-    features.append(cp.asnumpy(sm.signal_energy()))
-    features.append(cp.asnumpy(sm.variance()))
+    features.append(float(cp.asnumpy(sm.peak_to_peak_jitter())))
+    features.append(float(cp.asnumpy(sm.rms_jitter())))
+    features.append(float(cp.asnumpy(sm.second_derivative_mean())))
+    features.append(float(cp.asnumpy(sm.shannon_entropy())))
+    features.append(float(cp.asnumpy(sm.signal_energy())))
+    features.append(float(cp.asnumpy(sm.variance())))
     # features.append(cp.asnumpy(sm.wavelet_energy()))
     features_df = pd.DataFrame([features], columns=FEATURES)
     # Cleanup
@@ -191,7 +196,6 @@ def resample_df(data, target, droppable):
     print(f"[INFO] resampling target='{target}'")
     y = data[target].values
     X = data.drop(columns=droppable)
-
     over = SMOTE(sampling_strategy="auto")
     under = RandomUnderSampler(sampling_strategy="auto")
     steps = [
@@ -199,12 +203,18 @@ def resample_df(data, target, droppable):
         ("u", under),
     ]
     pipeline = Pipeline(steps=steps)
-
     X, y = pipeline.fit_resample(X, y)
-
+    scaler = StandardScaler()
+    X = scaler.fit_transform(X)
     resampled_df = pd.DataFrame(X, columns=data.drop(columns=droppable).columns)
     resampled_df[target] = y
     return resampled_df
+
+
+def cluster_data(features, n_clusters=3):
+    kmeans = KMeans(n_clusters=n_clusters)
+    labels = kmeans.fit_predict(features)
+    return labels, kmeans
 
 
 def load_content(data_dir, label):
@@ -226,7 +236,7 @@ def load_content(data_dir, label):
                 ):
                     extraction = extract_features(os.path.join(root, file_path))
                     df = pd.concat([df, extraction], ignore_index=True)
-                    df[TARGET] = label
+                    # df[TARGET] = label
                     count += 1
                     pbar.update(1)
                 cp.get_default_memory_pool().free_all_blocks()
@@ -234,6 +244,18 @@ def load_content(data_dir, label):
     return df
 
 
+def get_representative_samples(labels, dataframes, n_clusters):
+    representative_samples = []
+    for cluster in range(n_clusters):
+        cluster_indices = np.where(labels == cluster)[0]
+        if len(cluster_indices) > 0:
+            representative_sample_index = cluster_indices[0]
+            representative_samples.append(dataframes[representative_sample_index])
+    return representative_samples
+
+
+kmeans = None
+labels = None
 if __name__ == "__main__":
     if TRAINING:
         # Paths to files and their labels
@@ -250,15 +272,15 @@ if __name__ == "__main__":
         plt.title("Correlation Matrix")
         plt.show()
         dataset = resample_df(shuffled_df, TARGET, TARGET)
-        df = dataset.apply(
-            lambda x: pd.to_numeric(x, errors="ignore") if x.dtype == "object" else x
-        )
         tsne_view(dataset[FEATURES], dataset[TARGET])
-        print(dataset.dtypes)
-        qm = QModel(dataset=dataset, predictors=FEATURES, target_features=TARGET)
-        qm.tune()
-        qm.train_model()
-        qm.save_model("QGBClassifier")
+        # print(dataset)
+        # qm = QModel(dataset=dataset, predictors=FEATURES, target_features=TARGET)
+        # qm.tune()
+        # qm.train_model()
+        # qm.save_model("QGBClassifier")
+
+        labels, kmeans = cluster_data(dataset, 2)
+        # representative_samples = get_representative_samples(labels, dataset, 2)
 
     if TESTING:
         qmp = xgb.Booster()
@@ -277,3 +299,5 @@ if __name__ == "__main__":
                     d_data = xgb.DMatrix(df)
                     prediction = qmp.predict(d_data)
                     print(prediction)
+                    result = kmeans.predict(df)
+                    input(result)

@@ -2,6 +2,7 @@ import os
 import shutil
 import numpy as np
 
+exist = []
 roots = []
 paths = []
 files = []
@@ -9,12 +10,32 @@ files = []
 num_files_per_run = 3
 
 
-def iterate_files(directory):
+def load_existing_files(directory):
     for root, dirs, files in os.walk(directory):
         file_poi = None
         file_xml = None
         file_zip = None
         for file in files:
+            # print(os.path.join(root, file))
+            if file.endswith("_poi.csv"):
+                file_poi = file
+        if any([file_poi, file_xml, file_zip]):
+            if file_poi.startswith("Dithered_"):
+                print(f"Skipping dithered run {file_poi}")
+            else:
+                exist.append(file_poi)
+
+
+def iterate_files(directory):
+    next_index = len(exist)
+    start_index = next_index
+    files_scanned = 0
+    for root, dirs, files in os.walk(directory):
+        file_poi = None
+        file_xml = None
+        file_zip = None
+        for file in files:
+            files_scanned += 1
             # print(os.path.join(root, file))
             if file.endswith("_poi.csv"):
                 file_poi = file
@@ -31,13 +52,24 @@ def iterate_files(directory):
             if file == "capture.zip":
                 file_zip = file
         if all([file_poi, file_xml, file_zip]):
-            store_data_file(root, file_poi)
-            store_data_file(root, file_xml)
-            store_data_file(root, file_zip)
+            if file_poi in exist:
+                print(f"Skipping {file_poi}... file already exists!")
+            else:
+                store_data_file(root, file_poi, next_index)
+                store_data_file(root, file_xml, next_index)
+                store_data_file(root, file_zip, next_index)
+                next_index += 1
+    ending_index = next_index
+    print(
+        f"Scanned {files_scanned} files: Collected {ending_index-start_index} new runs",
+        ", from index {start_index:05.0f} to {(ending_index-1):05.0f}"
+        if start_index != ending_index
+        else "",
+    )
 
 
-def store_data_file(root, file):
-    i = int(len(roots) / num_files_per_run)
+def store_data_file(root, file, i):
+    # i = next_i # int(len(roots) / num_files_per_run)
     copy_from = os.path.join(root, file)
     copy_to = os.path.join(training_data_path, f"{i:05.0f}")
 
@@ -124,34 +156,11 @@ def process_stored_files():
                 os.remove(full_path)  # delete extra files
 
 
-production_data_path = (
-    r"C:\Users\QATCH\QATCH Dropbox\QATCH Team Folder\Production Notes"
+production_data_path = os.path.join(
+    os.environ["USERPROFILE"], "QATCH Dropbox/QATCH Team Folder/Production Notes"
 )
-training_data_path = r"C:\Users\QATCH\dev\clean\QATCH-ML\content\dropbox_dump"
+training_data_path = "content/dropbox_dump"
 
+load_existing_files(training_data_path)
 iterate_files(production_data_path)
 process_stored_files()
-
-
-def copy_files(src_dir, dest_dir):
-    # Ensure destination directory exists
-    if not os.path.exists(dest_dir):
-        os.makedirs(dest_dir)
-
-    # List all files in the source directory
-    files = os.listdir(src_dir)
-
-    # Copy each file to the destination directory
-    for file in files:
-        src_file = os.path.join(src_dir, file)
-        dest_file = os.path.join(dest_dir, file)
-        shutil.copy2(src_file, dest_file)
-        print(f"Copied {src_file} to {dest_file}")
-
-
-# Define source and destination directories
-src_directory = "content/dropbox_dump"
-dest_directory = "content/all_data"
-
-# Call the function to copy files
-copy_files(src_directory, dest_directory)
