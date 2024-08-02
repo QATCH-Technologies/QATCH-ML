@@ -41,10 +41,8 @@ FEATURES = [
     "Approx_Entropy",
     "Autocorrelation",
     "First_Derivative_Mean",
-    "Max_Amp",
     "Max_Time",
     "Mean_Absolute_Deviation",
-    "Min_Amp",
     "N_Peaks",
     "PTP_Jitter",
     "RMS_Jitter",
@@ -53,17 +51,17 @@ FEATURES = [
     "Signal_Energy",
     "Variance",
     # "Wavelet_Energy",
-    "Zero_Crossing_Rate",
+    # "Zero_Crossing_Rate",
 ]
 TARGET = "Class"
 GOOD_LABEL = 0
 BAD_LABEL = 1
-BATCH_SIZE = np.inf
+BATCH_SIZE = 20
 
 
 class SignalMetrics:
     def __init__(self, signal):
-        self.__signal__ = cp.asarray(signal, dtype=cp.float16)
+        self.__signal__ = self.normalize_data(cp.asarray(signal, dtype=cp.float16))
 
     def rms_jitter(self):
         jitter = cp.sqrt(cp.mean(cp.diff(self.__signal__) ** 2))
@@ -75,12 +73,6 @@ class SignalMetrics:
     def number_of_peaks(self):
         peaks, _ = find_peaks(cp.asnumpy(self.__signal__))
         return len(peaks)
-
-    def max_amplitude(self):
-        return cp.max(self.__signal__)
-
-    def min_amplitude(self):
-        return cp.min(self.__signal__)
 
     def signal_energy(self):
         return cp.sum(self.__signal__**2)
@@ -123,7 +115,9 @@ class SignalMetrics:
         return c_lag / c0
 
     def first_derivative_mean(self):
-        return cp.mean(cp.diff(self.__signal__))
+        deriviative = cp.diff(self.__signal__)
+        mean = cp.mean(deriviative)
+        return mean
 
     def second_derivative_mean(self):
         return cp.mean(cp.diff(self.__signal__, n=2))
@@ -132,6 +126,9 @@ class SignalMetrics:
         coeffs = pywt.wavedec(cp.asnumpy(self.__signal__), wavelet)
         coeffs = cp.asarray(coeffs)
         return sum(cp.sum(c**2) for c in coeffs)
+
+    def normalize_data(self, data):
+        return (data - cp.min(data)) / (cp.max(data) - cp.min(data))
 
 
 def extract_features(file_path):
@@ -155,10 +152,8 @@ def extract_features(file_path):
     features.append(cp.asnumpy(sm.approximate_entropy()))
     features.append(cp.asnumpy(sm.autocorrelation()))
     features.append(cp.asnumpy(sm.first_derivative_mean()))
-    features.append(cp.asnumpy(sm.max_amplitude()))
     features.append(df["Relative_time"].max())
     features.append(cp.asnumpy(sm.mean_absolute_deviation()))
-    features.append(cp.asnumpy(sm.min_amplitude()))
     features.append(sm.number_of_peaks())
     features.append(cp.asnumpy(sm.peak_to_peak_jitter()))
     features.append(cp.asnumpy(sm.rms_jitter()))
@@ -166,122 +161,13 @@ def extract_features(file_path):
     features.append(cp.asnumpy(sm.shannon_entropy()))
     features.append(cp.asnumpy(sm.signal_energy()))
     features.append(cp.asnumpy(sm.variance()))
-    features.append(cp.asnumpy(sm.zero_crossing_rate()))
+    # features.append(cp.asnumpy(sm.wavelet_energy()))
     features_df = pd.DataFrame([features], columns=FEATURES)
     # Cleanup
     cp.get_default_memory_pool().free_all_blocks()
     cp.get_default_pinned_memory_pool().free_all_blocks()
 
     return features_df
-
-
-# class SignalMetrics:
-#     def __init__(self, signal):
-#         self.__signal__ = signal
-
-#     def rms_jitter(self):
-#         return np.sqrt(np.mean(np.diff(self.__signal__) ** 2))
-
-#     def peak_to_peak_jitter(self):
-#         return np.ptp(np.diff(self.__signal__))
-
-#     def number_of_peaks(self):
-#         peaks, _ = find_peaks(self.__signal__)
-#         return len(peaks)
-
-#     def max_amplitude(self):
-#         return np.max(self.__signal__)
-
-#     def min_amplitude(self):
-#         return np.min(self.__signal__)
-
-#     def signal_energy(self):
-#         return np.sum(self.__signal__**2)
-
-#     def variance(self):
-#         return np.var(self.__signal__)
-
-#     def mean_absolute_deviation(self):
-#         return np.mean(np.abs(self.__signal__ - np.mean(self.__signal__)))
-
-#     def zero_crossing_rate(self):
-#         zero_crossings = np.where(np.diff(np.signbit(self.__signal__)))[0]
-#         return len(zero_crossings) / len(self.__signal__)
-
-#     def shannon_entropy(self):
-#         histogram, bin_edges = np.histogram(self.__signal__, bins=10, density=True)
-#         return entropy(histogram)
-
-#     def approximate_entropy(self, m=2, r=0.2):
-#         N = len(self.__signal__)
-#         signal_std = np.std(self.__signal__)
-#         r *= signal_std
-#         X = sliding_window_view(self.__signal__, m)
-#         C = (np.abs(X - X[:, None]) <= r).sum(axis=2).mean(axis=1)
-#         return -np.log(C).mean()
-
-#     def autocorrelation(self, lag=1):
-#         n = len(self.__signal__)
-#         signal_mean = np.mean(self.__signal__)
-#         c0 = np.sum((self.__signal__ - signal_mean) ** 2) / n
-#         c_lag = (
-#             np.sum(
-#                 (self.__signal__[: n - lag] - signal_mean)
-#                 * (self.__signal__[lag:] - signal_mean)
-#             )
-#             / n
-#         )
-#         return c_lag / c0
-
-#     def first_derivative_mean(self):
-#         return np.mean(np.diff(self.__signal__))
-
-#     def second_derivative_mean(self):
-#         return np.mean(np.diff(self.__signal__, n=2))
-
-#     def wavelet_energy(self, wavelet="db1"):
-#         coeffs = pywt.wavedec(self.__signal__.get(), wavelet)
-#         coeffs = np.asarray(coeffs)
-#         return sum(np.sum(c**2) for c in coeffs)
-
-
-# def extract_features(file_path):
-#     # Load CSV file
-#     df = pd.read_csv(file_path)
-#     df.drop(
-#         columns=[
-#             "Date",
-#             "Time",
-#             "Ambient",
-#             "Temperature",
-#             "Resonance_Frequency",
-#             "Peak Magnitude (RAW)",
-#         ],
-#         inplace=True,
-#     )
-
-#     features = pd.DataFrame(columns=FEATURES)
-#     dissipation = df["Dissipation"]
-#     sm = SignalMetrics(dissipation)
-#     features["Approx_Entropy"] = sm.approximate_entropy()
-#     features["Autocorrelation"] = sm.autocorrelation()
-#     features["First_Derivative_Mean"] = sm.first_derivative_mean()
-#     features["Max_Amp"] = sm.max_amplitude()
-#     features["Max_Time"] = df["Relative_time"].max()
-#     features["Mean_Absolute_Deviation"] = sm.mean_absolute_deviation()
-#     features["Min_Amp"] = sm.min_amplitude()
-#     features["N_Peaks"] = sm.number_of_peaks()
-#     features["PTP_Jitter"] = sm.peak_to_peak_jitter()
-#     features["RMS_Jitter"] = sm.rms_jitter()
-#     features["Second_Derivative_Mean"] = sm.second_derivative_mean()
-#     features["Shannon_Entropy"] = sm.shannon_entropy()
-#     features["Signal_Energy"] = sm.signal_energy()
-#     features["Variance"] = sm.variance()
-#     MEMPOOL.free_all_blocks()
-#     P_MEMPOOL.free_all_blocks()
-#     # features["Wavelet_Energy"] = sm.wavelet_energy()
-#     features["Zero_Crossing_Rate"] = sm.zero_crossing_rate()
-#     return features
 
 
 def tsne_view(X, y):
@@ -345,7 +231,6 @@ def load_content(data_dir, label):
                     pbar.update(1)
                 cp.get_default_memory_pool().free_all_blocks()
                 cp.get_default_pinned_memory_pool().free_all_blocks()
-    print(df)
     return df
 
 
@@ -365,7 +250,11 @@ if __name__ == "__main__":
         plt.title("Correlation Matrix")
         plt.show()
         dataset = resample_df(shuffled_df, TARGET, TARGET)
+        df = dataset.apply(
+            lambda x: pd.to_numeric(x, errors="ignore") if x.dtype == "object" else x
+        )
         tsne_view(dataset[FEATURES], dataset[TARGET])
+        print(dataset.dtypes)
         qm = QModel(dataset=dataset, predictors=FEATURES, target_features=TARGET)
         qm.tune()
         qm.train_model()
