@@ -59,7 +59,7 @@ def iterate_files(directory):
                 next_index += 1
     ending_index = next_index
     print(f"Scanned {files_scanned} files: Collected {ending_index-start_index} new runs", 
-          ", from index {start_index:05.0f} to {(ending_index-1):05.0f}" if start_index != ending_index else "")
+          f"from index {start_index:05.0f} to {(ending_index-1):05.0f}" if start_index != ending_index else "")
 
 def store_data_file(root, file, i):
     # i = next_i # int(len(roots) / num_files_per_run)
