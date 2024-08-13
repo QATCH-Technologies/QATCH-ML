@@ -1,4 +1,4 @@
-import multiprocessing
+
 import sys
 
 import matplotlib.pyplot as plt
@@ -18,10 +18,8 @@ from scipy.signal import (
 from scipy.stats import linregress
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import RobustScaler
+from QConstants import *
 
-# Get the number of threads
-NUM_THREADS = multiprocessing.cpu_count()
-print(f"[INFO] Available {NUM_THREADS} threads.")
 
 np.set_printoptions(threshold=sys.maxsize)
 
@@ -431,13 +429,15 @@ class QModelPredict:
         else:    
             emp_predictions = ModelData().IdentifyPoints(data)
         emp_points = []
-        for pt in emp_predictions:
-            if isinstance(pt, int):
-                emp_points.append(pt)
-            elif isinstance(pt, list):
-                max_pair = max(pt, key=lambda x: x[1])
-                emp_points.append(max_pair[0])
-
+        start_bound = -1
+        if isinstance(emp_predictions, list):
+            for pt in emp_predictions:
+                if isinstance(pt, int):
+                    emp_points.append(pt)
+                elif isinstance(pt, list):
+                    max_pair = max(pt, key=lambda x: x[1])
+                    emp_points.append(max_pair[0])
+            start_bound = emp_points[0]
         k = 10
         data = self.reset_file_buffer(data)
         results_1, bound_1, rel_time = self.__p1__.predict(data)
@@ -451,10 +451,10 @@ class QModelPredict:
         results_5, bound_5, rel_time = self.__p5__.predict(data)
         data = self.reset_file_buffer(data)
         results_6, bound_6, rel_time = self.__p6__.predict(data)
-
+        if not isinstance(emp_predictions, list):
+            start_bound = bound_1[0][0]
         model_results = [
-            emp_points[0],
-            # bound_1[0][0],
+            start_bound,
 
             # emp_points[1],
             bound_2[0][0],

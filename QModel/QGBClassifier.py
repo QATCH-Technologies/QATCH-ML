@@ -26,39 +26,13 @@ import pywt
 import seaborn as sns
 import random
 
+from QConstants import *
+
 MEMPOOL = cp.get_default_memory_pool()
 P_MEMPOOL = cp.get_default_pinned_memory_pool()
 
-TRAINING = True
-TESTING = True
 
-GOOD_TRAIN_DIR = "content/good_runs/train"
-GOOD_VALID_DIR = "content/good_runs/validate"
 
-BAD_TRAIN_DIR = "content/bad_runs/train"
-BAD_VALID_DIR = "content/bad_runs/validate"
-
-FEATURES = [
-    "Approx_Entropy",
-    "Autocorrelation",
-    "First_Derivative_Mean",
-    "Max_Amp",
-    "Max_Time",
-    "Mean_Absolute_Deviation",
-    "Min_Amp",
-    "N_Peaks",
-    "PTP_Jitter",
-    "RMS_Jitter",
-    "Second_Derivative_Mean",
-    "Shannon_Entropy",
-    "Signal_Energy",
-    "Variance",
-    "Wavelet_Energy",
-    # "Zero_Crossing_Rate",
-]
-TARGET = "Class"
-GOOD_LABEL = 0
-BAD_LABEL = 1
 BATCH_SIZE = np.inf
 
 
@@ -230,7 +204,7 @@ def load_content(data_dir, label):
                 ):
                     extraction = extract_features(os.path.join(root, file_path))
                     df = pd.concat([df, extraction], ignore_index=True)
-                    df[TARGET] = label
+                    df[GB_TARGET] = label
                     count += 1
                     pbar.update(1)
                 cp.get_default_memory_pool().free_all_blocks()
@@ -253,8 +227,8 @@ labels = None
 if __name__ == "__main__":
     if TRAINING:
         # Paths to files and their labels
-        good_df = load_content(GOOD_TRAIN_DIR, label=GOOD_LABEL)
-        bad_df = load_content(BAD_TRAIN_DIR, label=BAD_LABEL)
+        good_df = load_content(GOOD_TRAIN_PATH, label=GOOD_LABEL)
+        bad_df = load_content(BAD_TRAIN_PATH, label=BAD_LABEL)
         # Merge the dataframes
         merged_df = pd.concat([good_df, bad_df], ignore_index=True)
 
@@ -265,9 +239,9 @@ if __name__ == "__main__":
         sns.heatmap(corr_matrix, annot=True, cmap="coolwarm", fmt=".2f")
         plt.title("Correlation Matrix")
         plt.show()
-        dataset = resample_df(shuffled_df, TARGET, TARGET)
-        tsne_view(dataset[FEATURES], dataset[TARGET])
-        qm = QModel(dataset=dataset, predictors=FEATURES, target_features=TARGET)
+        dataset = resample_df(shuffled_df, GB_TARGET, GB_TARGET)
+        tsne_view(dataset[GB_FEATURES], dataset[GB_TARGET])
+        qm = QModel(dataset=dataset, predictors=GB_FEATURES, target_features=GB_TARGET)
         qm.tune()
         qm.train_model()
         qm.save_model("QGBClassifier")
@@ -276,7 +250,7 @@ if __name__ == "__main__":
         qmp = xgb.Booster()
         qmp.load_model("QModel/SavedModels/QGBClassifier.json")
         f_names = qmp.feature_names
-        for root, dirs, files in os.walk(GOOD_VALID_DIR):
+        for root, dirs, files in os.walk(GOOD_TEST_PATH):
             for file_path in files:
                 if (
                     file_path.endswith(".csv")

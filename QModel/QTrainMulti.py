@@ -15,33 +15,8 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import RobustScaler
 from tqdm import tqdm
 
-from QMultiModel import QModel, QPredictor
-
-PLOTTING = True
-TRAINING = False
-BATCH_SIZE = 0.8
-TRAINING_PATH = "content/training_data_with_points"
-TEST_PATH = "content/validation_datasets"
-FEATURES = [
-    "Relative_time",
-    "Resonance_Frequency",
-    "Dissipation",
-    "Difference",
-    "Cumulative",
-    "Dissipation_super",
-    "Difference_super",
-    "Cumulative_super",
-    "Resonance_Frequency_super",
-    "Dissipation_gradient",
-    "Difference_gradient",
-    "Resonance_Frequency_gradient",
-    "Cumulative_detrend",
-    "Dissipation_detrend",
-    "Resonance_Frequency_detrend",
-    "Difference_detrend",
-]
-M_TARGET = "Class"
-
+from QConstants import *
+from QMultiModel import QMultiModel, QPredictor
 
 def normalize(arr):
     return (arr - np.min(arr)) / (np.max(arr) - np.min(arr))
@@ -156,27 +131,34 @@ def xgb_pipeline(train_content):
 
 if __name__ == "__main__":
     print("[INFO] QTrainMulti.py script start")
-    train_content, test_content = load_content(TRAINING_PATH, size=BATCH_SIZE)
+    train_content, test_content = load_content(GOOD_TRAIN_PATH, size=BATCH_SIZE)
+    
     if TRAINING:
         short_set, long_set = xgb_pipeline(train_content)
-        qmodel_short = QModel(
-            dataset=short_set, predictors=FEATURES, target_features=M_TARGET
-        )
-        qmodel_long = QModel(
-            dataset=long_set, predictors=FEATURES, target_features=M_TARGET
-        )
-        qmodel_short.tune()
-        qmodel_short.train_model()
-        qmodel_short.save_model("QMulti_S")
-        qmodel_short.tune()
-        qmodel_short.train_model()
-        qmodel_short.save_model("QMulti_L")
+        print(f"[INFO], short_size={len(short_set)}, long_size={len(long_set)}")
+        if SHORT_SET:
+            print("[INFO] Building short multi-target model")
+            qmodel_short = QMultiModel(
+                dataset=short_set, predictors=FEATURES, target_features=M_TARGET
+            )
+            qmodel_short.tune()
+            qmodel_short.train_model()
+            qmodel_short.save_model("QMulti_S")
+        if LONG_SET:
+            print("[INFO] Building long multi-target model")
+            qmodel_long = QMultiModel(
+                dataset=long_set, predictors=FEATURES, target_features=M_TARGET
+            )
+            
+            qmodel_long.tune()
+            qmodel_long.train_model()
+            qmodel_long.save_model("QMulti_L")
 
     data_df = pd.DataFrame()
     content = []
-    qmp = QPredictor("QModel/SavedModels/QMultiModel.json")
-
-    for root, dirs, files in os.walk(TEST_PATH):
+    qmp_s = QPredictor("QModel/SavedModels/QMulti_S.json")
+    qmp_l = QPredictor("QModel/SavedModels/QMulti_L.json")
+    for root, dirs, files in os.walk(GOOD_TEST_PATH):
         for file in files:
             content.append(os.path.join(root, file))
     for filename in content:
@@ -185,8 +167,17 @@ if __name__ == "__main__":
             poi_file = filename.replace(".csv", "_poi.csv")
             actual_indices = pd.read_csv(poi_file, header=None).values
             qdp = QDataPipeline(data_file)
+            time_delta = qdp.find_time_delta()
+
+
             qdp.preprocess(poi_file=None)
-            predictions = qmp.predict(data_file)
+            predictions = None
+            if time_delta == -1:
+                print("[INFO] Predicting using short-run multi-target model")
+                predictions = qmp_s.predict(data_file)
+            else:
+                print("[INFO] Predicting using long-run multi-target model")
+                predictions = qmp_l.predict(data_file)
             if PLOTTING:
                 palette = sns.color_palette("husl", 6)
                 df = pd.read_csv(data_file)
@@ -212,7 +203,7 @@ if __name__ == "__main__":
                         linestyle="dashed",
                         label=f"Actual POI {i + 1}",
                     )
-                plot_name = data_file.replace(TRAINING_PATH, "")
+                plot_name = data_file.replace(GOOD_TRAIN_PATH, "")
                 plt.xlabel("POIs")
                 plt.ylabel("Dissipation")
                 plt.title(f"Predicted/Actual POIs on Data: {plot_name}")

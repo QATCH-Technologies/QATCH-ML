@@ -10,10 +10,12 @@ from QDataPipline import QDataPipeline
 from tqdm import tqdm
 
 from QModel import QModelPredict
+from QMultiModel import QMultiModel
+from QMultiModel import QPredictor
 
 TEST_BATCH_SIZE = 0.95
-VALIDATION_DATASETS_PATH = "content/bad_runs/validate"
-PREDICTOR = QModelPredict(
+VALIDATION_DATASETS_PATH = "content/good_runs/validate"
+S_PREDICTOR = QModelPredict(
     "QModel/SavedModels/QModel_1.json",
     "QModel/SavedModels/QModel_2.json",
     "QModel/SavedModels/QModel_3.json",
@@ -21,7 +23,8 @@ PREDICTOR = QModelPredict(
     "QModel/SavedModels/QModel_5.json",
     "QModel/SavedModels/QModel_6.json",
 )
-
+M_PREDICTOR_S = QPredictor("QModel/SavedModels/QMulti_S.json")
+M_PREDICTOR_L =QPredictor("QModel/SavedModels/QMulti_L.json")
 
 def load_test_dataset(path, test_size):
     content = []
@@ -43,30 +46,42 @@ def load_test_dataset(path, test_size):
 def test_md_on_file(filename, act_poi):
     qdp = QDataPipeline(filename)
     time_delta = qdp.find_time_delta()
-    if time_delta == -1:
-        md_predictor = ModelData()
-        md_result = md_predictor.IdentifyPoints(data_path=filename)
-        predictions = []
-        for item in md_result:
-            if isinstance(item, list):
-                predictions.append(item[0][0])
-            else:
-                predictions.append(item)
-        return list(zip(predictions, act_poi))
-    else:
-        print("[INFO] MD Skipping due to time delta")
+    # if time_delta == -1:
+    md_predictor = ModelData()
+    md_result = md_predictor.IdentifyPoints(data_path=filename)
+    if isinstance(md_result, int):
+                md_result = [1, 1, 1, 1, 1, 1]
+    predictions = []
+    for item in md_result:
+        if isinstance(item, list):
+            predictions.append(item[0][0])
+        else:
+            predictions.append(item)
+    return list(zip(predictions, act_poi))
+    # else:
+    #     print("[INFO] MD Skipping due to time delta")
 
+def test_mm_on_file(filename, act_poi):
+    qdp = QDataPipeline(filename)
+    time_delta = qdp.find_time_delta()
+    qdp.preprocess(poi_file=None)
+    if time_delta == -1:
+        predictions = M_PREDICTOR_S.predict(filename, act_poi, long_run=False)
+        
+    else:
+        predictions = M_PREDICTOR_L.predict(filename, act_poi, long_run=True)
+    return list(zip(predictions, act_poi))
 
 def test_qmp_on_file(filename, act_poi):
     qdp = QDataPipeline(filename)
     time_delta = qdp.find_time_delta()
-    if time_delta == -1:
-        qdp.preprocess(poi_file=None)
+    # if time_delta == -1:
+    qdp.preprocess(poi_file=None)
 
-        predictions = PREDICTOR.predict(filename)
-        return list(zip(predictions, act_poi))
-    else:
-        print("[INFO] QM Skipping due to time delta")
+    predictions = S_PREDICTOR.predict(filename)
+    return list(zip(predictions, act_poi))
+    # else:
+    #     print("[INFO] QM Skipping due to time delta")
 
 
 def compute_deltas(results):
@@ -198,36 +213,45 @@ def delta_distribution_view(deltas, name):
     plt.show()
 
 
-def metrics_view(qmp_metric, md_metric, name, note):
+def metrics_view(model_1, model_2, model_3, test_name, model_1_name, model_2_name, model_3_name, note):
     points = np.arange(1, 7)
 
     # Width of each bar
     bar_width = 0.35
 
     # Set the positions of the bars
-    r1 = points - bar_width / 2
-    r2 = points + bar_width / 2
+    r1 = points - bar_width / 3
+    r2 = points + bar_width / 3
+    r3 = points + bar_width / 3
     plt.figure(figsize=(12, 7))
     bars1 = plt.bar(
         r1,
-        qmp_metric,
+        model_1,
         width=bar_width,
-        label=f"QModel {name}",
+        label=f"{model_1_name} {test_name}",
         color="blue",
         edgecolor="black",
     )
     bars2 = plt.bar(
         r2,
-        md_metric,
+        model_2,
         width=bar_width,
-        label=f"ModelData {name}",
+        label=f"{model_2_name} {test_name}",
         color="red",
         edgecolor="black",
     )
+    bars3 = plt.bar(
+        r3,
+        model_3,
+        width=bar_width,
+        label=f"{model_3_name} {test_name}",
+        color="yellow",
+        edgecolor="black",
+    )
 
-    plt.title(f"Comparison of {name} Scores for QModel and ModelData")
+    plt.title(f"Comparison of {test_name} Scores for {model_1_name} and {model_2_name}")
     plt.xlabel("POI #")
-    plt.ylabel(f"{name} Score")
+    plt.ylabel(f"{test_name} Score")
     plt.xticks(points)  # Set x-ticks to be the point indices
     plt.legend()
     plt.grid(axis="y")
@@ -244,6 +268,18 @@ def metrics_view(qmp_metric, md_metric, name, note):
         )
 
     for bar in bars2:
+        height = bar.get_height()
+        plt.text(
+            bar.get_x() + bar.get_width() / 2,
+            height,
+            f"{height:.2f}",
+            ha="center",
+            va="bottom",
+            fontsize=10,
+            color="black",
+        )
+
+    for bar in bars3:
         height = bar.get_height()
         plt.text(
             bar.get_x() + bar.get_width() / 2,
@@ -311,8 +347,8 @@ def poi_k_metrics(predictions, actual, k, verbose):
 
 def run():
     VERBOSE = False
-    qmp_deltas, md_deltas = [], []
-    qmp_list, md_list = [], []
+    qmp_deltas, md_deltas, mm_deltas = [], [], []
+    qmp_list, md_list, mm_list = [], [], []
     content = load_test_dataset(VALIDATION_DATASETS_PATH, TEST_BATCH_SIZE)
     for filename in tqdm(content, desc="<<Running Tests>>"):
         if (
@@ -324,20 +360,79 @@ def run():
             poi_file = filename.replace(".csv", "_poi.csv")
             act_poi = pd.read_csv(poi_file, header=None).values
             act_poi = [int(x[0]) for x in act_poi]
+
+            mm_results = test_mm_on_file(test_file, act_poi)
             qmp_results = test_qmp_on_file(test_file, act_poi)
             md_results = test_md_on_file(test_file, act_poi)
-
+            
+            mm_list.append(mm_results)
             qmp_list.append(qmp_results)
             md_list.append(md_results)
+
+            mm_deltas.append(compute_deltas(mm_results))
             qmp_deltas.append(compute_deltas(qmp_results))
             md_deltas.append(compute_deltas(md_results))
+    
+    mm_ppr = extract_results(mm_list)
+    qmp_ppr = extract_results(qmp_list)
+    md_ppr = extract_results(md_list)
+    mm_mae, mm_mse, mm_rmse, mm_r2, mm_mape = [], [], [], [], []
+    qmp_mae, qmp_mse, qmp_rmse, qmp_r2, qmp_mape = [], [], [], [], []
+    md_mae, md_mse, md_rmse, md_r2, md_mape = [], [], [], [], []
+    ############################################################
+    # MM
+    ############################################################
+    mae, mse, rmse, r2, mape = poi_k_metrics(
+        qmp_ppr[0]["predicted"], qmp_ppr[0]["actual"], 1, VERBOSE
+    )
+    mm_mae.append(mae)
+    mm_mse.append(mse)
+    mm_rmse.append(rmse)
+    mm_r2.append(r2)
+    mm_mape.append(mape)
+    mae, mse, rmse, r2, mape = poi_k_metrics(
+        mm_ppr[1]["predicted"], mm_ppr[1]["actual"], 2, VERBOSE
+    )
+    mm_mae.append(mae)
+    mm_mse.append(mse)
+    mm_rmse.append(rmse)
+    mm_r2.append(r2)
+    mm_mape.append(mape)
+    mae, mse, rmse, r2, mape = poi_k_metrics(
+        mm_ppr[2]["predicted"], mm_ppr[2]["actual"], 3, VERBOSE
+    )
+    mm_mae.append(mae)
+    mm_mse.append(mse)
+    mm_rmse.append(rmse)
+    mm_r2.append(r2)
+    mm_mape.append(mape)
+    mae, mse, rmse, r2, mape = poi_k_metrics(
+        mm_ppr[3]["predicted"], mm_ppr[3]["actual"], 4, VERBOSE
+    )
+    mm_mae.append(mae)
+    mm_mse.append(mse)
+    mm_rmse.append(rmse)
+    mm_r2.append(r2)
+    mm_mape.append(mape)
+    mae, mse, rmse, r2, mape = poi_k_metrics(
+        mm_ppr[4]["predicted"], mm_ppr[4]["actual"], 5, VERBOSE
+    )
+    mm_mae.append(mae)
+    mm_mse.append(mse)
+    mm_rmse.append(rmse)
+    mm_r2.append(r2)
+    mm_mape.append(mape)
+    mae, mse, rmse, r2, mape = poi_k_metrics(
+        mm_ppr[5]["predicted"], mm_ppr[5]["actual"], 6, VERBOSE
+    )
+    mm_mae.append(mae)
+    mm_mse.append(mse)
+    mm_rmse.append(rmse)
+    mm_r2.append(r2)
+    mm_mape.append(mape)
     ############################################################
     # MD
     ############################################################
-    qmp_ppr = extract_results(qmp_list)
-    md_ppr = extract_results(md_list)
-    qmp_mae, qmp_mse, qmp_rmse, qmp_r2, qmp_mape = [], [], [], [], []
-    md_mae, md_mse, md_rmse, md_r2, md_mape = [], [], [], [], []
     mae, mse, rmse, r2, mape = poi_k_metrics(
         qmp_ppr[0]["predicted"], qmp_ppr[0]["actual"], 1, VERBOSE
     )
@@ -438,32 +533,56 @@ def run():
     md_r2.append(r2)
     md_mape.append(mape)
     metrics_view(
+        mm_mae,
         qmp_mae,
         md_mae,
         "MAE",
+        "QMultiModel",
+        "QSingleModel",
+        "ModelData",
         "Average magnitude of errors between\npredicted/actual ignoring direction.\n(Lower is better)",
     )
     metrics_view(
+        mm_mse,
         qmp_mse,
         md_mse,
         "MSE",
+        "QMultiModel",
+        "QSingleModel",
+        "ModelData",
         "Average of squared differences between predicted/actual\nvalues emphasizes larger errors.\n(Lower is better)",
     )
     metrics_view(
+        mm_rmse,
         qmp_rmse,
         md_rmse,
         "RMSE",
+        "QMultiModel",
+        "QSingleModel",
+        "ModelData",
         "Sqrt of MSE.\nUnits are the same as target variable.\n(Lower is better)",
     )
     metrics_view(
-        qmp_r2, md_r2, "R^2", "How well the model 'fits' the data.\n(Bigger is better)"
+        mm_r2, 
+        qmp_r2,
+        md_r2,
+        "R^2", 
+        "QMultiModel",
+        "QSingleModel",
+        "ModelData",
+        "How well the model 'fits' the data.\n(Bigger is better)",
     )
     metrics_view(
+        mm_mape,
         qmp_mape,
         md_mape,
         "MAPE",
+        "QMultiModel",
+        "QSingleModel",
+        "ModelData",
         "Average magnitude of errors as a percentage\nof the actual values.\n(Lower is better)",
     )
+
     # print(qmp_list)
     # print("MAE:", mean_absolute_error(qmp_list))
     # print("MSE:", mean_squared_error(qmp_list))

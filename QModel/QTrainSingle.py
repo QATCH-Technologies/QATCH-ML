@@ -15,48 +15,8 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import RobustScaler
 from tqdm import tqdm
 
+from QConstants import *
 from QModel import QModel, QModelPredict
-
-PLOTTING = True
-XGB = False
-STACK = False
-PATH = "content/training_data_with_points"
-FEATURES = [
-    "Relative_time",
-    "Resonance_Frequency",
-    "Dissipation",
-    "Difference",
-    "Cumulative",
-    "Dissipation_super",
-    "Difference_super",
-    "Cumulative_super",
-    "Resonance_Frequency_super",
-    "Dissipation_gradient",
-    "Difference_gradient",
-    "Resonance_Frequency_gradient",
-    "Cumulative_detrend",
-    "Dissipation_detrend",
-    "Resonance_Frequency_detrend",
-    "Difference_detrend",
-]
-XGB_TARGETS = ["Class_1", "Class_2", "Class_3", "Class_4", "Class_5", "Class_6"]
-META_TARGETS = ["Class_1", "Class_2", "Class_3", "Class_4", "Class_5", "Class_6"]
-S_TARGETS = ["Class_1", "Class_2", "Class_3", "Class_4", "Class_5", "Class_6"]
-M_TARGET = "Class"
-META_FEATURE = [
-    "EMP_1",
-    "EMP_2",
-    "EMP_3",
-    "EMP_4",
-    "EMP_5",
-    "EMP_6",
-    "XGB_1",
-    "XGB_2",
-    "XGB_3",
-    "XGB_4",
-    "XGB_5",
-    "XGB_6",
-]
 
 
 def normalize(arr):
@@ -161,53 +121,51 @@ def xgb_pipeline(train_content):
                 has_nan = qdp.__dataframe__.isna().any().any()
                 if not has_nan:
                     data_df = pd.concat([data_df, qdp.get_dataframe()])
-    for target in XGB_TARGETS:
+    for target in S_TARGETS:
         resampled_df = resample_df(data_df, target, S_TARGETS)
         yield resampled_df
 
 
-train_content, test_content = load_content(PATH)
-if XGB:
+train_content, test_content = load_content(GOOD_TRAIN_PATH)
+if TRAINING:
     (train_1, train_2, train_3, train_4, train_5, train_6) = xgb_pipeline(train_content)
-    input()
-    exit()
     qmodel_1 = QModel(
         dataset=train_1, predictors=FEATURES, target_features=S_TARGETS[0]
     )
-    qmodel_2 = QModel(
-        dataset=train_2, predictors=FEATURES, target_features=S_TARGETS[1]
-    )
-    qmodel_3 = QModel(
-        dataset=train_3, predictors=FEATURES, target_features=S_TARGETS[2]
-    )
-    qmodel_4 = QModel(
-        dataset=train_4, predictors=FEATURES, target_features=S_TARGETS[3]
-    )
-    qmodel_5 = QModel(
-        dataset=train_5, predictors=FEATURES, target_features=S_TARGETS[4]
-    )
-    qmodel_6 = QModel(
-        dataset=train_6, predictors=FEATURES, target_features=S_TARGETS[5]
-    )
+    # qmodel_2 = QModel(
+    #     dataset=train_2, predictors=FEATURES, target_features=S_TARGETS[1]
+    # )
+    # qmodel_3 = QModel(
+    #     dataset=train_3, predictors=FEATURES, target_features=S_TARGETS[2]
+    # )
+    # qmodel_4 = QModel(
+    #     dataset=train_4, predictors=FEATURES, target_features=S_TARGETS[3]
+    # )
+    # qmodel_5 = QModel(
+    #     dataset=train_5, predictors=FEATURES, target_features=S_TARGETS[4]
+    # )
+    # qmodel_6 = QModel(
+    #     dataset=train_6, predictors=FEATURES, target_features=S_TARGETS[5]
+    # )
 
-    qmodel_1.tune(15)
+    qmodel_1.tune(250)
     qmodel_1.train_model()
-    qmodel_1.save_model("QModel_1")
-    qmodel_2.tune(15)
-    qmodel_2.train_model()
-    qmodel_2.save_model("QModel_2")
-    qmodel_3.tune(15)
-    qmodel_3.train_model()
-    qmodel_3.save_model("QModel_3")
-    qmodel_4.tune(15)
-    qmodel_4.train_model()
-    qmodel_4.save_model("QModel_4")
-    qmodel_5.tune(15)
-    qmodel_5.train_model()
-    qmodel_5.save_model("QModel_5")
-    qmodel_6.tune(15)
-    qmodel_6.train_model()
-    qmodel_6.save_model("QModel_6")
+    qmodel_1.save_model("QModel_1_test")
+    # qmodel_2.tune(15)
+    # qmodel_2.train_model()
+    # qmodel_2.save_model("QModel_2")
+    # qmodel_3.tune(15)
+    # qmodel_3.train_model()
+    # qmodel_3.save_model("QModel_3")
+    # qmodel_4.tune(15)
+    # qmodel_4.train_model()
+    # qmodel_4.save_model("QModel_4")
+    # qmodel_5.tune(15)
+    # qmodel_5.train_model()
+    # qmodel_5.save_model("QModel_5")
+    # qmodel_6.tune(15)
+    # qmodel_6.train_model()
+    # qmodel_6.save_model("QModel_6")
 
 
 PATH = "content/validation_datasets"
