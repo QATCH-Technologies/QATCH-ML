@@ -101,40 +101,35 @@ def load_content(data_dir, size=0.5):
                 and not file.endswith("_lower.csv")
             ):
                 content.append(os.path.join(root, file))
-    train_content, test_content = train_test_split(
-        content, test_size=size, random_state=42, shuffle=True
-    )
-    return train_content, test_content
+    return content
 
 
 def xgb_pipeline(train_content):
     print(f"[INFO] XGB Preprocessing on {len(train_content)} datasets")
-    data_df_short = pd.DataFrame()
-    data_df_long = pd.DataFrame()
+    data_df = pd.DataFrame()
     for filename in tqdm(train_content, desc="<<Processing XGB>>"):
         if filename.endswith(".csv") and not filename.endswith("_poi.csv"):
             data_file = filename
             qdp = QDataPipeline(data_file, multi_class=True)
             poi_file = filename.replace(".csv", "_poi.csv")
-            time_delta = qdp.find_time_delta()
             qdp.preprocess(poi_file=poi_file)
             has_nan = qdp.__dataframe__.isna().any().any()
             if not has_nan:
-                if time_delta == -1:
-                    data_df_short = pd.concat([data_df_short, qdp.get_dataframe()])
-                else:
-                    data_df_long = pd.concat([data_df_long, qdp.get_dataframe()])
-    resampled_df_short = resample_df(data_df_short, M_TARGET, M_TARGET, "short")
-    resampled_df_long = resample_df(data_df_long, M_TARGET, M_TARGET, "long")
-    return resampled_df_short, resampled_df_long
+                data_df = pd.concat([data_df, qdp.get_dataframe()])
+
+    resampled_df = resample_df(data_df, M_TARGET, M_TARGET, "short")
+    return resampled_df
 
 
 if __name__ == "__main__":
     print("[INFO] QTrainMulti.py script start")
-    train_content, test_content = load_content(GOOD_TRAIN_PATH, size=BATCH_SIZE)
+    
     
     if TRAINING:
-        short_set, long_set = xgb_pipeline(train_content)
+        train_content = load_content(T1_TRAIN_PATH_S, size=BATCH_SIZE)
+        short_set = xgb_pipeline(train_content)
+        train_content = load_content(T1_TRAIN_PATH_L, size=BATCH_SIZE)
+        long_set = xgb_pipeline(train_content)
         print(f"[INFO], short_size={len(short_set)}, long_size={len(long_set)}")
         if SHORT_SET:
             print("[INFO] Building short multi-target model")
@@ -158,7 +153,7 @@ if __name__ == "__main__":
     content = []
     qmp_s = QPredictor("QModel/SavedModels/QMulti_S.json")
     qmp_l = QPredictor("QModel/SavedModels/QMulti_L.json")
-    for root, dirs, files in os.walk(GOOD_TEST_PATH):
+    for root, dirs, files in os.walk(T1_VALID_PATH_S):
         for file in files:
             content.append(os.path.join(root, file))
     for filename in content:
@@ -203,7 +198,7 @@ if __name__ == "__main__":
                         linestyle="dashed",
                         label=f"Actual POI {i + 1}",
                     )
-                plot_name = data_file.replace(GOOD_TRAIN_PATH, "")
+                plot_name = data_file.replace(T1_TRAIN_PATH_S, "")
                 plt.xlabel("POIs")
                 plt.ylabel("Dissipation")
                 plt.title(f"Predicted/Actual POIs on Data: {plot_name}")

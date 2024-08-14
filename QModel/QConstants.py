@@ -26,21 +26,30 @@ BAD_LABEL = 1
 """ Flag for plotting results. """
 PLOTTING = True
 """ Flag for running training. """
-TRAINING = False
+TRAINING = True
 SHORT_SET = True
 LONG_SET = True
 """ Flag for running testing. """
 TESTING = True
 """ Size of the batch to train/test on. """
 BATCH_SIZE = 0.8
+
+DROPBOX_DUMP_PATH = "content/dropbox_dump"
 """ Path to 'good' training datasets. """
-GOOD_TRAIN_PATH = "content/good_runs/train"
+T1_TRAIN_PATH_S = "content/training_data_1_S"
 """ Path to 'good' test datasets. """
-GOOD_TEST_PATH = "content/good_runs/validate"
+T1_VALID_PATH_S = "content/validation_data_1_S"
 """ Path to 'bad' training datasets. """
-BAD_TRAIN_PATH = "content/bad_runs/train"
+T0_TRAIN_PATH_S = "content/training_data_0_S"
 """ Path to 'bad' test datasets. """
-BAD_TEST_PATH = "content/bad_runs/validate"
+T0_VALID_PATH_S = "content/validation_data_0_S"
+T1_TRAIN_PATH_L = "content/training_data_1_L"
+""" Path to 'good' test datasets. """
+T1_VALID_PATH_L = "content/validation_data_1_L"
+""" Path to 'bad' training datasets. """
+T0_TRAIN_PATH_L = "content/training_data_0_L"
+""" Path to 'bad' test datasets. """
+T0_VALID_PATH_L = "content/validation_data_0_L"
 """ QModel and QMultiModel features """
 FEATURES = [
     "Relative_time",

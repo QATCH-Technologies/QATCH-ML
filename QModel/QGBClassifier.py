@@ -227,8 +227,8 @@ labels = None
 if __name__ == "__main__":
     if TRAINING:
         # Paths to files and their labels
-        good_df = load_content(GOOD_TRAIN_PATH, label=GOOD_LABEL)
-        bad_df = load_content(BAD_TRAIN_PATH, label=BAD_LABEL)
+        good_df = load_content(T1_TRAIN_PATH_S, label=GOOD_LABEL)
+        bad_df = load_content(T0_TRAIN_PATH_S, label=BAD_LABEL)
         # Merge the dataframes
         merged_df = pd.concat([good_df, bad_df], ignore_index=True)
 
@@ -250,7 +250,7 @@ if __name__ == "__main__":
         qmp = xgb.Booster()
         qmp.load_model("QModel/SavedModels/QGBClassifier.json")
         f_names = qmp.feature_names
-        for root, dirs, files in os.walk(GOOD_TEST_PATH):
+        for root, dirs, files in os.walk(T1_VALID_PATH_S):
             for file_path in files:
                 if (
                     file_path.endswith(".csv")

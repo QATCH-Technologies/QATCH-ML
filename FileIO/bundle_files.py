@@ -70,6 +70,12 @@ def unbundle_csv_files(source_dir):
 
 
 # Specify the source directory
-source_directory = "content/good_runs/train"
+source_directory = "content/type_0_L"
+bundle_csv_files(source_directory)
+source_directory = "content/type_1_L"
+bundle_csv_files(source_directory)
+source_directory = "content/type_0_S"
+bundle_csv_files(source_directory)
+source_directory = "content/type_1_S"
 bundle_csv_files(source_directory)
 # unbundle_csv_files(source_directory)

@@ -306,7 +306,7 @@ class QPredictor:
 
         return [signal_region_equation_POI4, signal_region_equation_POI5]
 
-    def predict(self, file_buffer, actual, long_run):
+    def predict(self, file_buffer):
         # Load CSV data and drop unnecessary columns
         df = pd.read_csv(file_buffer)
         columns_to_drop = ["Date", "Time", "Ambient", "Temperature"]
@@ -386,25 +386,24 @@ class QPredictor:
         poi_4 = np.argmax(extracted_results[4])
         poi_5 = np.argmax(extracted_results[5])
         poi_6 = np.argmax(extracted_results[6])
-        if not long_run:
-            if not isinstance(emp_predictions, list):
-                poi_1 = np.argmax(extracted_results[1])
-            approx_4, approx_5 = self.generate_zone_probabilities(rel_time[poi_1:poi_6])
+        if not isinstance(emp_predictions, list):
+            poi_1 = np.argmax(extracted_results[1])
+        approx_4, approx_5 = self.generate_zone_probabilities(rel_time[poi_1:poi_6])
 
-            approx_4 = np.concatenate(
-                (
-                    np.zeros(poi_1),
-                    approx_4,
-                    np.zeros(len(extracted_results[4]) - poi_6),
-                )
+        approx_4 = np.concatenate(
+            (
+                np.zeros(poi_1),
+                approx_4,
+                np.zeros(len(extracted_results[4]) - poi_6),
             )
-            approx_5 = np.concatenate(
-                (
-                    np.zeros(poi_1),
-                    approx_5,
-                    np.zeros(len(extracted_results[5]) - poi_6),
-                )
+        )
+        approx_5 = np.concatenate(
+            (
+                np.zeros(poi_1),
+                approx_5,
+                np.zeros(len(extracted_results[5]) - poi_6),
             )
+        )
             # plt.figure()
             # plt.plot(self.normalize(extracted_results[4]), label="Prediction 4")
             # plt.plot(self.normalize(extracted_results[5]), label="Prediction 5")
@@ -420,6 +419,6 @@ class QPredictor:
             # )
             # plt.legend()
             # plt.show()
-            poi_4 = np.argmax(approx_4 * extracted_results[4])
-            poi_5 = np.argmax(approx_5 * extracted_results[5])
+        poi_4 = np.argmax(approx_4 * extracted_results[4])
+        poi_5 = np.argmax(approx_5 * extracted_results[5])
         return poi_1, poi_2, poi_3, poi_4, poi_5, poi_6

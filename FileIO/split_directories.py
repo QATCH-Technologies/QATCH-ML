@@ -43,9 +43,9 @@ def split_data(source_dir, train_dir, val_dir, split_percentage):
 
 
 # Usage
-source_directory = "content/dropbox_dump"
-training_directory = "content/training_data"
-validation_directory = "content/validation_data"
+source_directory = "content/type_0_S"
+training_directory = "content/training_data_0_S"
+validation_directory = "content/validation_data_0_S"
 split_percentage = 0.7
 
 split_data(source_directory, training_directory, validation_directory, split_percentage)

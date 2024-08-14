@@ -106,81 +106,133 @@ def load_content(data_dir):
 
 def xgb_pipeline(train_content):
     print(f"[INFO] XGB Preprocessing on {len(train_content)} datasets")
-    data_df = pd.DataFrame()
+    data_df_S = pd.DataFrame()
+    data_df_L = pd.DataFrame()
     for filename in tqdm(train_content, desc="<<Processing XGB>>"):
         if filename.endswith(".csv") and not filename.endswith("_poi.csv"):
             data_file = filename
             qdp = QDataPipeline(data_file)
             time_delta = qdp.find_time_delta()
-            if time_delta == -1:
-                poi_file = filename.replace(".csv", "_poi.csv")
-                actual_indices = pd.read_csv(poi_file, header=None).values
-
-                qdp.preprocess(poi_file=poi_file)
-                df = qdp.__dataframe__.drop(columns=S_TARGETS)
-                has_nan = qdp.__dataframe__.isna().any().any()
-                if not has_nan:
-                    data_df = pd.concat([data_df, qdp.get_dataframe()])
+            poi_file = filename.replace(".csv", "_poi.csv")
+            actual_indices = pd.read_csv(poi_file, header=None).values
+            qdp.preprocess(poi_file=poi_file)
+            has_nan = qdp.__dataframe__.isna().any().any()
+            if not has_nan:
+                if time_delta == -1:
+                    data_df_S = pd.concat([data_df_S, qdp.get_dataframe()])
+                else:
+                    data_df_L = pd.concat([data_df_L, qdp.get_dataframe()])
+    rds = []
+    rdl = []
     for target in S_TARGETS:
-        resampled_df = resample_df(data_df, target, S_TARGETS)
-        yield resampled_df
+        rds.append(resample_df(data_df_S, target, S_TARGETS))
+        rdl.append(resample_df(data_df_L, target, S_TARGETS))
+    return rds, rdl
 
 
-train_content, test_content = load_content(GOOD_TRAIN_PATH)
+train_content, test_content = load_content(T0_TRAIN_PATH_S)
 if TRAINING:
-    (train_1, train_2, train_3, train_4, train_5, train_6) = xgb_pipeline(train_content)
-    qmodel_1 = QModel(
-        dataset=train_1, predictors=FEATURES, target_features=S_TARGETS[0]
+    short_training, long_training = xgb_pipeline(train_content)
+    qmodel_1_S = QModel(
+        dataset=short_training[0], predictors=FEATURES, target_features=S_TARGETS[0]
     )
-    # qmodel_2 = QModel(
-    #     dataset=train_2, predictors=FEATURES, target_features=S_TARGETS[1]
-    # )
-    # qmodel_3 = QModel(
-    #     dataset=train_3, predictors=FEATURES, target_features=S_TARGETS[2]
-    # )
-    # qmodel_4 = QModel(
-    #     dataset=train_4, predictors=FEATURES, target_features=S_TARGETS[3]
-    # )
-    # qmodel_5 = QModel(
-    #     dataset=train_5, predictors=FEATURES, target_features=S_TARGETS[4]
-    # )
-    # qmodel_6 = QModel(
-    #     dataset=train_6, predictors=FEATURES, target_features=S_TARGETS[5]
-    # )
+    qmodel_2_S = QModel(
+        dataset=short_training[1], predictors=FEATURES, target_features=S_TARGETS[1]
+    )
+    qmodel_3_S = QModel(
+        dataset=short_training[2], predictors=FEATURES, target_features=S_TARGETS[2]
+    )
+    qmodel_4_S = QModel(
+        dataset=short_training[3], predictors=FEATURES, target_features=S_TARGETS[3]
+    )
+    qmodel_5_S = QModel(
+        dataset=short_training[4], predictors=FEATURES, target_features=S_TARGETS[4]
+    )
+    qmodel_6_S = QModel(
+        dataset=short_training[5], predictors=FEATURES, target_features=S_TARGETS[5]
+    )
+    qmodel_1_S.tune(250)
+    qmodel_1_S.train_model()
+    qmodel_1_S.save_model("QModel_1_T0_S")
+    qmodel_2_S.tune(250)
+    qmodel_2_S.train_model()
+    qmodel_2_S.save_model("QModel_2_T0_S")
+    qmodel_3_S.tune(250)
+    qmodel_3_S.train_model()
+    qmodel_3_S.save_model("QModel_3_T0_S")
+    qmodel_4_S.tune(250)
+    qmodel_4_S.train_model()
+    qmodel_4_S.save_model("QModel_4_T0_S")
+    qmodel_5_S.tune(250)
+    qmodel_5_S.train_model()
+    qmodel_5_S.save_model("QModel_5_T0_S")
+    qmodel_6_S.tune(250)
+    qmodel_6_S.train_model()
+    qmodel_6_S.save_model("QModel_6_T0_S")
 
-    qmodel_1.tune(250)
-    qmodel_1.train_model()
-    qmodel_1.save_model("QModel_1_test")
-    # qmodel_2.tune(15)
-    # qmodel_2.train_model()
-    # qmodel_2.save_model("QModel_2")
-    # qmodel_3.tune(15)
-    # qmodel_3.train_model()
-    # qmodel_3.save_model("QModel_3")
-    # qmodel_4.tune(15)
-    # qmodel_4.train_model()
-    # qmodel_4.save_model("QModel_4")
-    # qmodel_5.tune(15)
-    # qmodel_5.train_model()
-    # qmodel_5.save_model("QModel_5")
-    # qmodel_6.tune(15)
-    # qmodel_6.train_model()
-    # qmodel_6.save_model("QModel_6")
+    ##########################
+    # Long runs
+    ##########################
+    qmodel_1_L = QModel(
+        dataset=long_training[0], predictors=FEATURES, target_features=S_TARGETS[0]
+    )
+    qmodel_2_L = QModel(
+        dataset=long_training[1], predictors=FEATURES, target_features=S_TARGETS[1]
+    )
+    qmodel_3_L = QModel(
+        dataset=long_training[2], predictors=FEATURES, target_features=S_TARGETS[2]
+    )
+    qmodel_4_L = QModel(
+        dataset=long_training[3], predictors=FEATURES, target_features=S_TARGETS[3]
+    )
+    qmodel_5_L = QModel(
+        dataset=long_training[4], predictors=FEATURES, target_features=S_TARGETS[4]
+    )
+    qmodel_6_L = QModel(
+        dataset=long_training[5], predictors=FEATURES, target_features=S_TARGETS[5]
+    )
+    qmodel_1_L.tune(250)
+    qmodel_1_L.train_model()
+    qmodel_1_L.save_model("QModel_1_T0_L")
+    qmodel_2_L.tune(250)
+    qmodel_2_L.train_model()
+    qmodel_2_L.save_model("QModel_2_T0_L")
+    qmodel_3_L.tune(250)
+    qmodel_3_L.train_model()
+    qmodel_3_L.save_model("QModel_3_T0_L")
+    qmodel_4_L.tune(250)
+    qmodel_4_L.train_model()
+    qmodel_4_L.save_model("QModel_4_T0_L")
+    qmodel_5_L.tune(250)
+    qmodel_5_L.train_model()
+    qmodel_5_L.save_model("QModel_5_T0_L")
+    qmodel_6_L.tune(250)
+    qmodel_6_L.train_model()
+    qmodel_6_L.save_model("QModel_6_T0_L")
 
+    
 
-PATH = "content/validation_datasets"
 data_df = pd.DataFrame()
 content = []
-qmp = QModelPredict(
-    "QModel/SavedModels/QModel_1.json",
-    "QModel/SavedModels/QModel_2.json",
-    "QModel/SavedModels/QModel_3.json",
-    "QModel/SavedModels/QModel_4.json",
-    "QModel/SavedModels/QModel_5.json",
-    "QModel/SavedModels/QModel_6.json",
+qmp_S = QModelPredict(
+    "QModel/SavedModels/QModel_1_T0_S.json",
+    "QModel/SavedModels/QModel_2_T0_S.json",
+    "QModel/SavedModels/QModel_3_T0_S.json",
+    "QModel/SavedModels/QModel_4_T0_S.json",
+    "QModel/SavedModels/QModel_5_T0_S.json",
+    "QModel/SavedModels/QModel_6_T0_S.json",
+)
+qmp_L = QModelPredict(
+    "QModel/SavedModels/QModel_1_T0_L.json",
+    "QModel/SavedModels/QModel_2_T0_L.json",
+    "QModel/SavedModels/QModel_3_T0_L.json",
+    "QModel/SavedModels/QModel_4_T0_L.json",
+    "QModel/SavedModels/QModel_5_T0_L.json",
+    "QModel/SavedModels/QModel_6_T0_L.json",
 )
 
-for root, dirs, files in os.walk(PATH):
+
+for root, dirs, files in os.walk(T0_VALID_PATH_S):
     for file in files:
         content.append(os.path.join(root, file))
 for filename in content:
@@ -191,9 +243,15 @@ for filename in content:
         actual_indices = pd.read_csv(poi_file, header=None).values
         qdp = QDataPipeline(data_file)
         qdp.preprocess(poi_file=None)
-        # qdp.__dataframe__ = qdp.__dataframe__.drop(columns=["Class", "Pooling"])
+        delta = qdp.find_time_delta()
 
-        predictions = qmp.predict(data_file)
+        # qdp.__dataframe__ = qdp.__dataframe__.drop(columns=["Class", "Pooling"])
+        if delta == -1:
+            print('[INFO] Predicting using Short model')
+            predictions = qmp_S.predict(data_file)
+        else:
+            print('[INFO] Predicting using Long model')
+            predictions = qmp_L.predict(data_file)
         if PLOTTING:
             palette = sns.color_palette("husl", 6)
             df = pd.read_csv(data_file)
@@ -228,7 +286,7 @@ for filename in content:
                     linestyle="dashed",
                     label=f"Actual POI {i}",
                 )
-            plot_name = data_file.replace(PATH, "")
+            plot_name = data_file.replace(T0_VALID_PATH_S, "")
             plt.xlabel("POIs")
             plt.ylabel("Dissipation")
             plt.title(f"Predicted/Actual POIs on Data: {plot_name}")

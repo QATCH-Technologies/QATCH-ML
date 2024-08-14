@@ -229,6 +229,7 @@ class QPredictor:
 
     def compute_bounds(self, indices):
         bounds = []
+        print(len(indices))
         start = indices[0]
         end = indices[0]
 
@@ -289,7 +290,6 @@ class QPredictor:
                 results,
             )
         )
-
         indices = np.where(results == 1)[0]
         bounds = self.compute_bounds(indices)
         return results, bounds, rel_time
@@ -389,7 +389,7 @@ class QModelPredict:
         )
         signal_region_equation_POI5 = np.where(t > 0.90, 0, signal_region_equation_POI5)
 
-        return [signal_region_equation_POI4, signal_region_equation_POI5]
+        return signal_region_equation_POI4, signal_region_equation_POI5
 
     def top_k_peaks(self, signal, k):
         peaks, _ = find_peaks(signal)
@@ -451,10 +451,12 @@ class QModelPredict:
         results_5, bound_5, rel_time = self.__p5__.predict(data)
         data = self.reset_file_buffer(data)
         results_6, bound_6, rel_time = self.__p6__.predict(data)
+
         if not isinstance(emp_predictions, list):
             start_bound = bound_1[0][0]
         model_results = [
-            start_bound,
+            emp_points[0],
+            # bound_1[0][0],
 
             # emp_points[1],
             bound_2[0][0],
@@ -479,7 +481,7 @@ class QModelPredict:
             (
                 np.zeros(model_results[0]),
                 approx_4,
-                np.zeros(len(results_5) - model_results[5]),
+                np.zeros(len(results_4) - model_results[5]),
             )
         )
         approx_5 = np.concatenate(
@@ -489,8 +491,8 @@ class QModelPredict:
                 np.zeros(len(results_5) - model_results[5]),
             )
         )
-        model_results[3] = np.argmax(approx_4 * results_4)
-        model_results[4] = np.argmax(approx_5 * results_5)
+        # model_results[3] = np.argmax(approx_4[:len(results_4)] * results_4)
+        # model_results[4] = np.argmax(approx_5[:len(results_5)] * results_5)
         # plt.figure()
         # plt.title("POI 4")
         # plt.axvline(x=model_results[3])
