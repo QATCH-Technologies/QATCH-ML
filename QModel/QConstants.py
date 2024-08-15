@@ -1,5 +1,5 @@
-
 import multiprocessing
+
 NUM_THREADS = multiprocessing.cpu_count()
 print(f"[INFO] Available {NUM_THREADS} threads.")
 """ The percentage of data to include in the validation set. """
@@ -36,20 +36,7 @@ BATCH_SIZE = 0.8
 
 DROPBOX_DUMP_PATH = "content/dropbox_dump"
 """ Path to 'good' training datasets. """
-T1_TRAIN_PATH_S = "content/training_data_1_S"
-""" Path to 'good' test datasets. """
-T1_VALID_PATH_S = "content/validation_data_1_S"
-""" Path to 'bad' training datasets. """
-T0_TRAIN_PATH_S = "content/training_data_0_S"
-""" Path to 'bad' test datasets. """
-T0_VALID_PATH_S = "content/validation_data_0_S"
-T1_TRAIN_PATH_L = "content/training_data_1_L"
-""" Path to 'good' test datasets. """
-T1_VALID_PATH_L = "content/validation_data_1_L"
-""" Path to 'bad' training datasets. """
-T0_TRAIN_PATH_L = "content/training_data_0_L"
-""" Path to 'bad' test datasets. """
-T0_VALID_PATH_L = "content/validation_data_0_L"
+
 """ QModel and QMultiModel features """
 FEATURES = [
     "Relative_time",
@@ -89,7 +76,7 @@ GB_FEATURES = [
     # "Zero_Crossing_Rate",
 ]
 """ QGB Target class. """
-GB_TARGET = 'Class'
+GB_TARGET = "Class"
 """ Multi-model target class"""
 M_TARGET = "Class"
 """ Single target classes. """

@@ -18,6 +18,7 @@ from tqdm import tqdm
 from QConstants import *
 from QMultiModel import QMultiModel, QPredictor
 
+
 def normalize(arr):
     return (arr - np.min(arr)) / (np.max(arr) - np.min(arr))
 
@@ -123,37 +124,22 @@ def xgb_pipeline(train_content):
 
 if __name__ == "__main__":
     print("[INFO] QTrainMulti.py script start")
-    
-    
+    PATH = "content/label_0"
     if TRAINING:
-        train_content = load_content(T1_TRAIN_PATH_S, size=BATCH_SIZE)
-        short_set = xgb_pipeline(train_content)
-        train_content = load_content(T1_TRAIN_PATH_L, size=BATCH_SIZE)
-        long_set = xgb_pipeline(train_content)
-        print(f"[INFO], short_size={len(short_set)}, long_size={len(long_set)}")
-        if SHORT_SET:
-            print("[INFO] Building short multi-target model")
-            qmodel_short = QMultiModel(
-                dataset=short_set, predictors=FEATURES, target_features=M_TARGET
-            )
-            qmodel_short.tune()
-            qmodel_short.train_model()
-            qmodel_short.save_model("QMulti_S")
-        if LONG_SET:
-            print("[INFO] Building long multi-target model")
-            qmodel_long = QMultiModel(
-                dataset=long_set, predictors=FEATURES, target_features=M_TARGET
-            )
-            
-            qmodel_long.tune()
-            qmodel_long.train_model()
-            qmodel_long.save_model("QMulti_L")
+        train_content = load_content(PATH, size=BATCH_SIZE)
+        training_set = xgb_pipeline(train_content)
+        print("[INFO] Building multi-target model")
+        qmodel_short = QMultiModel(
+            dataset=training_set, predictors=FEATURES, target_features=M_TARGET
+        )
+        qmodel_short.tune()
+        qmodel_short.train_model()
+        qmodel_short.save_model("QMultiType1")
 
     data_df = pd.DataFrame()
     content = []
-    qmp_s = QPredictor("QModel/SavedModels/QMulti_S.json")
-    qmp_l = QPredictor("QModel/SavedModels/QMulti_L.json")
-    for root, dirs, files in os.walk(T1_VALID_PATH_S):
+    qmp = QPredictor("QModel/SavedModels/QMultiType1.json")
+    for root, dirs, files in os.walk(PATH):
         for file in files:
             content.append(os.path.join(root, file))
     for filename in content:
@@ -164,15 +150,10 @@ if __name__ == "__main__":
             qdp = QDataPipeline(data_file)
             time_delta = qdp.find_time_delta()
 
-
             qdp.preprocess(poi_file=None)
             predictions = None
-            if time_delta == -1:
-                print("[INFO] Predicting using short-run multi-target model")
-                predictions = qmp_s.predict(data_file)
-            else:
-                print("[INFO] Predicting using long-run multi-target model")
-                predictions = qmp_l.predict(data_file)
+            print("[INFO] Predicting using short-run multi-target model")
+            predictions = qmp.predict(data_file)
             if PLOTTING:
                 palette = sns.color_palette("husl", 6)
                 df = pd.read_csv(data_file)
@@ -198,7 +179,7 @@ if __name__ == "__main__":
                         linestyle="dashed",
                         label=f"Actual POI {i + 1}",
                     )
-                plot_name = data_file.replace(T1_TRAIN_PATH_S, "")
+                plot_name = data_file.replace(PATH, "")
                 plt.xlabel("POIs")
                 plt.ylabel("Dissipation")
                 plt.title(f"Predicted/Actual POIs on Data: {plot_name}")

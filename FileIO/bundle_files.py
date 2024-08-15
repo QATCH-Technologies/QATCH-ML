@@ -70,7 +70,7 @@ def unbundle_csv_files(source_dir):
 
 
 # Specify the source directory
-source_directory = "content/type_0_L"
+source_directory = "content/type_0"
 bundle_csv_files(source_directory)
 source_directory = "content/type_1_L"
 bundle_csv_files(source_directory)
