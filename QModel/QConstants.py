@@ -27,6 +27,7 @@ BAD_LABEL = 1
 PLOTTING = True
 """ Flag for running training. """
 TRAINING = True
+TESTING = False
 SHORT_SET = True
 LONG_SET = True
 """ Flag for running testing. """

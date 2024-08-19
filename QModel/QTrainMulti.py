@@ -70,8 +70,8 @@ def pca_view(X, y):
     plt.show()
 
 
-def resample_df(data, target, droppable, length):
-    print(f"[INFO] resampling {length} target='{target}'")
+def resample_df(data, target, droppable):
+    print(f"[INFO] resampling target='{target}'")
     y = data[target].values
     X = data.drop(columns=droppable)
 
@@ -118,72 +118,86 @@ def xgb_pipeline(train_content):
             if not has_nan:
                 data_df = pd.concat([data_df, qdp.get_dataframe()])
 
-    resampled_df = resample_df(data_df, M_TARGET, M_TARGET, "short")
+    resampled_df = resample_df(data_df, M_TARGET, M_TARGET)
     return resampled_df
 
 
 if __name__ == "__main__":
     print("[INFO] QTrainMulti.py script start")
-    PATH = "content/label_0"
-    if TRAINING:
-        train_content = load_content(PATH, size=BATCH_SIZE)
-        training_set = xgb_pipeline(train_content)
-        print("[INFO] Building multi-target model")
-        qmodel_short = QMultiModel(
-            dataset=training_set, predictors=FEATURES, target_features=M_TARGET
-        )
-        qmodel_short.tune()
-        qmodel_short.train_model()
-        qmodel_short.save_model("QMultiType1")
+    vals = [6, 7, 8, 9, 10]
+    for t in vals:
 
-    data_df = pd.DataFrame()
-    content = []
-    qmp = QPredictor("QModel/SavedModels/QMultiType1.json")
-    for root, dirs, files in os.walk(PATH):
-        for file in files:
-            content.append(os.path.join(root, file))
-    for filename in content:
-        if filename.endswith(".csv") and not filename.endswith("_poi.csv"):
-            data_file = filename
-            poi_file = filename.replace(".csv", "_poi.csv")
-            actual_indices = pd.read_csv(poi_file, header=None).values
-            qdp = QDataPipeline(data_file)
-            time_delta = qdp.find_time_delta()
+        model_name = f"QMultiType{t}"
+        print(f'[INFO] Training {model_name}')
+        TRAIN_PATH = f"content/label_{t}/train"
 
-            qdp.preprocess(poi_file=None)
-            predictions = None
-            print("[INFO] Predicting using short-run multi-target model")
-            predictions = qmp.predict(data_file)
-            if PLOTTING:
-                palette = sns.color_palette("husl", 6)
-                df = pd.read_csv(data_file)
-                dissipation = normalize(df["Dissipation"])
-                print("Actual, Predicted")
-                for actual, predicted in zip(actual_indices, predictions):
-                    print(f"{actual[0]}, {predicted}")
-                plt.figure()
+        if TRAINING:
+            train_content = load_content(TRAIN_PATH, size=BATCH_SIZE)
+            training_set = xgb_pipeline(train_content)
+            print("[INFO] Building multi-target model")
+            qmodel_short = QMultiModel(
+                dataset=training_set, predictors=FEATURES, target_features=M_TARGET
+            )
+            qmodel_short.tune()
+            qmodel_short.train_model()
+            qmodel_short.save_model(model_name)
+        if TESTING:
+            data_df = pd.DataFrame()
+            content = []
+            qmp = QPredictor(f"QModel/SavedModels/{model_name}.json")
+            TEST_PATH = f"content/label_{t}/test"
+            for root, dirs, files in os.walk(TEST_PATH):
+                for file in files:
+                    content.append(os.path.join(root, file))
 
-                plt.plot(
-                    dissipation,
-                    color="grey",
-                    label="Dissipation",
-                )
-                for i, index in enumerate(predictions):
-                    plt.axvline(
-                        x=index, color=palette[i], label=f"Predicted POI {i + 1}"
-                    )
-                for i, index in enumerate(actual_indices):
-                    plt.axvline(
-                        x=index,
-                        color=palette[i],
-                        linestyle="dashed",
-                        label=f"Actual POI {i + 1}",
-                    )
-                plot_name = data_file.replace(PATH, "")
-                plt.xlabel("POIs")
-                plt.ylabel("Dissipation")
-                plt.title(f"Predicted/Actual POIs on Data: {plot_name}")
+            for filename in tqdm(content, desc="<<Testing on files>>"):
+                if (
+                    filename.endswith(".csv")
+                    and not filename.endswith("_poi.csv")
+                    and not filename.endswith("_lower.csv")
+                ):
+                    data_file = filename
+                    poi_file = filename.replace(".csv", "_poi.csv")
+                    actual_indices = pd.read_csv(poi_file, header=None).values
+                    qdp = QDataPipeline(data_file)
+                    time_delta = qdp.find_time_delta()
 
-                plt.legend()
-                plt.grid(True)
-                plt.show()
+                    qdp.preprocess(poi_file=None)
+                    predictions = None
+                    print("[INFO] Predicting using multi-target model")
+                    predictions = qmp.predict(data_file)
+                    if PLOTTING:
+                        palette = sns.color_palette("husl", 6)
+                        df = pd.read_csv(data_file)
+                        dissipation = normalize(df["Dissipation"])
+                        print("Actual, Predicted")
+                        for actual, predicted in zip(actual_indices, predictions):
+                            print(f"{actual[0]}, {predicted}")
+                        plt.figure()
+
+                        plt.plot(
+                            dissipation,
+                            color="grey",
+                            label="Dissipation",
+                        )
+                        for i, index in enumerate(predictions):
+                            plt.axvline(
+                                x=index,
+                                color=palette[i],
+                                label=f"Predicted POI {i + 1}",
+                            )
+                        for i, index in enumerate(actual_indices):
+                            plt.axvline(
+                                x=index,
+                                color=palette[i],
+                                linestyle="dashed",
+                                label=f"Actual POI {i + 1}",
+                            )
+                        plot_name = data_file.replace(TRAIN_PATH, "")
+                        plt.xlabel("POIs")
+                        plt.ylabel("Dissipation")
+                        plt.title(f"Predicted/Actual POIs on Data: {plot_name}")
+
+                        plt.legend()
+                        plt.grid(True)
+                        plt.show()

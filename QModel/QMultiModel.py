@@ -126,6 +126,7 @@ class QMultiModel:
             metrics=[
                 "auc",
             ],
+            verbose_eval=VERBOSE_EVAL,
         )
         best_score = results["test-auc-mean"].max()
         return {"loss": best_score, "status": STATUS_OK}

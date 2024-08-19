@@ -28,9 +28,9 @@ def fig2img(fig):
 
 
 def load_content(data_dir):
+    """Loads content from data directory as file handles in list"""
     print(f"[INFO] Loading content from {data_dir}")
     content = []
-
     for root, dirs, files in os.walk(data_dir):
         for file in files:
             if (
@@ -43,6 +43,7 @@ def load_content(data_dir):
 
 
 def load_images(file, size):
+    """Loads images from content list and returns a list of images."""
     print("[INFO] Loading images")
     images = []
     for i, file in enumerate(tqdm(content, desc="<<Loading Images>>")):
@@ -51,7 +52,6 @@ def load_images(file, size):
             break
         df = pd.read_csv(file)
         dissipation = df["Dissipation"]
-        # Render the plot to a NumPy array
         fig, ax = plt.subplots()
         ax.plot(dissipation)
         ax.axis("off")
@@ -61,8 +61,9 @@ def load_images(file, size):
     return images
 
 
-# Preprocess images
 def preprocess_images(pil_images, target_size=(224, 224)):
+    """Preprocess a list of PIL images by resizing to (224, 224), converts image to
+    np.array and normalizes the RGB values in range 255."""
     print("[INFO] Preprocessing images")
     processed_images = []
     for img in tqdm(pil_images, desc="<<Preprocessing Images>>"):
@@ -76,56 +77,40 @@ def preprocess_images(pil_images, target_size=(224, 224)):
     return np.vstack(processed_images)
 
 
-# Feature extraction using pre-trained CNN
 def extract_features(images, model):
+    """Extracts features using VGG16 model predictions."""
     print(f"[INFO] Extracting features using model {model}")
     features = model.predict(images)
     return features.reshape((features.shape[0], -1))
 
 
-# Dimensionality reduction
 def reduce_dimensionality(features, n_components=50):
+    """Uses PCA to reduce image dimensionality to 50 dimensions."""
     print(f"[INFO] Dimensionality reduction with {n_components} components")
     pca = PCA(n_components=n_components)
     reduced_features = pca.fit_transform(features)
     return reduced_features
 
 
-# Clustering
 def perform_clustering(features, n_clusters=5):
+    """Clusters reduced images into k-optimal clusters returning a model and labels from the model."""
     print(f"[INFO] Clustering with {n_clusters} clusters")
     kmeans = KMeans(n_clusters=n_clusters)
     labels = kmeans.fit_predict(features)
     return labels, kmeans
 
 
-# Visualization
 def visualize_clusters(features, labels):
+    """Visualizes distribution of clustering using a scatter plot."""
     print(f"[INFO] Visualizing")
     plt.scatter(features[:, 0], features[:, 1], c=labels, cmap="viridis")
     plt.title("Clusters of 2D Line Plot Images")
     plt.show()
 
 
-def display_cluster_samples(pil_images, labels, n_clusters=5):
-    fig, axes = plt.subplots(1, n_clusters, figsize=(15, 5))
-    for i in range(n_clusters):
-        cluster_indices = np.where(labels == i)[0]
-        sample_index = cluster_indices[0]  # Select the first image in the cluster
-
-        # Get the original PIL image
-        sample_image = pil_images[sample_index]
-        print(sample_image)
-        # # Convert back to original scale if necessary
-        # if sample_image.mode == "F":  # Check if the image is in float mode
-        #     sample_image = sample_image.convert("RGB")  # Ensure it's in RGB format
-        axes[i].imshow(sample_image)
-        axes[i].axis("off")
-        axes[i].set_title(f"Cluster {i}")
-    plt.show()
-
-
 def display_cluster_images(pil_images, labels, n_clusters=5):
+    """Displays a sample images from each respective cluster based on the
+    input images."""
     fig, axes = plt.subplots(n_clusters, 1, figsize=(15, n_clusters * 5))
 
     for i in range(n_clusters):
@@ -159,43 +144,30 @@ def display_cluster_images(pil_images, labels, n_clusters=5):
 
 
 def find_optimal_clusters(features, min_k=2, max_k=10):
+    """Finds and optimal number of clusters based on the maximal sillohoutte score of the kmeans
+    model."""
     print(f"[INFO] Finding optimal_k with max_k={max_k}")
-    inertia = []
     silhouette_scores = []
     k_values = range(min_k, max_k + 1)
 
     for k in tqdm(k_values, desc="<<Optimal K>>"):
-
         kmeans = KMeans(n_clusters=k)
         labels = kmeans.fit_predict(features)
-
-        inertia.append(kmeans.inertia_)
         silhouette_scores.append(silhouette_score(features, labels))
 
-    # Plot the Elbow Method
-    plt.figure(figsize=(10, 5))
-    plt.plot(k_values, inertia, "bx-")
-    plt.xlabel("Number of clusters")
-    plt.ylabel("Inertia")
-    plt.title("Elbow Method For Optimal K")
-    plt.show()
-
-    # Plot the Silhouette scores
     plt.figure(figsize=(10, 5))
     plt.plot(k_values, silhouette_scores, "bx-")
     plt.xlabel("Number of clusters")
     plt.ylabel("Silhouette Score")
     plt.title("Silhouette Analysis For Optimal K")
     plt.show()
-
-    # Return the k with the highest   score
     optimal_k = k_values[np.argmax(silhouette_scores)]
     print(f"Optimal number of clusters based on silhouette analysis: {optimal_k}")
     return optimal_k
 
 
-# Main pipeline function
 def pipeline(pil_images, min_k, max_k=10):
+    """Main data and analysis pipeline and primary entrypoint for the script"""
     # Load pre-trained VGG16 model + higher level layers
     base_model = VGG16(weights="imagenet", include_top=False, input_shape=(224, 224, 3))
     model = Model(inputs=base_model.input, outputs=base_model.output)
@@ -208,6 +180,8 @@ def pipeline(pil_images, min_k, max_k=10):
 
     # Reduce dimensionality
     reduced_features = reduce_dimensionality(features, n_components=50)
+
+    # Find an optimal number of clusters
     optimal_k = find_optimal_clusters(reduced_features, min_k=min_k, max_k=max_k)
 
     # Perform clustering
@@ -216,14 +190,16 @@ def pipeline(pil_images, min_k, max_k=10):
     # Visualize clusters
     visualize_clusters(reduced_features, labels)
 
-    display_cluster_samples(pil_images, labels, n_clusters=optimal_k)
+    # Display clustered images.
     display_cluster_images(pil_images, labels, n_clusters=optimal_k)
 
     return labels, kmeans
 
 
 if __name__ == "__main__":
-    content = load_content("content/cluster_train")
+    content = load_content("content/all_train/train")
     images = load_images(content, len(content))
-    labels, kmeans_model = pipeline(images, min_k=5, max_k=30)
-    joblib.dump(kmeans_model, "cluster.joblib")
+    labels, kmeans_model = pipeline(images, min_k=9, max_k=11)
+    model_path = "QModel/SavedModels/cluster.joblib"
+    print(f"[INFO] Saving model as {model_path}")
+    joblib.dump(kmeans_model, model_path)

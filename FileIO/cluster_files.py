@@ -13,6 +13,8 @@ from sklearn.metrics import silhouette_score
 from keras.applications import VGG16
 from keras_preprocessing.image import img_to_array
 from keras.models import Model
+from bundle_files import bundle_csv_files
+from split_directories import split_data
 
 
 def fig2img(fig):
@@ -103,7 +105,7 @@ def preprocess_images(pil_images, target_size=(224, 224)):
 # Feature extraction using pre-trained CNN
 def extract_features(images, model):
     print(f"[INFO] Extracting features using model {model}")
-    features = model.predict(images)
+    features = model.predict(images, use_multiprocessing=True)
     return features.reshape((features.shape[0], -1))
 
 
@@ -134,10 +136,41 @@ def pipeline(images):
 
 if __name__ == "__main__":
     kmeans_model = joblib.load("QModel/SavedModels/cluster.joblib")
-    content, directories = load_content("content/cluster_run")
-    input(directories)
+    content, directories = load_content("content/all_train/run")
     images = load_images(content, len(content))
     labels = pipeline(images)
-    # Define your output directory where labeled folders will be created
     output_dir = "content"
     create_and_copy_directories(output_dir, directories, labels)
+    src = output_dir + f"/label_{0}"
+    bundle_csv_files(src)
+    split_data(src, src + "/train", src + "/test", 0.7)
+    src = output_dir + f"/label_{1}"
+    bundle_csv_files(src)
+    split_data(src, src + "/train", src + "/test", 0.7)
+    src = output_dir + f"/label_{2}"
+    bundle_csv_files(src)
+    split_data(src, src + "/train", src + "/test", 0.7)
+    src = output_dir + f"/label_{3}"
+    bundle_csv_files(src)
+    split_data(src, src + "/train", src + "/test", 0.7)
+    src = output_dir + f"/label_{4}"
+    bundle_csv_files(src)
+    split_data(src, src + "/train", src + "/test", 0.7)
+    src = output_dir + f"/label_{5}"
+    bundle_csv_files(src)
+    split_data(src, src + "/train", src + "/test", 0.7)
+    src = output_dir + f"/label_{6}"
+    bundle_csv_files(src)
+    split_data(src, src + "/train", src + "/test", 0.7)
+    src = output_dir + f"/label_{7}"
+    bundle_csv_files(src)
+    split_data(src, src + "/train", src + "/test", 0.7)
+    src = output_dir + f"/label_{8}"
+    bundle_csv_files(src)
+    split_data(src, src + "/train", src + "/test", 0.7)
+    src = output_dir + f"/label_{9}"
+    bundle_csv_files(src)
+    split_data(src, src + "/train", src + "/test", 0.7)
+    src = output_dir + f"/label_{10}"
+    bundle_csv_files(src)
+    split_data(src, src + "/train", src + "/test", 0.7)

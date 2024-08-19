@@ -69,13 +69,17 @@ def unbundle_csv_files(source_dir):
     print("CSV files have been unbundled successfully.")
 
 
-# Specify the source directory
-source_directory = "content/type_0"
-bundle_csv_files(source_directory)
-source_directory = "content/type_1_L"
-bundle_csv_files(source_directory)
-source_directory = "content/type_0_S"
-bundle_csv_files(source_directory)
-source_directory = "content/type_1_S"
-bundle_csv_files(source_directory)
-# unbundle_csv_files(source_directory)
+if __name__ == "__main__":
+    # Specify the source directory
+    source_directory = "content/label_0"
+    bundle_csv_files(source_directory)
+    source_directory = "content/label_1"
+    bundle_csv_files(source_directory)
+    source_directory = "content/label_2"
+    bundle_csv_files(source_directory)
+    source_directory = "content/label_3"
+    bundle_csv_files(source_directory)
+    source_directory = "content/label_4"
+    bundle_csv_files(source_directory)
+    source_directory = "content/label_5"
+    bundle_csv_files(source_directory)
