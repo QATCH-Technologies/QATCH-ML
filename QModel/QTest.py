@@ -5,16 +5,17 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+import joblib
 from ModelData import ModelData
-from QDataPipline import QDataPipeline
+from QDataPipeline import QDataPipeline
 from tqdm import tqdm
 
 from QModel import QModelPredict
-from QMultiModel import QMultiModel
 from QMultiModel import QPredictor
+from QCompVis import predict_label
 
 TEST_BATCH_SIZE = 0.95
-VALIDATION_DATASETS_PATH = "content/good_runs/validate"
+VALIDATION_DATASETS_PATH = "content/all_test"
 S_PREDICTOR = QModelPredict(
     "QModel/SavedModels/QModel_1.json",
     "QModel/SavedModels/QModel_2.json",
@@ -23,8 +24,11 @@ S_PREDICTOR = QModelPredict(
     "QModel/SavedModels/QModel_5.json",
     "QModel/SavedModels/QModel_6.json",
 )
-M_PREDICTOR_S = QPredictor("QModel/SavedModels/QMulti_S.json")
-M_PREDICTOR_L =QPredictor("QModel/SavedModels/QMulti_L.json")
+M_PREDICTOR_0 = QPredictor("QModel/SavedModels/QMultiType_0.json")
+M_PREDICTOR_1 = QPredictor("QModel/SavedModels/QMultiType_1.json")
+M_PREDICTOR_2 = QPredictor("QModel/SavedModels/QMultiType_2.json")
+kmeans_model = joblib.load("QModel/SavedModels/cluster.joblib")
+
 
 def load_test_dataset(path, test_size):
     content = []
@@ -50,7 +54,7 @@ def test_md_on_file(filename, act_poi):
     md_predictor = ModelData()
     md_result = md_predictor.IdentifyPoints(data_path=filename)
     if isinstance(md_result, int):
-                md_result = [1, 1, 1, 1, 1, 1]
+        md_result = [1, 1, 1, 1, 1, 1]
     predictions = []
     for item in md_result:
         if isinstance(item, list):
@@ -61,22 +65,25 @@ def test_md_on_file(filename, act_poi):
     # else:
     #     print("[INFO] MD Skipping due to time delta")
 
+
 def test_mm_on_file(filename, act_poi):
-    qdp = QDataPipeline(filename)
-    time_delta = qdp.find_time_delta()
-    qdp.preprocess(poi_file=None)
-    if time_delta == -1:
-        predictions = M_PREDICTOR_S.predict(filename, act_poi, long_run=False)
-        
+    label = predict_label(filename, kmeans_model)
+    if label == 0:
+        predictions = M_PREDICTOR_0.predict(filename)
+    elif label == 1:
+        predictions = M_PREDICTOR_1.predict(filename)
+    elif label == 2:
+        predictions = M_PREDICTOR_2.predict(filename)
     else:
-        predictions = M_PREDICTOR_L.predict(filename, act_poi, long_run=True)
+        raise ValueError(f"Invalid predicted label was: {label}")
     return list(zip(predictions, act_poi))
+
 
 def test_qmp_on_file(filename, act_poi):
     qdp = QDataPipeline(filename)
     time_delta = qdp.find_time_delta()
     # if time_delta == -1:
-    qdp.preprocess(poi_file=None)
+    qdp.preprocess(poi_filepath=None)
 
     predictions = S_PREDICTOR.predict(filename)
     return list(zip(predictions, act_poi))
@@ -213,7 +220,9 @@ def delta_distribution_view(deltas, name):
     plt.show()
 
 
-def metrics_view(model_1, model_2, model_3, test_name, model_1_name, model_2_name, model_3_name, note):
+def metrics_view(
+    model_1, model_2, model_3, test_name, model_1_name, model_2_name, model_3_name, note
+):
     points = np.arange(1, 7)
 
     # Width of each bar
@@ -364,7 +373,7 @@ def run():
             mm_results = test_mm_on_file(test_file, act_poi)
             qmp_results = test_qmp_on_file(test_file, act_poi)
             md_results = test_md_on_file(test_file, act_poi)
-            
+
             mm_list.append(mm_results)
             qmp_list.append(qmp_results)
             md_list.append(md_results)
@@ -372,7 +381,7 @@ def run():
             mm_deltas.append(compute_deltas(mm_results))
             qmp_deltas.append(compute_deltas(qmp_results))
             md_deltas.append(compute_deltas(md_results))
-    
+
     mm_ppr = extract_results(mm_list)
     qmp_ppr = extract_results(qmp_list)
     md_ppr = extract_results(md_list)
@@ -563,10 +572,10 @@ def run():
         "Sqrt of MSE.\nUnits are the same as target variable.\n(Lower is better)",
     )
     metrics_view(
-        mm_r2, 
+        mm_r2,
         qmp_r2,
         md_r2,
-        "R^2", 
+        "R^2",
         "QMultiModel",
         "QSingleModel",
         "ModelData",

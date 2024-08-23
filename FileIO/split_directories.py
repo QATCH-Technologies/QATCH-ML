@@ -31,12 +31,18 @@ def split_data(source_dir, train_dir, val_dir, split_percentage):
     # Copy subdirectories to the training directory
     for subdir in train_subdirs:
         shutil.copytree(
-            os.path.join(source_dir, subdir), os.path.join(train_dir, subdir), dirs_exist_ok=True
+            os.path.join(source_dir, subdir),
+            os.path.join(train_dir, subdir),
+            dirs_exist_ok=True,
         )
 
     # Copy subdirectories to the validation directory
     for subdir in val_subdirs:
-        shutil.copytree(os.path.join(source_dir, subdir), os.path.join(val_dir, subdir), dirs_exist_ok=True)
+        shutil.copytree(
+            os.path.join(source_dir, subdir),
+            os.path.join(val_dir, subdir),
+            dirs_exist_ok=True,
+        )
 
     print(f"Training data: {len(train_subdirs)} subdirectories")
     print(f"Validation data: {len(val_subdirs)} subdirectories")
@@ -44,9 +50,11 @@ def split_data(source_dir, train_dir, val_dir, split_percentage):
 
 if __name__ == "__main__":
     # Usage
-    source_directory = "content/all_train"
-    training_directory = "content/all_train/train"
-    validation_directory = "content/all_train/run"
-    split_percentage = 0.2
+    source_directory = "content/training_data"
+    training_directory = "content/training_data/train_clusters"
+    validation_directory = "content/training_data/test_clusters"
+    split_percentage = 0.7
 
-    split_data(source_directory, training_directory, validation_directory, split_percentage)
+    split_data(
+        source_directory, training_directory, validation_directory, split_percentage
+    )

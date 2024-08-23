@@ -129,14 +129,14 @@ def pipeline(images):
     features = extract_features(processed_images, model)
 
     # Reduce dimensionality
-    reduced_features = reduce_dimensionality(features, n_components=50)
-    labels = kmeans_model.predict(reduced_features)
+    # reduced_features = reduce_dimensionality(features, n_components=50)
+    labels = kmeans_model.predict(features)
     return labels
 
 
 if __name__ == "__main__":
     kmeans_model = joblib.load("QModel/SavedModels/cluster.joblib")
-    content, directories = load_content("content/all_train/run")
+    content, directories = load_content("content/training_data/train_clusters")
     images = load_images(content, len(content))
     labels = pipeline(images)
     output_dir = "content"
@@ -148,29 +148,5 @@ if __name__ == "__main__":
     bundle_csv_files(src)
     split_data(src, src + "/train", src + "/test", 0.7)
     src = output_dir + f"/label_{2}"
-    bundle_csv_files(src)
-    split_data(src, src + "/train", src + "/test", 0.7)
-    src = output_dir + f"/label_{3}"
-    bundle_csv_files(src)
-    split_data(src, src + "/train", src + "/test", 0.7)
-    src = output_dir + f"/label_{4}"
-    bundle_csv_files(src)
-    split_data(src, src + "/train", src + "/test", 0.7)
-    src = output_dir + f"/label_{5}"
-    bundle_csv_files(src)
-    split_data(src, src + "/train", src + "/test", 0.7)
-    src = output_dir + f"/label_{6}"
-    bundle_csv_files(src)
-    split_data(src, src + "/train", src + "/test", 0.7)
-    src = output_dir + f"/label_{7}"
-    bundle_csv_files(src)
-    split_data(src, src + "/train", src + "/test", 0.7)
-    src = output_dir + f"/label_{8}"
-    bundle_csv_files(src)
-    split_data(src, src + "/train", src + "/test", 0.7)
-    src = output_dir + f"/label_{9}"
-    bundle_csv_files(src)
-    split_data(src, src + "/train", src + "/test", 0.7)
-    src = output_dir + f"/label_{10}"
     bundle_csv_files(src)
     split_data(src, src + "/train", src + "/test", 0.7)

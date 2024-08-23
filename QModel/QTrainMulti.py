@@ -8,7 +8,7 @@ from imblearn.over_sampling import SMOTE
 from imblearn.pipeline import Pipeline
 from imblearn.under_sampling import RandomUnderSampler
 from joblib import dump, load
-from QDataPipline import QDataPipeline
+from QDataPipeline import QDataPipeline
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from sklearn.model_selection import train_test_split
@@ -90,7 +90,7 @@ def resample_df(data, target, droppable):
     return resampled_df
 
 
-def load_content(data_dir, size=0.5):
+def load_content(data_dir):
     print(f"[INFO] Loading content from {data_dir}")
     content = []
 
@@ -113,7 +113,9 @@ def xgb_pipeline(train_content):
             data_file = filename
             qdp = QDataPipeline(data_file, multi_class=True)
             poi_file = filename.replace(".csv", "_poi.csv")
-            qdp.preprocess(poi_file=poi_file)
+            if not os.path.exists(poi_file):
+                continue
+            qdp.preprocess(poi_filepath=poi_file)
             has_nan = qdp.__dataframe__.isna().any().any()
             if not has_nan:
                 data_df = pd.concat([data_df, qdp.get_dataframe()])
@@ -124,15 +126,15 @@ def xgb_pipeline(train_content):
 
 if __name__ == "__main__":
     print("[INFO] QTrainMulti.py script start")
-    vals = [6, 7, 8, 9, 10]
+    vals = [0, 1, 2]
     for t in vals:
 
-        model_name = f"QMultiType{t}"
-        print(f'[INFO] Training {model_name}')
+        model_name = f"QMultiType_{t}"
+        print(f"[INFO] Training {model_name}")
         TRAIN_PATH = f"content/label_{t}/train"
 
         if TRAINING:
-            train_content = load_content(TRAIN_PATH, size=BATCH_SIZE)
+            train_content = load_content(TRAIN_PATH)
             training_set = xgb_pipeline(train_content)
             print("[INFO] Building multi-target model")
             qmodel_short = QMultiModel(
@@ -162,7 +164,7 @@ if __name__ == "__main__":
                     qdp = QDataPipeline(data_file)
                     time_delta = qdp.find_time_delta()
 
-                    qdp.preprocess(poi_file=None)
+                    qdp.preprocess(poi_filepath=None)
                     predictions = None
                     print("[INFO] Predicting using multi-target model")
                     predictions = qmp.predict(data_file)

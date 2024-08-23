@@ -28,10 +28,7 @@ PLOTTING = True
 """ Flag for running training. """
 TRAINING = True
 TESTING = False
-SHORT_SET = True
-LONG_SET = True
-""" Flag for running testing. """
-TESTING = True
+
 """ Size of the batch to train/test on. """
 BATCH_SIZE = 0.8
 

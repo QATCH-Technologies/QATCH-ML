@@ -14,6 +14,7 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 import math
 from QConstants import *
 import joblib
+from QDataPipeline import QDataPipeline
 
 
 def fig2img(fig):
@@ -50,10 +51,11 @@ def load_images(file, size):
         if i >= size:
             print("[INFO] Breaking early")
             break
-        df = pd.read_csv(file)
-        dissipation = df["Dissipation"]
+        qdp = QDataPipeline(file)
+        qdp.preprocess()
+        data = qdp.__dataframe__["Dissipation"]
         fig, ax = plt.subplots()
-        ax.plot(dissipation)
+        ax.plot(data)
         ax.axis("off")
         image = fig2img(fig)
         images.append(image)
@@ -179,16 +181,16 @@ def pipeline(pil_images, min_k, max_k=10):
     features = extract_features(processed_images, model)
 
     # Reduce dimensionality
-    reduced_features = reduce_dimensionality(features, n_components=50)
+    # reduced_features = reduce_dimensionality(features, n_components=50)
 
     # Find an optimal number of clusters
-    optimal_k = find_optimal_clusters(reduced_features, min_k=min_k, max_k=max_k)
+    optimal_k = find_optimal_clusters(features, min_k=min_k, max_k=max_k)
 
     # Perform clustering
-    labels, kmeans = perform_clustering(reduced_features, n_clusters=optimal_k)
+    labels, kmeans = perform_clustering(features, n_clusters=optimal_k)
 
     # Visualize clusters
-    visualize_clusters(reduced_features, labels)
+    visualize_clusters(features, labels)
 
     # Display clustered images.
     display_cluster_images(pil_images, labels, n_clusters=optimal_k)
@@ -197,9 +199,9 @@ def pipeline(pil_images, min_k, max_k=10):
 
 
 if __name__ == "__main__":
-    content = load_content("content/all_train/train")
+    content = load_content("content/training_data/test_clusters")
     images = load_images(content, len(content))
-    labels, kmeans_model = pipeline(images, min_k=9, max_k=11)
+    labels, kmeans_model = pipeline(images, min_k=3, max_k=10)
     model_path = "QModel/SavedModels/cluster.joblib"
     print(f"[INFO] Saving model as {model_path}")
     joblib.dump(kmeans_model, model_path)

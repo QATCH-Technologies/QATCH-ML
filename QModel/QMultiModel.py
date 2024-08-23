@@ -1,4 +1,3 @@
-
 import sys
 import matplotlib.pyplot as plt
 import numpy as np
@@ -10,6 +9,7 @@ from scipy.signal import find_peaks
 from sklearn.model_selection import train_test_split
 from ModelData import ModelData
 from QConstants import *
+import pickle
 
 np.set_printoptions(threshold=sys.maxsize)
 
@@ -32,25 +32,24 @@ np.set_printoptions(threshold=sys.maxsize)
 QDataPipeline_found = False
 try:
     if not QDataPipeline_found:
-        from QDataPipline import QDataPipeline
+        from QDataPipeline import QDataPipeline
     QDataPipeline_found = True
 except:
     QDataPipeline_found = False
 try:
     if not QDataPipeline_found:
-        from QModel.QDataPipline import QDataPipeline
+        from QModel.QDataPipeline import QDataPipeline
     QDataPipeline_found = True
 except:
     QDataPipeline_found = False
 try:
     if not QDataPipeline_found:
-        from QATCH.QModel.QDataPipline import QDataPipeline
+        from QATCH.QModel.QDataPipeline import QDataPipeline
     QDataPipeline_found = True
 except:
     QDataPipeline_found = False
 if not QDataPipeline_found:
     raise ImportError("Cannot find 'QDataPipeline' in any expected location.")
-
 
 
 class QMultiModel:
@@ -104,7 +103,7 @@ class QMultiModel:
         self.__model__ = None
 
     def train_model(self):
-        print(f'[INFO] Training multi-target model')
+        print(f"[INFO] Training multi-target model")
         self.__model__ = xgb.train(
             self.__params__,
             self.__dtrain__,
@@ -132,7 +131,7 @@ class QMultiModel:
         return {"loss": best_score, "status": STATUS_OK}
 
     def tune(self, evaluations=250):
-        print(f'[INFO] Running model tuning for {evaluations} max iterations')
+        print(f"[INFO] Running model tuning for {evaluations} max iterations")
         space = {
             "max_depth": hp.choice("max_depth", np.arange(1, 20, 1, dtype=int)),
             "eta": hp.uniform("eta", 0, 1),
@@ -201,6 +200,13 @@ class QPredictor:
         self.__model__ = xgb.Booster()
 
         self.__model__.load_model(model_path)
+
+        with open("QModel/SavedModels/label_0.pkl", "rb") as file:
+            self.__label_0__ = pickle.load(file)
+        with open("QModel/SavedModels/label_1.pkl", "rb") as file:
+            self.__label_1__ = pickle.load(file)
+        with open("QModel/SavedModels/label_2.pkl", "rb") as file:
+            self.__label_2__ = pickle.load(file)
 
     def normalize(self, data):
         return (data - np.min(data)) / (np.max(data) - np.min(data))
@@ -307,7 +313,17 @@ class QPredictor:
 
         return [signal_region_equation_POI4, signal_region_equation_POI5]
 
-    def predict(self, file_buffer):
+    def adjust_predictions(self, prediction, rel_time, poi_num, i, j):
+        rel_time = rel_time[i:j]
+        rel_time_norm = self.normalize(rel_time)
+        bounds = self.__label_0__["Class_" + poi_num]
+        lq = bounds["lq"]
+        uq = bounds["uq"]
+        adjustment = np.where((rel_time_norm >= lq) & (rel_time_norm <= uq), 1, 0)
+        adj_prediction = prediction * adjustment
+        return adj_prediction
+
+    def predict(self, file_buffer, start=-1, stop=-1):
         # Load CSV data and drop unnecessary columns
         df = pd.read_csv(file_buffer)
         columns_to_drop = ["Date", "Time", "Ambient", "Temperature"]
@@ -337,22 +353,26 @@ class QPredictor:
                 csv_headers = csv_headers.decode()
 
             if "Ambient" in csv_headers:
-                csv_cols = (2,4,6,7)
+                csv_cols = (2, 4, 6, 7)
             else:
-                csv_cols = (2,3,5,6)
+                csv_cols = (2, 3, 5, 6)
 
-            file_data  = np.loadtxt(file_buffer.readlines(), delimiter = ',', skiprows = 0, usecols = csv_cols)
+            file_data = np.loadtxt(
+                file_buffer.readlines(), delimiter=",", skiprows=0, usecols=csv_cols
+            )
             data_path = "QModel Passthrough"
-            relative_time = file_data[:,0]
+            relative_time = file_data[:, 0]
             # temperature = file_data[:,1]
-            resonance_frequency = file_data[:,2]
-            dissipation = file_data[:,3]
+            resonance_frequency = file_data[:, 2]
+            dissipation = file_data[:, 3]
 
-            emp_predictions = ModelData().IdentifyPoints(data_path=data_path, 
-                                                         times=relative_time,
-                                                         freq=resonance_frequency,
-                                                         diss=dissipation)
-        else:    
+            emp_predictions = ModelData().IdentifyPoints(
+                data_path=data_path,
+                times=relative_time,
+                freq=resonance_frequency,
+                diss=dissipation,
+            )
+        else:
             emp_predictions = ModelData().IdentifyPoints(file_buffer)
         emp_points = []
         start_bound = -1
@@ -379,47 +399,61 @@ class QPredictor:
         )
         results = self.normalize(results)
         extracted_results = self.extract_results(results)
-        
-        # poi_1 = 
+
         poi_1 = start_bound
         poi_2 = np.argmax(extracted_results[2])
         poi_3 = np.argmax(extracted_results[3])
         poi_4 = np.argmax(extracted_results[4])
         poi_5 = np.argmax(extracted_results[5])
         poi_6 = np.argmax(extracted_results[6])
+
         if not isinstance(emp_predictions, list):
             poi_1 = np.argmax(extracted_results[1])
-        approx_4, approx_5 = self.generate_zone_probabilities(rel_time[poi_1:poi_6])
 
-        approx_4 = np.concatenate(
-            (
-                np.zeros(poi_1),
-                approx_4,
-                np.zeros(len(extracted_results[4]) - poi_6),
-            )
-        )
-        approx_5 = np.concatenate(
-            (
-                np.zeros(poi_1),
-                approx_5,
-                np.zeros(len(extracted_results[5]) - poi_6),
-            )
-        )
-            # plt.figure()
-            # plt.plot(self.normalize(extracted_results[4]), label="Prediction 4")
-            # plt.plot(self.normalize(extracted_results[5]), label="Prediction 5")
-            # plt.plot(self.normalize(approx_4 * extracted_results[4]), label="Approx 4")
-            # plt.plot(self.normalize(approx_5 * extracted_results[5]), label="Approx 5")
-            # plt.axvline(x=actual[3], linestyle='--', label='Actual 5')
-            # plt.axvline(x=actual[4], linestyle='--', label='Actual 5')
-            # plt.plot(
-            #     self.normalize(df["Dissipation"]),
-            #     label="Dissipation",
-            #     linestyle="dashed",
-            #     color="black",
-            # )
-            # plt.legend()
-            # plt.show()
-        poi_4 = np.argmax(approx_4 * extracted_results[4])
-        poi_5 = np.argmax(approx_5 * extracted_results[5])
+        if start > -1:
+            poi_1 = start
+        if stop > -1:
+            poi_6 = stop
+
+        adj_2 = self.adjust_predictions(extracted_results[2], rel_time, 2, poi_1, poi_6)
+        adj_3 = self.adjust_predictions(extracted_results[3], rel_time, 3, poi_1, poi_6)
+        adj_4 = self.adjust_predictions(extracted_results[4], rel_time, 4, poi_1, poi_6)
+        adj_5 = self.adjust_predictions(extracted_results[5], rel_time, 5, poi_1, poi_6)
+        poi_2 = np.argmax(adj_2)
+        poi_3 = np.argmax(adj_3)
+        poi_4 = np.argmax(adj_4)
+        poi_5 = np.argmax(adj_5)
+        # approx_4, approx_5 = self.generate_zone_probabilities(rel_time[poi_1:poi_6])
+
+        # approx_4 = np.concatenate(
+        #     (
+        #         np.zeros(poi_1),
+        #         approx_4,
+        #         np.zeros(len(extracted_results[4]) - poi_6),
+        #     )
+        # )
+        # approx_5 = np.concatenate(
+        #     (
+        #         np.zeros(poi_1),
+        #         approx_5,
+        #         np.zeros(len(extracted_results[5]) - poi_6),
+        #     )
+        # )
+        # plt.figure()
+        # plt.plot(self.normalize(extracted_results[4]), label="Prediction 4")
+        # plt.plot(self.normalize(extracted_results[5]), label="Prediction 5")
+        # plt.plot(self.normalize(approx_4 * extracted_results[4]), label="Approx 4")
+        # plt.plot(self.normalize(approx_5 * extracted_results[5]), label="Approx 5")
+        # plt.axvline(x=actual[3], linestyle='--', label='Actual 5')
+        # plt.axvline(x=actual[4], linestyle='--', label='Actual 5')
+        # plt.plot(
+        #     self.normalize(df["Dissipation"]),
+        #     label="Dissipation",
+        #     linestyle="dashed",
+        #     color="black",
+        # )
+        # plt.legend()
+        # plt.show()
+        # poi_4 = np.argmax(approx_4 * extracted_results[4])
+        # poi_5 = np.argmax(approx_5 * extracted_results[5])
         return poi_1, poi_2, poi_3, poi_4, poi_5, poi_6
