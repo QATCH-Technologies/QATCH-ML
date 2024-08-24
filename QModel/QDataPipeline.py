@@ -12,13 +12,25 @@ from QConstants import *
 class QDataPipeline:
 
     def __init__(self, data_filepath: str = None, multi_class: bool = False) -> None:
+        """
+        Initializes the QDataPipeline object.
+
+        Parameters:
+        - data_filepath (str): The path to the CSV file containing the dataset.
+        - multi_class (bool): Flag indicating whether the classification problem is multi-class. Defaults to False.
+
+        Raises:
+        - ValueError: If `data_filepath` is not provided.
+        """
         if data_filepath is not None:
-            self.__data_filepath__ = data_filepath
-            self.__dataframe__ = pd.read_csv(self.__data_filepath__)
-            self.__multi_class__ = multi_class
+            self.data_filepath = data_filepath
+            self.dataframe = pd.read_csv(
+                self.data_filepath
+            )  # Load the CSV into a DataFrame
+            self.multi_class = multi_class  # Set the multi_class flag
         else:
             raise ValueError(
-                f"[QDataPipeline.__init__] filepath required, found {data_filepath}."
+                f"[QDataPipeline.__init__] Filepath required, found {data_filepath}."
             )
 
     def preprocess(self, poi_filepath: str = None) -> None:
@@ -93,46 +105,86 @@ class QDataPipeline:
         self.remove_trend("Resonance_Frequency")
         self.remove_trend("Difference")
 
-    def find_time_delta(self):
-        time_df = pd.DataFrame()
-        time_df["Delta"] = self.__dataframe__["Relative_time"].diff()
+    def find_time_delta(self) -> int:
+        """
+        Finds the first significant time delta change in the 'Relative_time' column of the dataframe.
 
+        Returns:
+        - idx (int): The index of the first significant change in time delta.
+                    Returns -1 if no significant change is found.
+        """
+        # Calculate the time difference (delta) between consecutive rows in the 'Relative_time' column
+        time_df = pd.DataFrame()
+        time_df["Delta"] = self.dataframe["Relative_time"].diff()
+
+        # Define the threshold for detecting a significant change
         threshold = 0.032
 
+        # Calculate the expanding (cumulative) mean of the time deltas
         rolling_avg = time_df["Delta"].expanding(min_periods=2).mean()
 
+        # Identify where the absolute difference between the delta and its rolling average exceeds the threshold
         time_df["Significant_change"] = (
             time_df["Delta"] - rolling_avg
         ).abs() > threshold
+
+        # Get the indices where a significant change occurs
         change_indices = time_df.index[time_df["Significant_change"]].tolist()
+
+        # Determine if there is any significant change
         has_significant_change = len(change_indices) > 0
-        idx = -1
-        if has_significant_change:
-            idx = change_indices[0]
+
+        # If a significant change is found, return the first index; otherwise, return -1
+        idx = change_indices[0] if has_significant_change else -1
+
         return idx
 
-    def get_dataframe(self):
+    def get_dataframe(self) -> pd.DataFrame:
         """
         Returns the DataFrame containing the loaded data.
 
         Returns:
-            DataFrame: The loaded data.
+            pd.DataFrame: The loaded data.
         """
-        return self.__dataframe__
+        return self.dataframe
 
-    def super_gradient(self, column):
-        name = column + "_super"
-        data = self.__dataframe__[column]
+    def super_gradient(self, column: str) -> None:
+        """
+        Computes the smoothed first derivative of the specified column using the Savitzky-Golay filter.
+
+        The resulting gradient is normalized and stored in a new column with the suffix '_super'.
+
+        Parameters:
+            column (str): The name of the column to compute the gradient for.
+
+        Modifies:
+            Adds a new column to the dataframe with the name '<column>_super'.
+        """
+        # Generate the name for the new column where the gradient will be stored
+        name = f"{column}_super"
+
+        # Extract the data from the specified column
+        data = self.dataframe[column]
+
+        # Determine the window size for the Savitzky-Golay filter, ensuring it's an odd number and at least 3
         window = int(len(data) * 0.01)
         if window % 2 == 0:
             window += 1
         if window <= 1:
             window = 3
 
-        data = savgol_filter(x=data, window_length=window, polyorder=1, deriv=0)
-        self.__dataframe__[name] = self.normalize_data(
-            savgol_filter(x=data, window_length=window, polyorder=1, deriv=1)
+        # Apply the Savitzky-Golay filter to smooth the data
+        smoothed_data = savgol_filter(
+            x=data, window_length=window, polyorder=1, deriv=0
         )
+
+        # Calculate the first derivative (gradient) of the smoothed data
+        gradient = savgol_filter(
+            x=smoothed_data, window_length=window, polyorder=1, deriv=1
+        )
+
+        # Normalize the gradient and store it in the new column
+        self.dataframe[name] = self.normalize_data(gradient)
 
     def standardize(self, column):
         # define standard scaler
@@ -143,131 +195,151 @@ class QDataPipeline:
             np.array(df[column]).reshape(-1, 1)
         )
 
-    def remove_trend(self, column):
-        name = column + "_detrend"
-        self.__dataframe__[name] = detrend(data=self.__dataframe__[column].values)
+    def remove_trend(self, column: str) -> None:
+        """
+        Removes the linear trend from the specified column of the dataframe.
 
-    def interpolate(self, num_rows=20):
-        if max(self.__dataframe__["Relative_time"].values) > 90:
-            df = self.__dataframe__
+        The detrended data is stored in a new column with the suffix '_detrend'.
+
+        Parameters:
+            column (str): The name of the column from which the trend will be removed.
+
+        Modifies:
+            Adds a new column to the dataframe with the name '<column>_detrend'.
+        """
+        # Generate the name for the new column where the detrended data will be stored
+        name = f"{column}_detrend"
+
+        # Remove the linear trend from the specified column and store it in the new column
+        self.dataframe[name] = detrend(data=self.dataframe[column].values)
+
+    def interpolate(self, num_rows: int = 20) -> None:
+        """
+        *** THIS FUNCTION IS CURRENTLY TOO COSTLY TO INTEGRATE
+        Interpolates the dataframe rows between specific points if the 'Relative_time' exceeds 90.
+
+        Parameters:
+            num_rows (int): The number of rows to interpolate between each pair of points. Defaults to 20.
+
+        Modifies:
+            Updates the dataframe with the interpolated rows, adding them after the specified start index.
+        """
+        df = self.dataframe
+
+        # Check if 'Relative_time' exceeds 90 and find the start index
+        if max(df["Relative_time"].values) > 90:
             start_index = df.index[df["Relative_time"] > 90].tolist()[0]
+
+            # Initialize an empty DataFrame to store the result
             result = pd.DataFrame(columns=df.columns)
 
+            # Iterate through the dataframe to interpolate rows where needed
             for i in range(len(df) - 1):
                 # Append the current row to the result DataFrame
                 result = pd.concat(
-                    [
-                        result if not result.empty else None,
-                        pd.DataFrame(df.iloc[i]).transpose(),
-                    ],
+                    [result, pd.DataFrame(df.iloc[i]).transpose()],
                     ignore_index=True,
                 )
+
                 # If the current index is greater than or equal to start_index, interpolate rows
                 if i >= start_index:
-                    self.__interpolation_size__ += 1
+                    self.interpolation_size += 1
                     start_row = df.iloc[i]
                     end_row = df.iloc[i + 1]
 
-                    # Interpolate columns excluding "Class"
+                    # Prepare a DataFrame to store interpolated rows
                     interpolated_rows = pd.DataFrame()
 
                     for col in df.columns:
-                        if col == "Class_1" or col == "Class_2":
-                            interpolated_rows[col] = np.repeat(
-                                start_row[col], num_rows, axis=0
-                            )
-                            # Check if the original value is 0, then interpolate to 0
+                        if col in ["Class_1", "Class_2"]:
+                            # If the original value is 0, interpolate to 0
                             if start_row[col] == 0:
                                 interpolated_rows[col] = np.repeat(0, num_rows, axis=0)
                             else:
-                                interpolated_rows[col] = start_row[col]
-                                np.concatenate(
+                                # Otherwise, repeat the start value and fill the remaining with 0
+                                interpolated_rows[col] = np.concatenate(
                                     (
-                                        interpolated_rows[col],
+                                        np.repeat(start_row[col], 1, axis=0),
                                         np.repeat(0, num_rows - 1, axis=0),
-                                    ),
+                                    )
                                 )
                         else:
+                            # Linearly interpolate other columns
                             interpolated_rows[col] = np.linspace(
                                 start_row[col], end_row[col], num_rows
                             )
 
-                    result = pd.concat(
-                        [result, interpolated_rows],
-                        ignore_index=True,
-                    )
+                    # Append the interpolated rows to the result DataFrame
+                    result = pd.concat([result, interpolated_rows], ignore_index=True)
 
-            # Append the last row of the original DataFrame
+            # Append the last row of the original DataFrame to the result
             result = pd.concat(
-                [
-                    result if not result.empty else None,
-                    pd.DataFrame(df.iloc[-1]).transpose(),
-                ],
+                [result, pd.DataFrame(df.iloc[-1]).transpose()],
                 ignore_index=True,
             )
 
-            self.__dataframe__ = result
+            # Update the original dataframe with the interpolated result
+            self.dataframe = result
 
-    def noise_filter(self, column):
-        # Validate `predictions`
-        data = self.__dataframe__[column]
+    def noise_filter(self, column: str) -> None:
+        """
+        Applies a Butterworth low-pass filter to remove noise from the specified column of the dataframe.
+
+        The filtered data replaces the original data in the specified column.
+
+        Parameters:
+            column (str): The name of the column to filter.
+
+        Raises:
+            ValueError: If the column data is empty.
+        """
+        # Extract the data from the specified column
+        data = self.dataframe[column]
+
+        # Validate that the column is not empty
         if data.size == 0:
             raise ValueError(
                 "[QModelPredict noise_filter()]: `predictions` cannot be an empty array."
             )
 
-        # Butterworth low-pass filter parameters
-        fs = 300
-        normal_cutoff = 2 / (0.5 * fs)
-        # Get the filter coefficients
-        b, a = butter(2, Wn=[normal_cutoff], btype="lowpass", analog=False)
+        # Define Butterworth low-pass filter parameters
+        fs = 300  # Sampling frequency
+        normal_cutoff = 2 / (0.5 * fs)  # Normalize the cutoff frequency
 
-        # Apply the filter using filtfilt
+        # Get the filter coefficients for a 2nd order low-pass Butterworth filter
+        b, a = butter(2, Wn=normal_cutoff, btype="lowpass", analog=False)
+
+        # Apply the filter to the data using filtfilt for zero-phase filtering
         filtered = filtfilt(b, a, data)
 
-        self.__dataframe__[column] = filtered
-        self.__dataframe__[column] = self.__dataframe__[column].apply(
-            lambda x: max(0, x)
-        )
-        # abs(
-        #     self.__dataframe__[column]
-        #     - savgol_filter(self.__dataframe__[column], 25, 1)
-        # )
+        # Update the dataframe with the filtered data
+        self.dataframe[column] = filtered
 
-    def save_dataframe(self, new_filepath=None):
+        # Ensure that no values are negative by setting any negative values to 0
+        self.dataframe[column] = self.dataframe[column].apply(lambda x: max(0, x))
+
+    def save_dataframe(self, new_filepath: str = None) -> None:
         """
         Saves the DataFrame to a CSV file.
 
-        Args:
-            new_filepath (str, optional): Path to save the CSV file. Defaults to None.
+        Parameters:
+            new_filepath (str, optional): The path where the CSV file will be saved.
+                                          If not provided, the DataFrame will be saved to the original file path.
 
-        If no new file path is provided, it saves to the original file path.
+        Raises:
+            ValueError: If the original file path is not set and no new file path is provided.
         """
-        if new_filepath:
-            self.__dataframe__.to_csv(new_filepath, index=False)
-        else:
-            self.__dataframe__.to_csv(self.__data_filepath__, index=False)
+        # Determine the file path to save the DataFrame
+        filepath = new_filepath if new_filepath else self.data_filepath
 
-    def optimal_smooth_values(self, column, poi_points):
-        data = self.__dataframe__[column].values
-        max_corr = -1
+        # Check if the file path is valid
+        if not filepath:
+            raise ValueError(
+                "[QDataPipeline save_dataframe()]: No file path provided to save the DataFrame."
+            )
 
-        best_window_length = None
-        value = int(len(data) * 0.01)
-        if value % 2 == 0:
-            value += 1
-        window_lengths = range(3, value, 2)  # Window lengths must be odd and at least 3
-        correlations = []
-
-        for window_length in window_lengths:
-            if window_length <= len(data):
-                smoothed_data = savgol_filter(data, window_length, polyorder=1)
-                corr, _ = pearsonr(smoothed_data, poi_points)
-                correlations.append(corr)
-                if corr > max_corr:
-                    max_corr = corr
-                    best_window_length = window_length
-        return best_window_length, max_corr
+        # Save the DataFrame to the specified CSV file
+        self.dataframe.to_csv(filepath, index=False)
 
     def compute_smooth(self, column, winsize=5, polyorder=1):
         self.__dataframe__[column] = savgol_filter(
