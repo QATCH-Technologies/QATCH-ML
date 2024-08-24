@@ -200,7 +200,6 @@ class QPredictor:
         self.__model__ = xgb.Booster()
 
         self.__model__.load_model(model_path)
-
         with open("QModel/SavedModels/label_0.pkl", "rb") as file:
             self.__label_0__ = pickle.load(file)
         with open("QModel/SavedModels/label_1.pkl", "rb") as file:
@@ -313,13 +312,25 @@ class QPredictor:
 
         return [signal_region_equation_POI4, signal_region_equation_POI5]
 
-    def adjust_predictions(self, prediction, rel_time, poi_num, i, j):
+    def adjust_predictions(self, prediction, rel_time, poi_num, type, i, j):
         rel_time = rel_time[i:j]
         rel_time_norm = self.normalize(rel_time)
-        bounds = self.__label_0__["Class_" + poi_num]
+        bounds = None
+        if type == 0:
+            bounds = self.__label_0__["Class_" + str(poi_num)]
+        elif type == 1:
+            bounds = self.__label_1__["Class_" + str(poi_num)]
+        elif type == 2:
+            bounds = self.__label_2__["Class_" + str(poi_num)]
+
         lq = bounds["lq"]
         uq = bounds["uq"]
         adjustment = np.where((rel_time_norm >= lq) & (rel_time_norm <= uq), 1, 0)
+
+        adjustment = np.concatenate(
+            (np.zeros(i), np.array(adjustment), (np.zeros(j - i)))
+        )
+
         adj_prediction = prediction * adjustment
         return adj_prediction
 
@@ -387,7 +398,7 @@ class QPredictor:
         # Process data using QDataPipeline
         qdp = QDataPipeline(file_buffer_2)
         rel_time = qdp.__dataframe__["Relative_time"]
-        qdp.preprocess(poi_file=None)
+        qdp.preprocess(poi_filepath=None)
         df = qdp.get_dataframe()
 
         f_names = self.__model__.feature_names

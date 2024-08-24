@@ -14,7 +14,7 @@ from sklearn.manifold import TSNE
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import RobustScaler
 from tqdm import tqdm
-
+import joblib
 from QConstants import *
 from QMultiModel import QMultiModel, QPredictor
 
@@ -144,6 +144,7 @@ if __name__ == "__main__":
             qmodel_short.train_model()
             qmodel_short.save_model(model_name)
         if TESTING:
+            cluster_model = joblib.load("QModel/SavedModels/cluster.joblib")
             data_df = pd.DataFrame()
             content = []
             qmp = QPredictor(f"QModel/SavedModels/{model_name}.json")

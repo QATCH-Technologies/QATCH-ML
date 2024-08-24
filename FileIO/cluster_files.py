@@ -45,25 +45,6 @@ def load_content(data_dir):
     return content, directories
 
 
-def load_images(content, size):
-    print("[INFO] Loading images")
-    images = []
-    for i, file in enumerate(tqdm(content, desc="<<Loading Images>>")):
-        if i >= size:
-            print("[INFO] Breaking early")
-            break
-        df = pd.read_csv(file)
-        dissipation = df["Dissipation"]
-        # Render the plot to a NumPy array
-        fig, ax = plt.subplots()
-        ax.plot(dissipation)
-        ax.axis("off")
-        image = fig2img(fig)
-        images.append(image)
-        plt.close()
-    return images
-
-
 def create_and_copy_directories(output_dir, directories, labels):
     # Create a dictionary to track the directories for each label
     label_dirs = {}

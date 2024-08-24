@@ -26,8 +26,8 @@ BAD_LABEL = 1
 """ Flag for plotting results. """
 PLOTTING = True
 """ Flag for running training. """
-TRAINING = True
-TESTING = False
+TRAINING = False
+TESTING = True
 
 """ Size of the batch to train/test on. """
 BATCH_SIZE = 0.8
