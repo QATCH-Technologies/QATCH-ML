@@ -1,10 +1,8 @@
-import pandas as pd
 import os
 import csv
+import pandas as pd
 import numpy as np
 from scipy.signal import savgol_filter, butter, filtfilt, detrend
-import matplotlib.pyplot as plt
-from scipy.stats import pearsonr
 from sklearn.preprocessing import StandardScaler
 from QConstants import *
 
@@ -23,14 +21,14 @@ class QDataPipeline:
         - ValueError: If `data_filepath` is not provided.
         """
         if data_filepath is not None:
-            self.data_filepath = data_filepath
-            self.dataframe = pd.read_csv(
-                self.data_filepath
+            self.__data_filepath__ = data_filepath
+            self.__dataframe__ = pd.read_csv(
+                self.__data_filepath__
             )  # Load the CSV into a DataFrame
             self.multi_class = multi_class  # Set the multi_class flag
         else:
             raise ValueError(
-                f"[QDataPipeline.__init__] Filepath required, found {data_filepath}."
+                f"[QDataPipeline.__init__] Filepath required, found {self.__data_filepath__}."
             )
 
     def preprocess(self, poi_filepath: str = None) -> None:
@@ -115,7 +113,7 @@ class QDataPipeline:
         """
         # Calculate the time difference (delta) between consecutive rows in the 'Relative_time' column
         time_df = pd.DataFrame()
-        time_df["Delta"] = self.dataframe["Relative_time"].diff()
+        time_df["Delta"] = self.__dataframe__["Relative_time"].diff()
 
         # Define the threshold for detecting a significant change
         threshold = 0.032
@@ -146,7 +144,7 @@ class QDataPipeline:
         Returns:
             pd.DataFrame: The loaded data.
         """
-        return self.dataframe
+        return self.__dataframe__
 
     def super_gradient(self, column: str) -> None:
         """
@@ -164,7 +162,7 @@ class QDataPipeline:
         name = f"{column}_super"
 
         # Extract the data from the specified column
-        data = self.dataframe[column]
+        data = self.__dataframe__[column]
 
         # Determine the window size for the Savitzky-Golay filter, ensuring it's an odd number and at least 3
         window = int(len(data) * 0.01)
@@ -184,7 +182,7 @@ class QDataPipeline:
         )
 
         # Normalize the gradient and store it in the new column
-        self.dataframe[name] = self.normalize_data(gradient)
+        self.__dataframe__[name] = self.normalize_data(gradient)
 
     def standardize(self, column):
         # define standard scaler
@@ -211,7 +209,7 @@ class QDataPipeline:
         name = f"{column}_detrend"
 
         # Remove the linear trend from the specified column and store it in the new column
-        self.dataframe[name] = detrend(data=self.dataframe[column].values)
+        self.__dataframe__[name] = detrend(data=self.__dataframe__[column].values)
 
     def interpolate(self, num_rows: int = 20) -> None:
         """
@@ -224,7 +222,7 @@ class QDataPipeline:
         Modifies:
             Updates the dataframe with the interpolated rows, adding them after the specified start index.
         """
-        df = self.dataframe
+        df = self.__dataframe__
 
         # Check if 'Relative_time' exceeds 90 and find the start index
         if max(df["Relative_time"].values) > 90:
@@ -279,7 +277,7 @@ class QDataPipeline:
             )
 
             # Update the original dataframe with the interpolated result
-            self.dataframe = result
+            self.__dataframe__ = result
 
     def noise_filter(self, column: str) -> None:
         """
@@ -294,7 +292,7 @@ class QDataPipeline:
             ValueError: If the column data is empty.
         """
         # Extract the data from the specified column
-        data = self.dataframe[column]
+        data = self.__dataframe__[column]
 
         # Validate that the column is not empty
         if data.size == 0:
@@ -313,10 +311,12 @@ class QDataPipeline:
         filtered = filtfilt(b, a, data)
 
         # Update the dataframe with the filtered data
-        self.dataframe[column] = filtered
+        self.__dataframe__[column] = filtered
 
         # Ensure that no values are negative by setting any negative values to 0
-        self.dataframe[column] = self.dataframe[column].apply(lambda x: max(0, x))
+        self.__dataframe__[column] = self.__dataframe__[column].apply(
+            lambda x: max(0, x)
+        )
 
     def save_dataframe(self, new_filepath: str = None) -> None:
         """
@@ -339,7 +339,7 @@ class QDataPipeline:
             )
 
         # Save the DataFrame to the specified CSV file
-        self.dataframe.to_csv(filepath, index=False)
+        self.__dataframe__.to_csv(filepath, index=False)
 
     def compute_smooth(self, column, winsize=5, polyorder=1):
         self.__dataframe__[column] = savgol_filter(
