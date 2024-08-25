@@ -316,6 +316,7 @@ class QPredictor:
         rel_time = rel_time[i:j]
         rel_time_norm = self.normalize(rel_time)
         bounds = None
+
         if type == 0:
             bounds = self.__label_0__["Class_" + str(poi_num)]
         elif type == 1:
@@ -326,15 +327,21 @@ class QPredictor:
         lq = bounds["lq"]
         uq = bounds["uq"]
         adjustment = np.where((rel_time_norm >= lq) & (rel_time_norm <= uq), 1, 0)
-
         adjustment = np.concatenate(
-            (np.zeros(i), np.array(adjustment), (np.zeros(j - i)))
+            (np.zeros(i), np.array(adjustment), (np.zeros(len(prediction) - j)))
         )
 
         adj_prediction = prediction * adjustment
+        # plt.figure()
+        # plt.plot(prediction, label="original")
+        # plt.plot(adjustment, label="adjustment")
+        # plt.plot(adj_prediction, label="adjusted")
+        # plt.legend()
+        # plt.title(f"Type {type}")
+        # plt.show()
         return adj_prediction
 
-    def predict(self, file_buffer, start=-1, stop=-1):
+    def predict(self, file_buffer, type=-1, start=-1, stop=-1):
         # Load CSV data and drop unnecessary columns
         df = pd.read_csv(file_buffer)
         columns_to_drop = ["Date", "Time", "Ambient", "Temperature"]
@@ -426,10 +433,38 @@ class QPredictor:
         if stop > -1:
             poi_6 = stop
 
-        adj_2 = self.adjust_predictions(extracted_results[2], rel_time, 2, poi_1, poi_6)
-        adj_3 = self.adjust_predictions(extracted_results[3], rel_time, 3, poi_1, poi_6)
-        adj_4 = self.adjust_predictions(extracted_results[4], rel_time, 4, poi_1, poi_6)
-        adj_5 = self.adjust_predictions(extracted_results[5], rel_time, 5, poi_1, poi_6)
+        adj_2 = self.adjust_predictions(
+            prediction=extracted_results[2],
+            rel_time=rel_time,
+            poi_num=2,
+            type=type,
+            i=poi_1,
+            j=poi_6,
+        )
+        adj_3 = self.adjust_predictions(
+            prediction=extracted_results[3],
+            rel_time=rel_time,
+            poi_num=3,
+            type=type,
+            i=poi_1,
+            j=poi_6,
+        )
+        adj_4 = self.adjust_predictions(
+            prediction=extracted_results[4],
+            rel_time=rel_time,
+            poi_num=4,
+            type=type,
+            i=poi_1,
+            j=poi_6,
+        )
+        adj_5 = self.adjust_predictions(
+            prediction=extracted_results[5],
+            rel_time=rel_time,
+            poi_num=5,
+            type=type,
+            i=poi_1,
+            j=poi_6,
+        )
         poi_2 = np.argmax(adj_2)
         poi_3 = np.argmax(adj_3)
         poi_4 = np.argmax(adj_4)

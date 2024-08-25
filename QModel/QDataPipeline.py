@@ -452,7 +452,7 @@ class QDataPipeline:
             with open(poi_filepath, "r") as poi_csv:
                 reader = csv.reader(poi_csv)
                 indices = [int(row[0]) - 2 for row in reader]
-            if self.__multi_class__:
+            if self.multi_class:
                 self.__dataframe__[M_TARGET] = 0
                 for poi, idx in enumerate(indices):
                     self.__dataframe__.loc[idx, M_TARGET] = poi + 1

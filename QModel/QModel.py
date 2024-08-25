@@ -1,4 +1,3 @@
-
 import sys
 
 import matplotlib.pyplot as plt
@@ -42,19 +41,19 @@ if not ModelData_found:
 QDataPipeline_found = False
 try:
     if not QDataPipeline_found:
-        from QDataPipline import QDataPipeline
+        from QDataPipeline import QDataPipeline
     QDataPipeline_found = True
 except:
     QDataPipeline_found = False
 try:
     if not QDataPipeline_found:
-        from QModel.QDataPipline import QDataPipeline
+        from QModel.QDataPipeline import QDataPipeline
     QDataPipeline_found = True
 except:
     QDataPipeline_found = False
 try:
     if not QDataPipeline_found:
-        from QATCH.QModel.QDataPipline import QDataPipeline
+        from QATCH.QModel.QDataPipeline import QDataPipeline
     QDataPipeline_found = True
 except:
     QDataPipeline_found = False
@@ -273,7 +272,7 @@ class QPredictor:
         # Process data using QDataPipeline
         qdp = QDataPipeline(file_buffer_2)
         rel_time = qdp.__dataframe__["Relative_time"]
-        qdp.preprocess(poi_file=None)
+        qdp.preprocess(poi_filepath=None)
         df = qdp.get_dataframe()
 
         f_names = self.__model__.feature_names
@@ -411,22 +410,26 @@ class QModelPredict:
                 csv_headers = csv_headers.decode()
 
             if "Ambient" in csv_headers:
-                csv_cols = (2,4,6,7)
+                csv_cols = (2, 4, 6, 7)
             else:
-                csv_cols = (2,3,5,6)
+                csv_cols = (2, 3, 5, 6)
 
-            file_data  = np.loadtxt(data.readlines(), delimiter = ',', skiprows = 0, usecols = csv_cols)
+            file_data = np.loadtxt(
+                data.readlines(), delimiter=",", skiprows=0, usecols=csv_cols
+            )
             data_path = "QModel Passthrough"
-            relative_time = file_data[:,0]
+            relative_time = file_data[:, 0]
             # temperature = file_data[:,1]
-            resonance_frequency = file_data[:,2]
-            dissipation = file_data[:,3]
+            resonance_frequency = file_data[:, 2]
+            dissipation = file_data[:, 3]
 
-            emp_predictions = ModelData().IdentifyPoints(data_path=data_path, 
-                                                         times=relative_time,
-                                                         freq=resonance_frequency,
-                                                         diss=dissipation)
-        else:    
+            emp_predictions = ModelData().IdentifyPoints(
+                data_path=data_path,
+                times=relative_time,
+                freq=resonance_frequency,
+                diss=dissipation,
+            )
+        else:
             emp_predictions = ModelData().IdentifyPoints(data)
         emp_points = []
         start_bound = -1
@@ -457,19 +460,14 @@ class QModelPredict:
         model_results = [
             emp_points[0],
             # bound_1[0][0],
-
             # emp_points[1],
             bound_2[0][0],
-
             # emp_points[2],
             bound_3[0][0],
-
             # emp_points[3],
             bound_4[0][0],
-
             # emp_points[4],
             bound_5[0][0],
-
             # emp_points[5],
             bound_6[0][0],
         ]

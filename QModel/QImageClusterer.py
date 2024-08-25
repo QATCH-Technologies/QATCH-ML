@@ -56,8 +56,8 @@ class QClusterer:
         file_buffer = io.BytesIO()
         figure.savefig(file_buffer)
         file_buffer.seek(0)
-        img = Image.open(file_buffer)
-        return img
+        image = Image.open(file_buffer)
+        return image
 
     def load_content(self, data_directory: str = None) -> list:
         """Loads content from a directory.
@@ -68,7 +68,7 @@ class QClusterer:
         Returns:
             list: List of file paths.
         """
-        print(f"[INFO] Loading content from {data_directory}")
+        print(f"[STATUS] Loading content from {data_directory}")
         content = []
         for root, _, files in os.walk(data_directory):
             for file in files:
@@ -90,7 +90,7 @@ class QClusterer:
         Returns:
             list: List of PIL images.
         """
-        print("[INFO] Loading images")
+        print("[STATUS] Loading images")
         images = []
         for i, file in enumerate(tqdm(content, desc="<<Loading Images>>")):
             if i >= size:
@@ -119,7 +119,7 @@ class QClusterer:
         Returns:
             np.ndarray: Array of processed images.
         """
-        print("[INFO] Preprocessing images")
+        print("[STATUS] Preprocessing images")
         processed_images = []
         for img in tqdm(pil_images, desc="<<Preprocessing Images>>"):
             img = img.resize(target_size)
@@ -173,7 +173,9 @@ class QClusterer:
         plt.title("Silhouette Analysis For Optimal K")
         plt.show()
         optimal_k = k_values[np.argmax(silhouette_scores)]
-        print(f"Optimal number of clusters based on silhouette analysis: {optimal_k}")
+        print(
+            f"[INFO] Optimal number of clusters based on silhouette analysis: {optimal_k}"
+        )
         return optimal_k
 
     def perform_clustering(
@@ -202,7 +204,7 @@ class QClusterer:
             features (np.ndarray): Array of extracted features.
             labels (np.ndarray): Cluster labels.
         """
-        print(f"[INFO] Visualizing")
+        print(f"[STATUS] Visualizing")
         plt.scatter(features[:, 0], features[:, 1], c=labels, cmap="viridis")
         plt.title("Clusters of 2D Line Plot Images")
         plt.show()
@@ -329,7 +331,7 @@ class QClusterer:
         """
         if self.kmeans is None:
             raise ValueError("Model is not trained. Please train the model first.")
-        print(f"[INFO] Saving model as {model_path}")
+        print(f"[STATUS] Saving model as {model_path}")
         joblib.dump(self.kmeans, model_path)
 
 

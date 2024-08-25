@@ -12,10 +12,10 @@ from tqdm import tqdm
 
 from QModel import QModelPredict
 from QMultiModel import QPredictor
-from QCompVis import predict_label
+from QImageClusterer import QClusterer
 
-TEST_BATCH_SIZE = 0.95
-VALIDATION_DATASETS_PATH = "content/all_test"
+TEST_BATCH_SIZE = 0.99
+VALIDATION_DATASETS_PATH = "content/test_data"
 S_PREDICTOR = QModelPredict(
     "QModel/SavedModels/QModel_1.json",
     "QModel/SavedModels/QModel_2.json",
@@ -27,7 +27,7 @@ S_PREDICTOR = QModelPredict(
 M_PREDICTOR_0 = QPredictor("QModel/SavedModels/QMultiType_0.json")
 M_PREDICTOR_1 = QPredictor("QModel/SavedModels/QMultiType_1.json")
 M_PREDICTOR_2 = QPredictor("QModel/SavedModels/QMultiType_2.json")
-kmeans_model = joblib.load("QModel/SavedModels/cluster.joblib")
+qcr = QClusterer(model_path="QModel/SavedModels/cluster.joblib")
 
 
 def load_test_dataset(path, test_size):
@@ -67,13 +67,13 @@ def test_md_on_file(filename, act_poi):
 
 
 def test_mm_on_file(filename, act_poi):
-    label = predict_label(filename, kmeans_model)
+    label = qcr.predict_label(filename)
     if label == 0:
-        predictions = M_PREDICTOR_0.predict(filename)
+        predictions = M_PREDICTOR_0.predict(filename, type=label)
     elif label == 1:
-        predictions = M_PREDICTOR_1.predict(filename)
+        predictions = M_PREDICTOR_1.predict(filename, type=label)
     elif label == 2:
-        predictions = M_PREDICTOR_2.predict(filename)
+        predictions = M_PREDICTOR_2.predict(filename, type=label)
     else:
         raise ValueError(f"Invalid predicted label was: {label}")
     return list(zip(predictions, act_poi))
@@ -226,12 +226,12 @@ def metrics_view(
     points = np.arange(1, 7)
 
     # Width of each bar
-    bar_width = 0.35
+    bar_width = 0.30
 
     # Set the positions of the bars
-    r1 = points - bar_width / 3
-    r2 = points + bar_width / 3
-    r3 = points + bar_width / 3
+    r1 = points - bar_width
+    r2 = points
+    r3 = points + bar_width
     plt.figure(figsize=(12, 7))
     bars1 = plt.bar(
         r1,
@@ -367,20 +367,21 @@ def run():
         ):
             test_file = filename
             poi_file = filename.replace(".csv", "_poi.csv")
-            act_poi = pd.read_csv(poi_file, header=None).values
-            act_poi = [int(x[0]) for x in act_poi]
+            if os.path.exists(poi_file):
+                act_poi = pd.read_csv(poi_file, header=None).values
+                act_poi = [int(x[0]) for x in act_poi]
 
-            mm_results = test_mm_on_file(test_file, act_poi)
-            qmp_results = test_qmp_on_file(test_file, act_poi)
-            md_results = test_md_on_file(test_file, act_poi)
+                mm_results = test_mm_on_file(test_file, act_poi)
+                qmp_results = test_qmp_on_file(test_file, act_poi)
+                md_results = test_md_on_file(test_file, act_poi)
 
-            mm_list.append(mm_results)
-            qmp_list.append(qmp_results)
-            md_list.append(md_results)
+                mm_list.append(mm_results)
+                qmp_list.append(qmp_results)
+                md_list.append(md_results)
 
-            mm_deltas.append(compute_deltas(mm_results))
-            qmp_deltas.append(compute_deltas(qmp_results))
-            md_deltas.append(compute_deltas(md_results))
+                mm_deltas.append(compute_deltas(mm_results))
+                qmp_deltas.append(compute_deltas(qmp_results))
+                md_deltas.append(compute_deltas(md_results))
 
     mm_ppr = extract_results(mm_list)
     qmp_ppr = extract_results(qmp_list)

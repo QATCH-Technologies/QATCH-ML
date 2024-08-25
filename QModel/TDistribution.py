@@ -54,7 +54,7 @@ def pipeline(train_content):
     return dataset
 
 
-def get_band_gap(dataset, bandgap_percentage=0.75):
+def get_band_gap(dataset, bandgap_percentage=0.95):
     # Combine all dataframes into one
     combined_df = pd.concat(dataset)
 
