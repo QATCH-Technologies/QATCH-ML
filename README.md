@@ -1,5 +1,4 @@
-# Machine Learning Project
-
+# QATCH Technologies - QModel
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Build Status](https://img.shields.io/github/actions/workflow/status/username/repository/build.yml?branch=main)
@@ -8,7 +7,7 @@
 
 ## Overview
 
-Brief description of your machine learning project. Explain the purpose of the project, the problem it solves, and its significance.
+This repository serves as a collection of machine learning pipelines for accurately predicting fill location in sensory equipment.
 
 ## Table of Contents
 
@@ -24,16 +23,21 @@ Brief description of your machine learning project. Explain the purpose of the p
 
 ## Features
 
-- List key features of your project here.
-- Include any important algorithms or techniques used.
-- Mention any specific datasets or tools used.
-
+- Computer vision for categorization of runs.
+- Gradient boosted trees for point-wise classification of runs.
+- Overall system validation testing on a per model basis.
+  
 ## Installation
-
+While there is no installation, running all models can be done by running the `QTest.py` script which will benchmark testing against a set of randomly chosen runs from `QATCH-ML/content/`.
+```bash
+# This is a command line block
+echo "Hello, World!"
+ls -l
+```
 ### Prerequisites
 
 - Python 3.8+
-- Required libraries: `numpy`, `pandas`, `scikit-learn`, `xgboost`, `matplotlib`, etc.
+- Required libraries: `numpy`, `pandas`, `scikit-learn`, `xgboost`, `matplotlib`, `tensoflow`
 
 You can install the required libraries using pip:
 
