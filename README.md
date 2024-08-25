@@ -30,9 +30,10 @@ This repository serves as a collection of machine learning pipelines for accurat
 ## Installation
 While there is no installation, running all models can be done by running the `QTest.py` script which will benchmark testing against a set of randomly chosen runs from `QATCH-ML/content/`.
 ```bash
-# This is a command line block
-echo "Hello, World!"
-ls -l
+$ git clone https://github.com/QATCH-Technologies/QATCH-ML.git
+```
+```bash
+$ python3 QModel/QTest.py
 ```
 ### Prerequisites
 
@@ -43,3 +44,4 @@ You can install the required libraries using pip:
 
 ```bash
 pip install -r requirements.txt
+```
