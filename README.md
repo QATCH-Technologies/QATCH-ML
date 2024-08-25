@@ -2,8 +2,8 @@
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Build Status](https://img.shields.io/github/actions/workflow/status/username/repository/build.yml?branch=main)
-![Code Coverage](https://img.shields.io/codecov/c/github/username/repository)
-![Last Commit](https://img.shields.io/github/last-commit/username/repository)
+![Code Coverage](https://img.shields.io/codecov/c/https://github.com/QATCH-Technologies/QATCH-ML.git)
+![Last Commit](https://img.shields.io/https://github.com/QATCH-Technologies/QATCH-ML.git)
 
 ## Overview
 
