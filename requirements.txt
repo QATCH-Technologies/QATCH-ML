@@ -1,0 +1,11 @@
+matplotlib
+numpy<2.0
+scikit-learn
+scipy
+xgboost
+tensorflow
+tsmoothie
+pandas
+hyperopt
+seaborn
+tqdm
