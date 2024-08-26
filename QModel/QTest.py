@@ -14,7 +14,7 @@ from QModel import QModelPredict
 from QMultiModel import QPredictor
 from QImageClusterer import QClusterer
 
-TEST_BATCH_SIZE = 0.99
+TEST_BATCH_SIZE = 0.1
 VALIDATION_DATASETS_PATH = "content/test_data"
 S_PREDICTOR = QModelPredict(
     "QModel/SavedModels/QModel_1.json",
@@ -76,7 +76,22 @@ def test_mm_on_file(filename, act_poi):
         predictions = M_PREDICTOR_2.predict(filename, type=label)
     else:
         raise ValueError(f"Invalid predicted label was: {label}")
-    return list(zip(predictions, act_poi))
+
+    good = []
+    bad = []
+    initial = 0.01
+    post = 0.05
+    for i, (x, y) in enumerate(zip(predictions, act_poi)):
+        if i < 3:
+            if abs(x - y) >= initial * y:
+                bad.append((filename, act_poi, predictions, label))
+                break
+        else:
+            if abs(x - y) >= post * y:
+                bad.append((filename, act_poi, predictions, label))
+                break
+    good.append((filename, act_poi, predictions))
+    return list(zip(predictions, act_poi)), good, bad
 
 
 def test_qmp_on_file(filename, act_poi):
@@ -359,6 +374,8 @@ def run():
     qmp_deltas, md_deltas, mm_deltas = [], [], []
     qmp_list, md_list, mm_list = [], [], []
     content = load_test_dataset(VALIDATION_DATASETS_PATH, TEST_BATCH_SIZE)
+    good_list = []
+    bad_list = []
     for filename in tqdm(content, desc="<<Running Tests>>"):
         if (
             filename.endswith(".csv")
@@ -371,7 +388,9 @@ def run():
                 act_poi = pd.read_csv(poi_file, header=None).values
                 act_poi = [int(x[0]) for x in act_poi]
 
-                mm_results = test_mm_on_file(test_file, act_poi)
+                mm_results, good, bad = test_mm_on_file(test_file, act_poi)
+                good_list.append(good)
+                bad_list.append(bad)
                 qmp_results = test_qmp_on_file(test_file, act_poi)
                 md_results = test_md_on_file(test_file, act_poi)
 
@@ -382,7 +401,23 @@ def run():
                 mm_deltas.append(compute_deltas(mm_results))
                 qmp_deltas.append(compute_deltas(qmp_results))
                 md_deltas.append(compute_deltas(md_results))
-
+    for bad in bad_list:
+        print(bad)
+        if len(bad) > 0:
+            file = bad[0][0]
+            act_poi = bad[0][1]
+            predictions = bad[0][2]
+            label = bad[0][3]
+            plt.figure()
+            df = pd.read_csv(file)
+            plt.plot(df["Dissipation"].values, label="Dissipation")
+            for i, poi in enumerate(act_poi):
+                plt.axvline(x=poi, linestyle="--", color="black", label=f"Actual {i}")
+            for i, poi in enumerate(predictions):
+                plt.axvline(x=poi, color="red", label=f"Predicted {i}")
+            plt.legend()
+            plt.title(f"Type {label} run")
+            plt.show()
     mm_ppr = extract_results(mm_list)
     qmp_ppr = extract_results(qmp_list)
     md_ppr = extract_results(md_list)
