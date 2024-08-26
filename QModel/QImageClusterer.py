@@ -12,6 +12,10 @@ import joblib
 import math
 import io
 from QDataPipeline import QDataPipeline
+import warnings
+import contextlib
+
+warnings.filterwarnings("ignore")
 
 
 class QClusterer:
@@ -281,7 +285,7 @@ class QClusterer:
 
         return labels
 
-    def predict_label(self, csv_path: str = None) -> int:
+    def predict_label(self, file_buffer: str = None) -> int:
         """Generates an image from the input CSV file, returns it as a PIL image, and predicts the cluster label.
 
         Args:
@@ -294,9 +298,39 @@ class QClusterer:
             raise ValueError(
                 "Model is not trained or loaded. Please train the model first."
             )
+        file_buffer_2 = file_buffer
+        if not isinstance(file_buffer_2, str):
+            if hasattr(file_buffer_2, "seekable") and file_buffer_2.seekable():
+                file_buffer_2.seek(0)  # reset ByteIO buffer to beginning of stream
+            else:
+                # ERROR: 'file_buffer_2' must be 'BytesIO' type here, but it's not seekable!
+                raise Exception(
+                    "Cannot 'seek' stream prior to passing to 'QDataPipeline'."
+                )
+        else:
+            # Assuming 'file_buffer_2' is a string to a file path, this will work fine as-is
+            pass
+        if not isinstance(file_buffer, str):
+            csv_headers = next(file_buffer)
 
+            if isinstance(csv_headers, bytes):
+                csv_headers = csv_headers.decode()
+
+            if "Ambient" in csv_headers:
+                csv_cols = (2, 4, 6, 7)
+            else:
+                csv_cols = (2, 3, 5, 6)
+
+            file_data = np.loadtxt(
+                file_buffer.readlines(), delimiter=",", skiprows=0, usecols=csv_cols
+            )
+        # data_path = "QModel Passthrough"
+        # relative_time = file_data[:, 0]
+        # # temperature = file_data[:,1]
+        # resonance_frequency = file_data[:, 2]
+        # dissipation = file_data[:, 3]
         # Load and preprocess the image from CSV
-        qdp = QDataPipeline(csv_path)
+        qdp = QDataPipeline(file_buffer)
         qdp.preprocess()
         data = qdp.__dataframe__["Dissipation"]
 

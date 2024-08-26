@@ -228,7 +228,6 @@ class QPredictor:
 
     def compute_bounds(self, indices):
         bounds = []
-        print(len(indices))
         start = indices[0]
         end = indices[0]
 

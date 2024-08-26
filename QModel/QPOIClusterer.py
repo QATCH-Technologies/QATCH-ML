@@ -2,21 +2,18 @@ import numpy as np
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
 import matplotlib.pyplot as plt
-from keras.applications import VGG16
-from keras_preprocessing.image import img_to_array
-from keras.models import Model
-from PIL import Image
+
 from tqdm import tqdm
 import os
 import joblib
-import math
-import io
+from sklearn.metrics.pairwise import cosine_similarity
+
 from QDataPipeline import QDataPipeline
 import pandas as pd
 from sklearn.decomposition import PCA
 
 
-class QClusterer:
+class QPOIClusterer:
     """A class to perform image clustering using a VGG16 model and KMeans.
 
     Attributes:
@@ -52,14 +49,16 @@ class QClusterer:
                     and not file.endswith("_poi.csv")
                     and not file.endswith("_lower.csv")
                 ):
-                    content.append(os.path.join(root, file))
+                    if os.path.exists(
+                        os.path.join(root, file).replace(".csv", "_poi.csv")
+                    ):
+                        content.append(os.path.join(root, file))
         return content
 
     def normalize(self, data):
         return (data - np.min(data)) / (np.max(data) - np.min(data))
 
     def extract_feature(self, file):
-
         poi_file = file.replace(".csv", "_poi.csv")
         pois = pd.read_csv(poi_file, header=None).values
         df = pd.read_csv(file)
@@ -85,6 +84,8 @@ class QClusterer:
             int: Optimal number of clusters.
         """
         print(f"[INFO] Finding optimal_k with max_k={max_k}")
+        if min_k == max_k:
+            return min_k
         silhouette_scores = []
         k_values = range(min_k, max_k + 1)
 
@@ -119,6 +120,7 @@ class QClusterer:
         """
         print(f"[INFO] Clustering with {n_clusters} clusters")
         self.kmeans = KMeans(n_clusters=n_clusters)
+        self.k = n_clusters
         labels = self.kmeans.fit_predict(features)
         return labels
 
@@ -150,13 +152,17 @@ class QClusterer:
         for file in tqdm(content, desc="<<Extracting Features>>"):
             f = self.extract_feature(file)
             features.append(f)
-        # print(features)
-        optimal_k = self.find_optimal_clusters(features, min_k=3, max_k=30)
+        optimal_k = self.find_optimal_clusters(features, min_k=min_k, max_k=max_k)
         labels = self.perform_clustering(features, n_clusters=optimal_k)
         self.visualize_clusters(features, labels)
 
     def predict_label(self, csv_path: str = None) -> int:
-        pass
+
+        f = self.extract_feature(csv_path)
+        # Predict the cluster label
+        predicted_label = self.kmeans.predict(f.reshape(1, -1))[0]
+
+        return predicted_label
 
     def save_model(self, model_path: str = None) -> None:
         """Saves the trained KMeans model to a file.
@@ -170,16 +176,92 @@ class QClusterer:
         joblib.dump(self.kmeans, model_path)
 
 
-# Example usage
+def compute_similarity(df1, df2):
+
+    # Ensure dataframes have the same columns and rows
+    common_cols = df1.columns.intersection(df2.columns)
+    df1 = df1[common_cols]
+    df2 = df2[common_cols]
+    # Fill missing values with 0 or some other strategy
+    df1 = df1.fillna(0)
+    df2 = df2.fillna(0)
+    # Compute cosine similarity
+    return cosine_similarity(df1, df2).mean()
+
+
+def match_dataframe(new_df, group_dfs):
+    # group_dfs is a list of lists of dataframes
+    similarity_scores = []
+
+    for group in tqdm(group_dfs, desc="<<Comparing Groups>>"):
+        group_similarities = []
+        for df in group:
+            score = compute_similarity(new_df, df)
+            group_similarities.append(score)
+        # Aggregate scores for the group
+        avg_score = np.mean(group_similarities)
+        similarity_scores.append(avg_score)
+
+    # Determine the best matching group
+    best_match_index = np.argmax(similarity_scores)
+    return best_match_index
+
+
 if __name__ == "__main__":
     # Example Usage
-    qcr = QClusterer()
-    labels = qcr.train("content/training_data/test_clusters", min_k=3, max_k=10)
-    # qcr.save_model("QModel/SavedModels/cluster.joblib")
+    qpc = QPOIClusterer()
+    labels = qpc.train("content/training_data/train_clusters", min_k=6, max_k=6)
+    qpc.save_model("QModel/SavedModels/poi_clusterer.joblib")
 
-    # For prediction
-    # qcp = QClusterer("QModel/SavedModels/cluster.joblib")
-    # label = qcp.predict_label(
-    #     "content/dropbox_dump/01154/MM231106W10_Y60P_PROBLEM_D10_3rd.csv"
-    # )
-    # print(f"The image belongs to cluster {label}")
+    content = qpc.load_content("content/training_data/test_clusters")
+    t0 = []
+    t1 = []
+    t2 = []
+    t3 = []
+    t4 = []
+    t5 = []
+    for file in tqdm(content, desc="<<Loading Test Files>>"):
+        if os.path.exists(file.replace(".csv", "_poi.csv")):
+            label = qpc.predict_label(file)
+            df = pd.read_csv(file).drop(
+                columns=[
+                    "Date",
+                    "Time",
+                    "Resonance_Frequency",
+                    "Ambient",
+                    "Temperature",
+                    "Peak Magnitude (RAW)",
+                ]
+            )
+            if label == 0:
+                t0.append(df)
+            elif label == 1:
+                t1.append(df)
+            elif label == 2:
+                t2.append(df)
+            elif label == 3:
+                t3.append(df)
+            elif label == 4:
+                t4.append(df)
+            elif label == 5:
+                t5.append(df)
+    content = qpc.load_content("content/test_data")
+    group_dfs = [t0, t1, t2, t3, t4, t5]
+    for file in content:
+        df = pd.read_csv(file).drop(
+            columns=[
+                "Date",
+                "Time",
+                "Resonance_Frequency",
+                "Ambient",
+                "Temperature",
+                "Peak Magnitude (RAW)",
+            ]
+        )
+        best_group_index = match_dataframe(df, group_dfs)
+        print(best_group_index)
+        sample = group_dfs[best_group_index][0]
+        plt.figure()
+        plt.plot(sample["Dissipation"], label="Representative Plot")
+        plt.plot(df["Dissipation"].values, label="Predicted")
+        plt.show()

@@ -10,6 +10,7 @@ from sklearn.model_selection import train_test_split
 from ModelData import ModelData
 from QConstants import *
 import pickle
+from scipy.signal import find_peaks
 
 np.set_printoptions(threshold=sys.maxsize)
 
@@ -341,7 +342,31 @@ class QPredictor:
         # plt.show()
         return adj_prediction
 
-    def predict(self, file_buffer, type=-1, start=-1, stop=-1):
+    def find_and_sort_peaks(self, signal):
+        """
+        Finds the peaks in a signal and sorts them by their height.
+
+        Parameters:
+        signal (array-like): The input signal.
+
+        Returns:
+        sorted_peaks (array): Indices of the peaks sorted by height.
+        sorted_heights (array): Heights of the peaks sorted by height.
+        """
+        # Find peaks
+        peaks, properties = find_peaks(signal)
+        print(peaks)
+        # Get the peak heights
+        peak_heights = []
+        for p in peaks:
+            peak_heights.append(signal[p])
+
+        # Sort peaks by height in descending order
+        sorted_indices = np.argsort(peak_heights)[::-1]
+        sorted_peaks = peaks[sorted_indices]
+        return sorted_peaks
+
+    def predict(self, file_buffer, type=-1, start=-1, stop=-1, act=None):
         # Load CSV data and drop unnecessary columns
         df = pd.read_csv(file_buffer)
         columns_to_drop = ["Date", "Time", "Ambient", "Temperature"]
@@ -433,12 +458,13 @@ class QPredictor:
         if stop > -1:
             poi_6 = stop
 
+        adj_1 = extracted_results[1]
         adj_2 = self.adjust_predictions(
             prediction=extracted_results[2],
             rel_time=rel_time,
             poi_num=2,
             type=type,
-            i=poi_1,
+            i=start_bound,
             j=poi_6,
         )
         adj_3 = self.adjust_predictions(
@@ -446,7 +472,7 @@ class QPredictor:
             rel_time=rel_time,
             poi_num=3,
             type=type,
-            i=poi_1,
+            i=start_bound,
             j=poi_6,
         )
         adj_4 = self.adjust_predictions(
@@ -454,7 +480,7 @@ class QPredictor:
             rel_time=rel_time,
             poi_num=4,
             type=type,
-            i=poi_1,
+            i=start_bound,
             j=poi_6,
         )
         adj_5 = self.adjust_predictions(
@@ -462,44 +488,35 @@ class QPredictor:
             rel_time=rel_time,
             poi_num=5,
             type=type,
-            i=poi_1,
+            i=start_bound,
             j=poi_6,
         )
-        poi_2 = np.argmax(adj_2)
-        poi_3 = np.argmax(adj_3)
-        poi_4 = np.argmax(adj_4)
-        poi_5 = np.argmax(adj_5)
-        # approx_4, approx_5 = self.generate_zone_probabilities(rel_time[poi_1:poi_6])
-
-        # approx_4 = np.concatenate(
-        #     (
-        #         np.zeros(poi_1),
-        #         approx_4,
-        #         np.zeros(len(extracted_results[4]) - poi_6),
-        #     )
-        # )
-        # approx_5 = np.concatenate(
-        #     (
-        #         np.zeros(poi_1),
-        #         approx_5,
-        #         np.zeros(len(extracted_results[5]) - poi_6),
-        #     )
-        # )
+        adj_6 = extracted_results[6]
+        peaks_1 = self.find_and_sort_peaks(adj_1)
+        peaks_2 = self.find_and_sort_peaks(adj_2)
+        peaks_3 = self.find_and_sort_peaks(adj_3)
+        peaks_4 = self.find_and_sort_peaks(adj_4)
+        peaks_5 = self.find_and_sort_peaks(adj_5)
+        peaks_6 = self.find_and_sort_peaks(adj_6)
         # plt.figure()
         # plt.plot(self.normalize(extracted_results[4]), label="Prediction 4")
         # plt.plot(self.normalize(extracted_results[5]), label="Prediction 5")
-        # plt.plot(self.normalize(approx_4 * extracted_results[4]), label="Approx 4")
-        # plt.plot(self.normalize(approx_5 * extracted_results[5]), label="Approx 5")
-        # plt.axvline(x=actual[3], linestyle='--', label='Actual 5')
-        # plt.axvline(x=actual[4], linestyle='--', label='Actual 5')
+        # plt.plot(self.normalize(adj_4), label="Approx 4")
+        # plt.plot(self.normalize(adj_5), label="Approx 5")
         # plt.plot(
         #     self.normalize(df["Dissipation"]),
         #     label="Dissipation",
         #     linestyle="dashed",
         #     color="black",
         # )
+        # for i in act:
+        #     plt.axvline(x=i, color="black")
+        # for i in emp_points:
+        #     plt.axvline(x=i, linestyle="dotted", color="red")
         # plt.legend()
         # plt.show()
         # poi_4 = np.argmax(approx_4 * extracted_results[4])
         # poi_5 = np.argmax(approx_5 * extracted_results[5])
-        return poi_1, poi_2, poi_3, poi_4, poi_5, poi_6
+        pois = [poi_1, poi_2, poi_3, poi_4, poi_5, poi_6]
+        candidates = [peaks_1, peaks_2, peaks_3, peaks_4, peaks_5, peaks_6]
+        return pois, candidates

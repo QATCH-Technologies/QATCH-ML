@@ -14,7 +14,7 @@ from QModel import QModelPredict
 from QMultiModel import QPredictor
 from QImageClusterer import QClusterer
 
-TEST_BATCH_SIZE = 0.1
+TEST_BATCH_SIZE = 0.99
 VALIDATION_DATASETS_PATH = "content/test_data"
 S_PREDICTOR = QModelPredict(
     "QModel/SavedModels/QModel_1.json",
@@ -69,14 +69,19 @@ def test_md_on_file(filename, act_poi):
 def test_mm_on_file(filename, act_poi):
     label = qcr.predict_label(filename)
     if label == 0:
-        predictions = M_PREDICTOR_0.predict(filename, type=label)
+        predictions, candidates = M_PREDICTOR_0.predict(
+            filename, type=label, act=act_poi
+        )
     elif label == 1:
-        predictions = M_PREDICTOR_1.predict(filename, type=label)
+        predictions, candidates = M_PREDICTOR_1.predict(
+            filename, type=label, act=act_poi
+        )
     elif label == 2:
-        predictions = M_PREDICTOR_2.predict(filename, type=label)
+        predictions, candidates = M_PREDICTOR_2.predict(
+            filename, type=label, act=act_poi
+        )
     else:
         raise ValueError(f"Invalid predicted label was: {label}")
-
     good = []
     bad = []
     initial = 0.01
@@ -110,7 +115,7 @@ def compute_deltas(results):
     deltas = []
     if results is not None:
         for prediction, actual in results:
-            deltas.append(abs((actual - prediction)))
+            deltas.append((actual - prediction))
     return deltas
 
 
@@ -401,23 +406,37 @@ def run():
                 mm_deltas.append(compute_deltas(mm_results))
                 qmp_deltas.append(compute_deltas(qmp_results))
                 md_deltas.append(compute_deltas(md_results))
-    for bad in bad_list:
-        print(bad)
-        if len(bad) > 0:
-            file = bad[0][0]
-            act_poi = bad[0][1]
-            predictions = bad[0][2]
-            label = bad[0][3]
-            plt.figure()
-            df = pd.read_csv(file)
-            plt.plot(df["Dissipation"].values, label="Dissipation")
-            for i, poi in enumerate(act_poi):
-                plt.axvline(x=poi, linestyle="--", color="black", label=f"Actual {i}")
-            for i, poi in enumerate(predictions):
-                plt.axvline(x=poi, color="red", label=f"Predicted {i}")
-            plt.legend()
-            plt.title(f"Type {label} run")
-            plt.show()
+    # for bad in bad_list:
+    #     print(bad)
+    #     if len(bad) > 0:
+    #         file = bad[0][0]
+    #         act_poi = bad[0][1]
+    #         predictions = bad[0][2]
+    #         label = bad[0][3]
+    #         plt.figure()
+    #         df = pd.read_csv(file)
+    #         plt.plot(df["Dissipation"].values, label="Dissipation")
+    #         for i, poi in enumerate(act_poi):
+    #             plt.axvline(x=poi, linestyle="--", color="black", label=f"Actual {i}")
+    #         for i, poi in enumerate(predictions):
+    #             plt.axvline(x=poi, color="red", label=f"Predicted {i}")
+    #         plt.legend()
+    #         plt.title(f"Type {label} run")
+    #         plt.show()
+    over_prediction = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0}
+    under_prediction = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0}
+    exact = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0}
+    for delta in mm_deltas:
+        for i, d in enumerate(delta):
+            if d > 0:
+                over_prediction[i + 1] = over_prediction[i + 1] + 1
+            if d < 0:
+                under_prediction[i + 1] = under_prediction[i + 1] + 1
+            if d == 0:
+                exact[i + 1] = exact[i + 1] + 1
+    print(
+        f"[INFO] Prediction Quality:\n\t- Over={over_prediction}\n\t- Under={under_prediction}\n\t- Exact={exact}"
+    )
     mm_ppr = extract_results(mm_list)
     qmp_ppr = extract_results(qmp_list)
     md_ppr = extract_results(md_list)
@@ -428,7 +447,7 @@ def run():
     # MM
     ############################################################
     mae, mse, rmse, r2, mape = poi_k_metrics(
-        qmp_ppr[0]["predicted"], qmp_ppr[0]["actual"], 1, VERBOSE
+        mm_ppr[0]["predicted"], mm_ppr[0]["actual"], 1, VERBOSE
     )
     mm_mae.append(mae)
     mm_mse.append(mse)
