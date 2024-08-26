@@ -1,0 +1,19 @@
+The overarching idea here is to do some kind of bias correction.
+Essentially, I want to take the predictions from QMultiModel, establish a bias based on our test data, and then perform a bias correction based on a pre-established bias for each
+layer of the predictor.
+For example, if POI is consistently under-predicted, feed the prediction results as well as some way of representing an under-prediction bias to a final model to make final judgement 
+on POI 1.
+
+1. Make predictions on a validation dataset
+
+2. Calculate Residuals
+residuals = y_test - y_pred
+
+3. Feed data to secondary model
+X is my test data and the residulas are now my target.
+Split this data into training and test
+
+4.  Use a seconary model to predict on the residuals and adjust original predictions
+adjusted_predictions = y_pred + bias_pred
+# Convert adjusted predictions to binary (for classification tasks)
+y_pred_adjusted = (adjusted_predictions > 0.5).astype(int)
