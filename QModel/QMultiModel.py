@@ -11,24 +11,25 @@ from ModelData import ModelData
 from QConstants import *
 import pickle
 from scipy.signal import find_peaks
+import random
 
 np.set_printoptions(threshold=sys.maxsize)
 
-ModelData_found = False
-try:
-    if not ModelData_found:
-        import QModel.ModelData
-    ModelData_found = True
-except:
-    ModelData_found = False
-try:
-    if not ModelData_found:
-        from QATCH.models.ModelData import ModelData
-    ModelData_found = True
-except:
-    ModelData_found = False
-if not ModelData_found:
-    raise ImportError("Cannot find 'ModelData' in any expected location.")
+# ModelData_found = False
+# try:
+#     if not ModelData_found:
+#         import QModel.ModelData
+#     ModelData_found = True
+# except:
+#     ModelData_found = False
+# try:
+#     if not ModelData_found:
+#         from QATCH.models.ModelData import ModelData
+#     ModelData_found = True
+# except:
+#     ModelData_found = False
+# if not ModelData_found:
+#     raise ImportError("Cannot find 'ModelData' in any expected location.")
 
 QDataPipeline_found = False
 try:
@@ -94,7 +95,7 @@ class QMultiModel:
 
     def __init__(
         self,
-        dataset: pd.Dataframe = None,
+        dataset: pd.DataFrame = None,
         predictors: list = None,
         target_features: str = "Class",
     ) -> None:
@@ -244,9 +245,7 @@ class QMultiModel:
             nfold=NUMBER_KFOLDS,
             stratified=True,
             early_stopping_rounds=20,
-            metrics=[
-                "auc",
-            ],
+            metrics=["auc"],
             verbose_eval=VERBOSE_EVAL,
         )
         best_score = results["test-auc-mean"].max()
@@ -406,80 +405,7 @@ class QPredictor:
 
         return extracted
 
-    def normalize_gen(self, arr, t_min=0, t_max=1):
-        norm_arr = arr.copy()
-        try:
-            diff = t_max - t_min
-            diff_arr = max(arr) - min(arr)
-            if diff_arr == 0:
-                diff_arr = 1
-            norm_arr -= min(arr)
-            norm_arr *= diff
-            norm_arr /= diff_arr
-            norm_arr += t_min
-        except Exception as e:
-            print("ERROR:" + str(e))
-        return norm_arr
-
-    def generate_zone_probabilities(self, t):
-        amplitude = 1.0
-        poi4_min_val = 0.2
-        periodicity4 = 9
-        period_skip4 = False
-        poi5_min_val = 0.3
-        periodicity5 = 6
-        period_skip5 = True
-        t = self.normalize(t)
-
-        signal_region_equation_POI4 = 1 - np.cos(periodicity4 * t * np.pi)
-        signal_region_equation_POI4 = self.normalize_gen(
-            signal_region_equation_POI4, poi4_min_val, amplitude
-        )
-        if period_skip4:
-            signal_region_equation_POI4 = np.where(
-                t < 2 / periodicity4, poi4_min_val, signal_region_equation_POI4
-            )
-            signal_region_equation_POI4 = np.where(
-                t > 4 / periodicity4, poi4_min_val, signal_region_equation_POI4
-            )
-        else:
-            signal_region_equation_POI4 = np.where(
-                t > 2 / periodicity4, poi4_min_val, signal_region_equation_POI4
-            )
-
-        signal_region_equation_POI5 = 1 - np.cos(periodicity5 * t * np.pi)
-        signal_region_equation_POI5 = self.normalize_gen(
-            signal_region_equation_POI5, poi5_min_val, amplitude
-        )
-        if period_skip5:
-            signal_region_equation_POI5 = np.where(
-                t < 2 / periodicity5, poi5_min_val, signal_region_equation_POI5
-            )
-            signal_region_equation_POI5 = np.where(
-                t > 4 / periodicity5, poi5_min_val, signal_region_equation_POI5
-            )
-        else:
-            signal_region_equation_POI5 = np.where(
-                t > 2 / periodicity5, poi5_min_val, signal_region_equation_POI5
-            )
-
-        signal_region_equation_POI4 = np.where(t < 0.03, 0, signal_region_equation_POI4)
-        if period_skip5:
-            signal_region_equation_POI4 = np.where(
-                t > 2 / periodicity5, 0, signal_region_equation_POI4
-            )
-        if not period_skip4:
-            signal_region_equation_POI5 = np.where(
-                t < 2 / periodicity4, 0, signal_region_equation_POI5
-            )
-        signal_region_equation_POI5 = np.where(
-            t > 0.75, poi4_min_val, signal_region_equation_POI5
-        )
-        signal_region_equation_POI5 = np.where(t > 0.90, 0, signal_region_equation_POI5)
-
-        return [signal_region_equation_POI4, signal_region_equation_POI5]
-
-    def adjust_predictions(self, prediction, rel_time, poi_num, type, i, j):
+    def adjust_predictions(self, prediction, rel_time, poi_num, type, i, j, data, act):
         rel_time = rel_time[i:j]
         rel_time_norm = self.normalize(rel_time)
         bounds = None
@@ -499,13 +425,7 @@ class QPredictor:
         )
 
         adj_prediction = prediction * adjustment
-        # plt.figure()
-        # plt.plot(prediction, label="original")
-        # plt.plot(adjustment, label="adjustment")
-        # plt.plot(adj_prediction, label="adjusted")
-        # plt.legend()
-        # plt.title(f"Type {type}")
-        # plt.show()
+
         return adj_prediction
 
     def find_and_sort_peaks(self, signal):
@@ -521,7 +441,6 @@ class QPredictor:
         """
         # Find peaks
         peaks, properties = find_peaks(signal)
-        print(peaks)
         # Get the peak heights
         peak_heights = []
         for p in peaks:
@@ -531,6 +450,36 @@ class QPredictor:
         sorted_indices = np.argsort(peak_heights)[::-1]
         sorted_peaks = peaks[sorted_indices]
         return sorted_peaks
+
+    def dynamic_nearest_peak(self, data, candidates, guess):
+        # Step 1: Find peaks with prominence to filter out minor peaks
+        peaks, properties = find_peaks(data, prominence=1)
+        prominences = properties["prominences"]
+
+        # Step 2: Filter candidates that are near peaks based on dynamic proximity
+        near_peaks = []
+
+        for candidate in candidates:
+            for peak, prominence in zip(peaks, prominences):
+                # Determine dynamic range of the peak's influence
+                left_base = peak - prominence
+                right_base = peak + prominence
+
+                if left_base <= candidate <= right_base:
+                    near_peaks.append(candidate)
+                    break  # Stop checking other peaks once a near peak is found
+        plt.figure()
+        plt.plot(data)
+        plt.scatter(near_peaks, data[near_peaks])
+        plt.scatter(peaks, data[peaks])
+        plt.show()
+        if not near_peaks:
+            raise ValueError("No candidates near peaks found.")
+
+        # Step 3: Find the candidate nearest to the guess
+        nearest_point = min(near_peaks, key=lambda x: abs(x - guess))
+
+        return nearest_point
 
     def predict(self, file_buffer, type=-1, start=-1, stop=-1, act=None):
         # Load CSV data and drop unnecessary columns
@@ -573,13 +522,13 @@ class QPredictor:
             relative_time = file_data[:, 0]
             # temperature = file_data[:,1]
             resonance_frequency = file_data[:, 2]
-            dissipation = file_data[:, 3]
+            data = file_data[:, 3]
 
             emp_predictions = ModelData().IdentifyPoints(
                 data_path=data_path,
                 times=relative_time,
                 freq=resonance_frequency,
-                diss=dissipation,
+                diss=data,
             )
         else:
             emp_predictions = ModelData().IdentifyPoints(file_buffer)
@@ -596,7 +545,9 @@ class QPredictor:
         # Process data using QDataPipeline
         qdp = QDataPipeline(file_buffer_2)
         rel_time = qdp.__dataframe__["Relative_time"]
+
         qdp.preprocess(poi_filepath=None)
+        data = qdp.get_dataframe()["Difference"]
         df = qdp.get_dataframe()
 
         f_names = self.__model__.feature_names
@@ -615,7 +566,9 @@ class QPredictor:
         poi_4 = np.argmax(extracted_results[4])
         poi_5 = np.argmax(extracted_results[5])
         poi_6 = np.argmax(extracted_results[6])
-
+        adj_6 = poi_6
+        peaks_6 = self.find_and_sort_peaks(extracted_results[6])
+        poi_6 = self.dynamic_nearest_peak(data=data, guess=poi_6, candidates=peaks_6)
         if not isinstance(emp_predictions, list):
             poi_1 = np.argmax(extracted_results[1])
 
@@ -632,6 +585,8 @@ class QPredictor:
             type=type,
             i=start_bound,
             j=poi_6,
+            data=data,
+            act=act,
         )
         adj_3 = self.adjust_predictions(
             prediction=extracted_results[3],
@@ -640,6 +595,8 @@ class QPredictor:
             type=type,
             i=start_bound,
             j=poi_6,
+            data=data,
+            act=act,
         )
         adj_4 = self.adjust_predictions(
             prediction=extracted_results[4],
@@ -648,6 +605,8 @@ class QPredictor:
             type=type,
             i=start_bound,
             j=poi_6,
+            data=data,
+            act=act,
         )
         adj_5 = self.adjust_predictions(
             prediction=extracted_results[5],
@@ -656,33 +615,29 @@ class QPredictor:
             type=type,
             i=start_bound,
             j=poi_6,
+            data=data,
+            act=act,
         )
-        adj_6 = extracted_results[6]
+
         peaks_1 = self.find_and_sort_peaks(adj_1)
         peaks_2 = self.find_and_sort_peaks(adj_2)
         peaks_3 = self.find_and_sort_peaks(adj_3)
         peaks_4 = self.find_and_sort_peaks(adj_4)
         peaks_5 = self.find_and_sort_peaks(adj_5)
-        peaks_6 = self.find_and_sort_peaks(adj_6)
-        # plt.figure()
-        # plt.plot(self.normalize(extracted_results[4]), label="Prediction 4")
-        # plt.plot(self.normalize(extracted_results[5]), label="Prediction 5")
-        # plt.plot(self.normalize(adj_4), label="Approx 4")
-        # plt.plot(self.normalize(adj_5), label="Approx 5")
-        # plt.plot(
-        #     self.normalize(df["Dissipation"]),
-        #     label="Dissipation",
-        #     linestyle="dashed",
-        #     color="black",
-        # )
-        # for i in act:
-        #     plt.axvline(x=i, color="black")
-        # for i in emp_points:
-        #     plt.axvline(x=i, linestyle="dotted", color="red")
-        # plt.legend()
-        # plt.show()
-        # poi_4 = np.argmax(approx_4 * extracted_results[4])
-        # poi_5 = np.argmax(approx_5 * extracted_results[5])
+
+        poi_2 = np.argmax(adj_2)
+        poi_3 = np.argmax(adj_3)
+        poi_4 = np.argmax(adj_4)
+        poi_5 = np.argmax(adj_5)
+
+        plt.figure()
+        plt.plot(data, label="Difference")
+        plt.scatter(peaks_6[:50], data[peaks_6[:50]], label="Candidate 1", color="red")
+        plt.scatter(act, data[act], label="Actual", color="green")
+        plt.scatter(adj_6, data[adj_6], label="Before", color="orange", marker="x")
+        plt.scatter(poi_6, data[poi_6], label="After", color="black", marker="x")
+        plt.legend()
+        plt.show()
         pois = [poi_1, poi_2, poi_3, poi_4, poi_5, poi_6]
         candidates = [peaks_1, peaks_2, peaks_3, peaks_4, peaks_5, peaks_6]
         return pois, candidates

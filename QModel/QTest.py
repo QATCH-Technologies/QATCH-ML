@@ -15,7 +15,7 @@ from QMultiModel import QPredictor
 from QImageClusterer import QClusterer
 
 TEST_BATCH_SIZE = 0.99
-VALIDATION_DATASETS_PATH = "content/test_data"
+VALIDATION_DATASETS_PATH = "content/test_data/test"
 S_PREDICTOR = QModelPredict(
     "QModel/SavedModels/QModel_1.json",
     "QModel/SavedModels/QModel_2.json",

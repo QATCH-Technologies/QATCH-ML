@@ -50,10 +50,10 @@ def split_data(source_dir, train_dir, val_dir, split_percentage):
 
 if __name__ == "__main__":
     # Usage
-    source_directory = "content/training_data"
-    training_directory = "content/training_data/train_clusters"
-    validation_directory = "content/training_data/test_clusters"
-    split_percentage = 0.7
+    source_directory = "content/test_data"
+    training_directory = "content/test_data/train"
+    validation_directory = "content/test_data/test"
+    split_percentage = 0.5
 
     split_data(
         source_directory, training_directory, validation_directory, split_percentage
