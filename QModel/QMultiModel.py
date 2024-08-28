@@ -14,21 +14,21 @@ from scipy.signal import find_peaks
 
 np.set_printoptions(threshold=sys.maxsize)
 
-# ModelData_found = False
-# try:
-#     if not ModelData_found:
-#         import QModel.ModelData
-#     ModelData_found = True
-# except:
-#     ModelData_found = False
-# try:
-#     if not ModelData_found:
-#         from QATCH.models.ModelData import ModelData
-#     ModelData_found = True
-# except:
-#     ModelData_found = False
-# if not ModelData_found:
-#     raise ImportError("Cannot find 'ModelData' in any expected location.")
+ModelData_found = False
+try:
+    if not ModelData_found:
+        import QModel.ModelData
+    ModelData_found = True
+except:
+    ModelData_found = False
+try:
+    if not ModelData_found:
+        from QATCH.models.ModelData import ModelData
+    ModelData_found = True
+except:
+    ModelData_found = False
+if not ModelData_found:
+    raise ImportError("Cannot find 'ModelData' in any expected location.")
 
 QDataPipeline_found = False
 try:
@@ -54,7 +54,88 @@ if not QDataPipeline_found:
 
 
 class QMultiModel:
-    def __init__(self, dataset, predictors, target_features):
+    """
+    A class used to represent and manage an XGBoost model for multi-target classification tasks.
+
+    This class handles the initialization, training, hyperparameter tuning, and management of an XGBoost model.
+    It supports multi-target classification with specific hyperparameters and uses cross-validation to optimize
+    the model's performance.
+
+    Attributes:
+        __params__ (dict): A dictionary of hyperparameters used for training the XGBoost model.
+        __train_df__ (pd.DataFrame): Training subset of the dataset.
+        __valid_df__ (pd.DataFrame): Validation subset of the dataset.
+        __test_df__ (pd.DataFrame): Test subset of the dataset.
+        __dtrain__ (xgb.DMatrix): DMatrix object for the training data.
+        __dvalid__ (xgb.DMatrix): DMatrix object for the validation data.
+        __dtest__ (xgb.DMatrix): DMatrix object for the test data.
+        __watchlist__ (list): List of DMatrix objects to monitor during training, containing tuples of the form (DMatrix, "name").
+        __model__ (xgb.Booster or None): The trained XGBoost model, initially set to None.
+
+    Methods:
+        __init__(self, dataset, predictors, target_features):
+            Initializes the XGBoost model with the specified dataset, predictors, and target features.
+
+        train_model(self):
+            Trains the multi-target XGBoost model using the training dataset.
+
+        objective(self, params):
+            Evaluates the performance of the XGBoost model using cross-validation and returns the best AUC score.
+
+        tune(self, evaluations=250):
+            Tunes the XGBoost model's hyperparameters using Bayesian optimization with Tree-structured Parzen Estimator (TPE).
+
+        save_model(self, model_name="QMultiModel"):
+            Saves the trained XGBoost model to a specified file.
+
+        get_model(self):
+            Retrieves the trained XGBoost model.
+    """
+
+    def __init__(
+        self,
+        dataset: pd.Dataframe = None,
+        predictors: list = None,
+        target_features: str = "Class",
+    ) -> None:
+        """
+        Initializes the XGBoost model with the specified dataset, predictors, and target features.
+
+        Args:
+            dataset (pd.DataFrame): The complete dataset containing both predictors and target features.
+            predictors (list[str]): A list of column names in `dataset` that will be used as features for model training.
+            target_features (list[str]): A list of column names in `dataset` that will be used as target variables for the model.
+
+        Attributes:
+            __params__ (dict): A dictionary of hyperparameters used for training the XGBoost model. These include:
+                - objective (str): The learning task and objective ("multi:softprob" for multi-class classification).
+                - eval_metric (str): Evaluation metric ("auc" for Area Under the Curve).
+                - eta (float): Step size shrinkage used in updates to prevent overfitting (0.175).
+                - max_depth (int): Maximum depth of a tree (5).
+                - min_child_weight (float): Minimum sum of instance weight (hessian) needed in a child (4.0).
+                - subsample (float): Subsample ratio of the training instances (0.6).
+                - colsample_bytree (float): Subsample ratio of columns when constructing each tree (0.75).
+                - gamma (float): Minimum loss reduction required to make a further partition on a leaf node (0.8).
+                - nthread (int): Number of threads used for training (NUM_THREADS).
+                - booster (str): Type of booster to use ("gbtree").
+                - device (str): Device to run on ("cuda").
+                - tree_method (str): Tree construction algorithm ("auto").
+                - sampling_method (str): Sampling method ("gradient_based").
+                - seed (int): Random seed for reproducibility (SEED).
+                - num_class (int): Number of classes (7).
+
+            __train_df__ (pd.DataFrame): Training subset of the dataset.
+            __valid_df__ (pd.DataFrame): Validation subset of the dataset.
+            __test_df__ (pd.DataFrame): Test subset of the dataset.
+
+            __dtrain__ (xgb.DMatrix): DMatrix object for the training data.
+            __dvalid__ (xgb.DMatrix): DMatrix object for the validation data.
+            __dtest__ (xgb.DMatrix): DMatrix object for the test data.
+
+            __watchlist__ (list): List of DMatrix objects to watch during training, containing tuples of the form (DMatrix, "name").
+
+            __model__ (xgb.Booster or None): The trained XGBoost model, initially set to None.
+        """
         self.__params__ = {
             "objective": "multi:softprob",
             "eval_metric": "auc",
@@ -103,8 +184,25 @@ class QMultiModel:
 
         self.__model__ = None
 
-    def train_model(self):
-        print(f"[INFO] Training multi-target model")
+    def train_model(self) -> None:
+        """
+        Trains the multi-target XGBoost model using the training dataset.
+
+        This method initializes the training process for the XGBoost model with the previously defined parameters and datasets.
+        The model is trained over a number of rounds with early stopping if the performance does not improve on the validation set.
+
+        During the training process, the model's performance is evaluated on both the training and validation datasets,
+        and the best model based on the validation performance is saved.
+
+        Prints a status message indicating the start of the training process.
+
+        Attributes:
+            __model__ (xgb.Booster): The trained XGBoost model after completion of the training process.
+
+        Raises:
+            ValueError: If any of the necessary parameters or datasets have not been initialized prior to calling this method.
+        """
+        print(f"[STATUS] Training multi-target model")
         self.__model__ = xgb.train(
             self.__params__,
             self.__dtrain__,
@@ -115,7 +213,30 @@ class QMultiModel:
             verbose_eval=VERBOSE_EVAL,
         )
 
-    def objective(self, params):
+    def update_model(self) -> None:
+        # TODO: Implement functionality to pass a model path and load it then update the model with a new dataset.
+        print(f"[STATUS] Updating multi-target model")
+        pass
+
+    def objective(self, params: dict = None) -> None:
+        """
+        Evaluates the performance of the XGBoost model using cross-validation and returns the best AUC score.
+
+        This method performs k-fold cross-validation on the training dataset using the provided hyperparameters.
+        The method returns the best AUC score from the cross-validation process, which can be used as the objective function
+        in hyperparameter optimization.
+
+        Args:
+            params (dict): Dictionary of hyperparameters to be used in the XGBoost model during cross-validation.
+
+        Returns:
+            dict: A dictionary containing the following keys:
+                - "loss" (float): The best mean AUC score on the test set obtained during cross-validation.
+                - "status" (str): The status of the evaluation, typically "ok".
+
+        Raises:
+            ValueError: If any of the necessary parameters or datasets have not been initialized prior to calling this method.
+        """
         results = xgb.cv(
             params,
             self.__dtrain__,
@@ -131,8 +252,27 @@ class QMultiModel:
         best_score = results["test-auc-mean"].max()
         return {"loss": best_score, "status": STATUS_OK}
 
-    def tune(self, evaluations=250):
-        print(f"[INFO] Running model tuning for {evaluations} max iterations")
+    def tune(self, evaluations: int = 250) -> dict:
+        """
+        Tunes the XGBoost model's hyperparameters using Bayesian optimization with Tree-structured Parzen Estimator (TPE).
+
+        This method runs the hyperparameter tuning process for a specified number of iterations.
+        It searches for the best hyperparameters within the defined search space by minimizing the loss function.
+        The search is based on the performance of the model as evaluated by cross-validation.
+
+        Args:
+            evaluations (int, optional): The maximum number of iterations for hyperparameter optimization. Default is 250.
+
+        Returns:
+            dict: A dictionary of the best hyperparameters found during the tuning process.
+
+        Raises:
+            ValueError: If any of the necessary parameters or datasets have not been initialized prior to calling this method.
+
+        Example:
+            best_hyperparams = self.tune(evaluations=300)
+        """
+        print(f"[STATUS] Running model tuning for {evaluations} max iterations")
         space = {
             "max_depth": hp.choice("max_depth", np.arange(1, 20, 1, dtype=int)),
             "eta": hp.uniform("eta", 0, 1),
@@ -183,12 +323,38 @@ class QMultiModel:
 
         return best_hyperparams
 
-    def save_model(self, model_name="QMultiModel"):
+    def save_model(self, model_name: str = "QMultiModel") -> None:
+        """
+        Saves the trained XGBoost model to a specified file.
+
+        This method saves the current XGBoost model in JSON format to the specified location.
+        The model is saved in the "QModel/SavedModels/" directory with the provided model name.
+
+        Args:
+            model_name (str, optional): The name of the model file to be saved. Default is "QMultiModel".
+
+        Returns:
+            None
+
+        Example:
+            self.save_model(model_name="MyModel")
+        """
         filename = f"QModel/SavedModels/{model_name}.json"
         print(f"[INFO] Saving model {model_name}")
         self.__model__.save_model(filename)
 
-    def get_model(self):
+    def get_model(self) -> xgb.Booster:
+        """
+        Retrieves the trained XGBoost model.
+
+        This method returns the trained XGBoost model, which can be used for further predictions or analysis.
+
+        Returns:
+            xgb.Booster: The trained XGBoost model.
+
+        Example:
+            model = self.get_model()
+        """
         return self.__model__
 
 
