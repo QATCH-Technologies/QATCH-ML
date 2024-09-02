@@ -137,6 +137,79 @@ class QDataPipeline:
 
         return idx
 
+    def find_increasing_regions(self, arr):
+        """Find regions of increase in an array."""
+        regions = []
+        start = 0
+
+        for i in range(1, len(arr)):
+            if arr[i] <= arr[i - 1]:
+                if i - start > 1:  # Ensure at least two points in the region
+                    regions.append((start, i - 1))
+                start = i
+
+        if start < len(arr) - 1:  # Capture any final increasing region
+            regions.append((start, len(arr) - 1))
+
+        return regions
+
+    def common_increases(self):
+        """Find common increasing regions between two arrays."""
+        regions1 = self.find_increasing_regions(self.__dataframe__["Dissipation"])
+        regions2 = self.find_increasing_regions(
+            self.__dataframe__["Resonance_Frequency"]
+        )
+
+        common_regions = []
+
+        for r1 in regions1:
+            for r2 in regions2:
+                # Find the overlap between the two regions
+                start = max(r1[0], r2[0])
+                end = min(r1[1], r2[1])
+                if start < end:  # Overlapping region exists
+                    common_regions.append((start, end))
+
+        return common_regions
+
+    def find_zero_slope_regions(self, arr, threshold=0.01):
+        """Find regions where the slope is approximately zero."""
+        slopes = np.diff(arr)
+        regions = []
+        start = None
+
+        for i in range(1, len(slopes)):
+            if abs(slopes[i]) < threshold:
+                if start is None:
+                    start = i
+            else:
+                if start is not None:
+                    regions.append((start, i))
+                    start = None
+
+        if start is not None:
+            regions.append((start, len(slopes)))
+
+        return regions
+
+    def common_zeroes(self, threshold=0.01):
+        """Find common regions where both arrays have nearly zero slope."""
+        regions1 = self.find_zero_slope_regions(self.__dataframe__["Dissipation"])
+        regions2 = self.find_zero_slope_regions(
+            self.__dataframe__["Resonance_Frequency"]
+        )
+
+        common_regions = []
+
+        for r1 in regions1:
+            for r2 in regions2:
+                start = max(r1[0], r2[0])
+                end = min(r1[1], r2[1])
+                if start < end:  # Overlapping region exists
+                    common_regions.append((start, end))
+
+        return common_regions
+
     def get_dataframe(self) -> pd.DataFrame:
         """
         Returns the DataFrame containing the loaded data.

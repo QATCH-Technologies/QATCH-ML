@@ -547,8 +547,13 @@ class QPredictor:
         rel_time = qdp.__dataframe__["Relative_time"]
 
         qdp.preprocess(poi_filepath=None)
-        data = qdp.get_dataframe()["Difference"]
+
         df = qdp.get_dataframe()
+        data = df["Difference"]
+        inc_regions = qdp.common_increases()
+        # inc_regions = [item for tup in inc_regions for item in tup]
+        zeroes = qdp.common_zeroes()
+        # zeroes = [item for tup in zeroes for item in tup]
 
         f_names = self.__model__.feature_names
         df = df[f_names]
@@ -557,18 +562,31 @@ class QPredictor:
         results = self.__model__.predict(
             d_data,
         )
+        # start = min(inc_regions, key=lambda x: abs(x - start_bound))
         results = self.normalize(results)
         extracted_results = self.extract_results(results)
+        plt.figure()
+        plt.plot(df["Dissipation"])
 
-        poi_1 = start_bound
+        colors = plt.cm.viridis(np.linspace(0, 1, len(inc_regions)))
+        # for i, r in enumerate(inc_regions):
+        #     plt.axvline(r[0], color=colors[i])
+        #     plt.axvline(x=r[1], color=colors[i])
+
+        colors = plt.cm.viridis(np.linspace(0, 1, len(zeroes)))
+        for i, r in enumerate(zeroes):
+            plt.axvline(r[0], color=colors[i])
+            plt.axvline(x=r[1], color=colors[i])
+        # plt.axvline(start)
+        plt.axvline(start_bound, linestyle="--")
+        plt.show()
+        poi_1 = min(start, start_bound) - int(len(extracted_results[1]) * 0.01)
         poi_2 = np.argmax(extracted_results[2])
         poi_3 = np.argmax(extracted_results[3])
         poi_4 = np.argmax(extracted_results[4])
         poi_5 = np.argmax(extracted_results[5])
         poi_6 = np.argmax(extracted_results[6])
-        adj_6 = poi_6
-        peaks_6 = self.find_and_sort_peaks(extracted_results[6])
-        poi_6 = self.dynamic_nearest_peak(data=data, guess=poi_6, candidates=peaks_6)
+
         if not isinstance(emp_predictions, list):
             poi_1 = np.argmax(extracted_results[1])
 
@@ -618,26 +636,20 @@ class QPredictor:
             data=data,
             act=act,
         )
+        adj_6 = extracted_results[6]
 
         peaks_1 = self.find_and_sort_peaks(adj_1)
         peaks_2 = self.find_and_sort_peaks(adj_2)
         peaks_3 = self.find_and_sort_peaks(adj_3)
         peaks_4 = self.find_and_sort_peaks(adj_4)
         peaks_5 = self.find_and_sort_peaks(adj_5)
+        peaks_6 = self.find_and_sort_peaks(adj_6)
 
         poi_2 = np.argmax(adj_2)
         poi_3 = np.argmax(adj_3)
         poi_4 = np.argmax(adj_4)
         poi_5 = np.argmax(adj_5)
-
-        plt.figure()
-        plt.plot(data, label="Difference")
-        plt.scatter(peaks_6[:50], data[peaks_6[:50]], label="Candidate 1", color="red")
-        plt.scatter(act, data[act], label="Actual", color="green")
-        plt.scatter(adj_6, data[adj_6], label="Before", color="orange", marker="x")
-        plt.scatter(poi_6, data[poi_6], label="After", color="black", marker="x")
-        plt.legend()
-        plt.show()
+        poi_5 = min(peaks_5, key=lambda x: abs(x - emp_points[4]))
         pois = [poi_1, poi_2, poi_3, poi_4, poi_5, poi_6]
         candidates = [peaks_1, peaks_2, peaks_3, peaks_4, peaks_5, peaks_6]
         return pois, candidates
