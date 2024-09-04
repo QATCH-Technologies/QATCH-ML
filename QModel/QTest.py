@@ -49,8 +49,6 @@ def load_test_dataset(path, test_size):
 
 def test_md_on_file(filename, act_poi):
     qdp = QDataPipeline(filename)
-    time_delta = qdp.find_time_delta()
-    # if time_delta == -1:
     md_predictor = ModelData()
     md_result = md_predictor.IdentifyPoints(data_path=filename)
     if isinstance(md_result, int):
@@ -62,8 +60,6 @@ def test_md_on_file(filename, act_poi):
         else:
             predictions.append(item)
     return list(zip(predictions, act_poi))
-    # else:
-    #     print("[INFO] MD Skipping due to time delta")
 
 
 def test_mm_on_file(filename, act_poi):
@@ -358,12 +354,52 @@ def mean_absolute_percentage_error(predictions, actual):
     )
 
 
+def median_absolute_error(predictions, actual):
+    # Calculate the absolute errors
+    absolute_errors = [abs(p - a) for p, a in zip(predictions, actual)]
+
+    # Return the median of these absolute errors
+    return np.median(absolute_errors)
+
+
+def mean_absolute_percentage_error_without_outliers(predictions, actual):
+    percentage_errors = [
+        abs((a - p) / a) for p, a in zip(predictions, actual) if a != 0
+    ]
+    errors_array = np.array(percentage_errors)
+    Q1 = np.percentile(errors_array, 25)
+    Q3 = np.percentile(errors_array, 75)
+    IQR = Q3 - Q1
+    lower_bound = Q1 - 1.5 * IQR
+    upper_bound = Q3 + 1.5 * IQR
+    filtered_errors = errors_array[
+        (errors_array >= lower_bound) & (errors_array <= upper_bound)
+    ]
+    return np.mean(filtered_errors) * 100 if len(filtered_errors) > 0 else float("nan")
+
+
+def mean_absolute_error_without_outliers(predictions, actual):
+    absolute_errors = [abs(p - a) for p, a in zip(predictions, actual)]
+    errors_array = np.array(absolute_errors)
+
+    Q1 = np.percentile(errors_array, 25)
+    Q3 = np.percentile(errors_array, 75)
+    IQR = Q3 - Q1
+    lower_bound = Q1 - 1.5 * IQR
+    upper_bound = Q3 + 1.5 * IQR
+    filtered_errors = errors_array[
+        (errors_array >= lower_bound) & (errors_array <= upper_bound)
+    ]
+    return np.mean(filtered_errors) if len(filtered_errors) > 0 else float("nan")
+
+
 def poi_k_metrics(predictions, actual, k, verbose):
     mae = mean_absolute_error(predictions, actual)
     mse = mean_squared_error(predictions, actual)
     rmse = root_mean_squared_error(predictions, actual)
     r2 = r_squared(predictions, actual)
-    mape = mean_absolute_percentage_error(predictions, actual)
+    mape = mean_absolute_percentage_error_without_outliers(predictions, actual)
+    med_ape = mean_absolute_error_without_outliers(predictions, actual)
     if verbose:
         print(f"\n<<POI {k} METRICS>>")
         print("MAE:", mae)
@@ -371,7 +407,8 @@ def poi_k_metrics(predictions, actual, k, verbose):
         print("RMSE:", rmse)
         print("R2:", r2)
         print("MAPE:", mape)
-    return mae, mse, rmse, r2, mape
+        print("MAE No Outliers:", med_ape)
+    return mae, mse, rmse, r2, mape, med_ape
 
 
 def run():
@@ -440,13 +477,13 @@ def run():
     mm_ppr = extract_results(mm_list)
     qmp_ppr = extract_results(qmp_list)
     md_ppr = extract_results(md_list)
-    mm_mae, mm_mse, mm_rmse, mm_r2, mm_mape = [], [], [], [], []
-    qmp_mae, qmp_mse, qmp_rmse, qmp_r2, qmp_mape = [], [], [], [], []
-    md_mae, md_mse, md_rmse, md_r2, md_mape = [], [], [], [], []
+    mm_mae, mm_mse, mm_rmse, mm_r2, mm_mape, mm_med_ape = [], [], [], [], [], []
+    qmp_mae, qmp_mse, qmp_rmse, qmp_r2, qmp_mape, qmp_med_ape = [], [], [], [], [], []
+    md_mae, md_mse, md_rmse, md_r2, md_mape, md_med_ape = [], [], [], [], [], []
     ############################################################
     # MM
     ############################################################
-    mae, mse, rmse, r2, mape = poi_k_metrics(
+    mae, mse, rmse, r2, mape, med_ape = poi_k_metrics(
         mm_ppr[0]["predicted"], mm_ppr[0]["actual"], 1, VERBOSE
     )
     mm_mae.append(mae)
@@ -454,7 +491,8 @@ def run():
     mm_rmse.append(rmse)
     mm_r2.append(r2)
     mm_mape.append(mape)
-    mae, mse, rmse, r2, mape = poi_k_metrics(
+    mm_med_ape.append(med_ape)
+    mae, mse, rmse, r2, mape, med_ape = poi_k_metrics(
         mm_ppr[1]["predicted"], mm_ppr[1]["actual"], 2, VERBOSE
     )
     mm_mae.append(mae)
@@ -462,7 +500,8 @@ def run():
     mm_rmse.append(rmse)
     mm_r2.append(r2)
     mm_mape.append(mape)
-    mae, mse, rmse, r2, mape = poi_k_metrics(
+    mm_med_ape.append(med_ape)
+    mae, mse, rmse, r2, mape, med_ape = poi_k_metrics(
         mm_ppr[2]["predicted"], mm_ppr[2]["actual"], 3, VERBOSE
     )
     mm_mae.append(mae)
@@ -470,7 +509,8 @@ def run():
     mm_rmse.append(rmse)
     mm_r2.append(r2)
     mm_mape.append(mape)
-    mae, mse, rmse, r2, mape = poi_k_metrics(
+    mm_med_ape.append(med_ape)
+    mae, mse, rmse, r2, mape, med_ape = poi_k_metrics(
         mm_ppr[3]["predicted"], mm_ppr[3]["actual"], 4, VERBOSE
     )
     mm_mae.append(mae)
@@ -478,7 +518,8 @@ def run():
     mm_rmse.append(rmse)
     mm_r2.append(r2)
     mm_mape.append(mape)
-    mae, mse, rmse, r2, mape = poi_k_metrics(
+    mm_med_ape.append(med_ape)
+    mae, mse, rmse, r2, mape, med_ape = poi_k_metrics(
         mm_ppr[4]["predicted"], mm_ppr[4]["actual"], 5, VERBOSE
     )
     mm_mae.append(mae)
@@ -486,7 +527,8 @@ def run():
     mm_rmse.append(rmse)
     mm_r2.append(r2)
     mm_mape.append(mape)
-    mae, mse, rmse, r2, mape = poi_k_metrics(
+    mm_med_ape.append(med_ape)
+    mae, mse, rmse, r2, mape, med_ape = poi_k_metrics(
         mm_ppr[5]["predicted"], mm_ppr[5]["actual"], 6, VERBOSE
     )
     mm_mae.append(mae)
@@ -494,10 +536,11 @@ def run():
     mm_rmse.append(rmse)
     mm_r2.append(r2)
     mm_mape.append(mape)
+    mm_med_ape.append(med_ape)
     ############################################################
     # MD
     ############################################################
-    mae, mse, rmse, r2, mape = poi_k_metrics(
+    mae, mse, rmse, r2, mape, med_ape = poi_k_metrics(
         qmp_ppr[0]["predicted"], qmp_ppr[0]["actual"], 1, VERBOSE
     )
     qmp_mae.append(mae)
@@ -505,7 +548,8 @@ def run():
     qmp_rmse.append(rmse)
     qmp_r2.append(r2)
     qmp_mape.append(mape)
-    mae, mse, rmse, r2, mape = poi_k_metrics(
+    qmp_med_ape.append(med_ape)
+    mae, mse, rmse, r2, mape, med_ape = poi_k_metrics(
         qmp_ppr[1]["predicted"], qmp_ppr[1]["actual"], 2, VERBOSE
     )
     qmp_mae.append(mae)
@@ -513,7 +557,9 @@ def run():
     qmp_rmse.append(rmse)
     qmp_r2.append(r2)
     qmp_mape.append(mape)
-    mae, mse, rmse, r2, mape = poi_k_metrics(
+    qmp_med_ape.append(med_ape)
+
+    mae, mse, rmse, r2, mape, med_ape = poi_k_metrics(
         qmp_ppr[2]["predicted"], qmp_ppr[2]["actual"], 3, VERBOSE
     )
     qmp_mae.append(mae)
@@ -521,7 +567,8 @@ def run():
     qmp_rmse.append(rmse)
     qmp_r2.append(r2)
     qmp_mape.append(mape)
-    mae, mse, rmse, r2, mape = poi_k_metrics(
+    qmp_med_ape.append(med_ape)
+    mae, mse, rmse, r2, mape, med_ape = poi_k_metrics(
         qmp_ppr[3]["predicted"], qmp_ppr[3]["actual"], 4, VERBOSE
     )
     qmp_mae.append(mae)
@@ -529,7 +576,9 @@ def run():
     qmp_rmse.append(rmse)
     qmp_r2.append(r2)
     qmp_mape.append(mape)
-    mae, mse, rmse, r2, mape = poi_k_metrics(
+    qmp_med_ape.append(med_ape)
+
+    mae, mse, rmse, r2, mape, med_ape = poi_k_metrics(
         qmp_ppr[4]["predicted"], qmp_ppr[4]["actual"], 5, VERBOSE
     )
     qmp_mae.append(mae)
@@ -537,7 +586,8 @@ def run():
     qmp_rmse.append(rmse)
     qmp_r2.append(r2)
     qmp_mape.append(mape)
-    mae, mse, rmse, r2, mape = poi_k_metrics(
+    qmp_med_ape.append(med_ape)
+    mae, mse, rmse, r2, mape, med_ape = poi_k_metrics(
         qmp_ppr[5]["predicted"], qmp_ppr[5]["actual"], 6, VERBOSE
     )
     qmp_mae.append(mae)
@@ -545,10 +595,12 @@ def run():
     qmp_rmse.append(rmse)
     qmp_r2.append(r2)
     qmp_mape.append(mape)
+    qmp_med_ape.append(med_ape)
+
     ############################################################
     # MD
     ############################################################
-    mae, mse, rmse, r2, mape = poi_k_metrics(
+    mae, mse, rmse, r2, mape, med_ape = poi_k_metrics(
         md_ppr[0]["predicted"], md_ppr[0]["actual"], 1, VERBOSE
     )
     md_mae.append(mae)
@@ -556,7 +608,9 @@ def run():
     md_rmse.append(rmse)
     md_r2.append(r2)
     md_mape.append(mape)
-    mae, mse, rmse, r2, mape = poi_k_metrics(
+    md_med_ape.append(med_ape)
+
+    mae, mse, rmse, r2, mape, med_ape = poi_k_metrics(
         md_ppr[1]["predicted"], md_ppr[1]["actual"], 2, VERBOSE
     )
     md_mae.append(mae)
@@ -564,7 +618,9 @@ def run():
     md_rmse.append(rmse)
     md_r2.append(r2)
     md_mape.append(mape)
-    mae, mse, rmse, r2, mape = poi_k_metrics(
+    md_med_ape.append(med_ape)
+
+    mae, mse, rmse, r2, mape, med_ape = poi_k_metrics(
         md_ppr[2]["predicted"], md_ppr[2]["actual"], 3, VERBOSE
     )
     md_mae.append(mae)
@@ -572,7 +628,9 @@ def run():
     md_rmse.append(rmse)
     md_r2.append(r2)
     md_mape.append(mape)
-    mae, mse, rmse, r2, mape = poi_k_metrics(
+    md_med_ape.append(med_ape)
+
+    mae, mse, rmse, r2, mape, med_ape = poi_k_metrics(
         md_ppr[2]["predicted"], md_ppr[3]["actual"], 4, VERBOSE
     )
     md_mae.append(mae)
@@ -580,7 +638,8 @@ def run():
     md_rmse.append(rmse)
     md_r2.append(r2)
     md_mape.append(mape)
-    mae, mse, rmse, r2, mape = poi_k_metrics(
+    md_med_ape.append(med_ape)
+    mae, mse, rmse, r2, mape, med_ape = poi_k_metrics(
         md_ppr[4]["predicted"], md_ppr[4]["actual"], 5, VERBOSE
     )
     md_mae.append(mae)
@@ -588,7 +647,8 @@ def run():
     md_rmse.append(rmse)
     md_r2.append(r2)
     md_mape.append(mape)
-    mae, mse, rmse, r2, mape = poi_k_metrics(
+    md_med_ape.append(med_ape)
+    mae, mse, rmse, r2, mape, med_ape = poi_k_metrics(
         md_ppr[5]["predicted"], md_ppr[5]["actual"], 6, VERBOSE
     )
     md_mae.append(mae)
@@ -596,6 +656,8 @@ def run():
     md_rmse.append(rmse)
     md_r2.append(r2)
     md_mape.append(mape)
+    md_med_ape.append(med_ape)
+
     metrics_view(
         mm_mae,
         qmp_mae,
@@ -645,6 +707,17 @@ def run():
         "QSingleModel",
         "ModelData",
         "Average magnitude of errors as a percentage\nof the actual values.\n(Lower is better)",
+    )
+
+    metrics_view(
+        mm_med_ape,
+        qmp_med_ape,
+        md_med_ape,
+        "Median Absolute Error",
+        "QMultiModel",
+        "QSingleModel",
+        "ModelData",
+        "MAE with no Outliers",
     )
 
     # print(qmp_list)

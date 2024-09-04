@@ -50,8 +50,8 @@ class XGBRegressorTuner:
         )
         model.fit(X_train, y_train)
         y_pred = model.predict(X_val)
-        score = median_absolute_error(y_val, y_pred)
-        return {"loss": score, "status": STATUS_OK}
+        score = r2_score(y_val, y_pred)
+        return {"loss": -score, "status": STATUS_OK}
 
     def tune(self):
         search_space = {
@@ -107,7 +107,7 @@ class XGBRegressorTuner:
         )
         self.model.fit(X_train, y_train)
         y_pred = self.model.predict(X_test)
-        test_score = median_absolute_error(y_test, y_pred)
+        test_score = r2_score(y_test, y_pred)
 
         return test_score
 
@@ -180,12 +180,12 @@ def run():
                     actual = pd.read_csv(poi_file, header=None).values
                     actual = [int(x[0]) for x in actual]
                     bias = residual(predictions, actual)
-                    X.append(predictions)
-                    y.append(bias)
+                    X.append(predictions[1])
+                    y.append(bias[1])
 
     # bais_adjuster = MultiOutputRegressor(base_regressor)
-    X = np.array(X)
-    y = np.array(y)
+    X = np.array(X).reshape(-1, 1)
+    y = np.array(y).reshape(-1, 1)
     bais_adjuster = XGBRegressorTuner(X, y)
     bais_adjuster.tune()
     bais_adjuster.train_model()
@@ -208,19 +208,16 @@ def run():
                 if label == TARGET_TYPE:
                     actual = pd.read_csv(poi_file, header=None).values
                     actual = [int(x[0]) for x in actual]
-                    bias_correction = bais_adjuster.predict(np.array([predictions]))
+                    actual[1]
+                    bias_correction = bais_adjuster.predict(np.array([predictions[1]]))
 
                     corrected_predictions = predictions + bias_correction
                     print(f">> Original: {predictions}")
                     print(f">> Corrected: {corrected_predictions[0]}")
                     print(f">> Actual {actual}")
-                    mse_before = mean_absolute_error(
-                        actual, predictions, multioutput="uniform_average"
-                    )
+                    mse_before = r2_score(actual, predictions)
 
-                    mse_after = mean_absolute_error(
-                        actual, corrected_predictions[0], multioutput="uniform_average"
-                    )
+                    mse_after = r2_score(actual, corrected_predictions[0])
                     avg_mse_before.append(mse_before)
                     avg_mse_after.append(mse_after)
                     # plt.figure()
