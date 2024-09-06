@@ -11,8 +11,6 @@ from ModelData import ModelData
 from QConstants import *
 import pickle
 from scipy.signal import find_peaks
-import random
-from sklearn.mixture import GaussianMixture
 
 np.set_printoptions(threshold=sys.maxsize)
 

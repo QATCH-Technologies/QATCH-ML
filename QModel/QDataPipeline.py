@@ -55,7 +55,8 @@ class QDataPipeline:
             self.add_class(poi_filepath)
 
         # Compute the 0.5% smoothing quantity for this dataset.
-        smooth_win = int(0.005 * len(self.__dataframe__["Relative_time"].values))
+        smooth_win = int(
+            0.005 * len(self.__dataframe__["Relative_time"].values))
         if smooth_win % 2 == 0:
             smooth_win += 1
         if smooth_win <= 1:
@@ -72,8 +73,10 @@ class QDataPipeline:
         # STEP 4
         # Smooth the dissipation, difference, and resonance frequency curves
         # using dynamic window size and polyorder 1
-        self.compute_smooth(column="Dissipation", winsize=smooth_win, polyorder=1)
-        self.compute_smooth(column="Difference", winsize=smooth_win, polyorder=1)
+        self.compute_smooth(column="Dissipation",
+                            winsize=smooth_win, polyorder=1)
+        self.compute_smooth(column="Difference",
+                            winsize=smooth_win, polyorder=1)
         self.compute_smooth(
             column="Resonance_Frequency", winsize=smooth_win, polyorder=1
         )
@@ -155,7 +158,8 @@ class QDataPipeline:
 
     def common_increases(self):
         """Find common increasing regions between two arrays."""
-        regions1 = self.find_increasing_regions(self.__dataframe__["Dissipation"])
+        regions1 = self.find_increasing_regions(
+            self.__dataframe__["Dissipation"])
         regions2 = self.find_increasing_regions(
             self.__dataframe__["Resonance_Frequency"]
         )
@@ -194,7 +198,8 @@ class QDataPipeline:
 
     def common_zeroes(self, threshold=0.01):
         """Find common regions where both arrays have nearly zero slope."""
-        regions1 = self.find_zero_slope_regions(self.__dataframe__["Dissipation"])
+        regions1 = self.find_zero_slope_regions(
+            self.__dataframe__["Dissipation"])
         regions2 = self.find_zero_slope_regions(
             self.__dataframe__["Resonance_Frequency"]
         )
@@ -282,7 +287,8 @@ class QDataPipeline:
         name = f"{column}_detrend"
 
         # Remove the linear trend from the specified column and store it in the new column
-        self.__dataframe__[name] = detrend(data=self.__dataframe__[column].values)
+        self.__dataframe__[name] = detrend(
+            data=self.__dataframe__[column].values)
 
     def interpolate(self, num_rows: int = 20) -> None:
         """
@@ -325,7 +331,8 @@ class QDataPipeline:
                         if col in ["Class_1", "Class_2"]:
                             # If the original value is 0, interpolate to 0
                             if start_row[col] == 0:
-                                interpolated_rows[col] = np.repeat(0, num_rows, axis=0)
+                                interpolated_rows[col] = np.repeat(
+                                    0, num_rows, axis=0)
                             else:
                                 # Otherwise, repeat the start value and fill the remaining with 0
                                 interpolated_rows[col] = np.concatenate(
@@ -341,7 +348,8 @@ class QDataPipeline:
                             )
 
                     # Append the interpolated rows to the result DataFrame
-                    result = pd.concat([result, interpolated_rows], ignore_index=True)
+                    result = pd.concat(
+                        [result, interpolated_rows], ignore_index=True)
 
             # Append the last row of the original DataFrame to the result
             result = pd.concat(
@@ -431,7 +439,8 @@ class QDataPipeline:
         xs = self.__dataframe__["Relative_time"]
         i = next(x + 0 for x, t in enumerate(xs) if t > 0.5)
         j = next(x + 1 for x, t in enumerate(xs) if t > 2.5)
-        avg_resonance_frequency = self.__dataframe__["Resonance_Frequency"][i:j].mean()
+        avg_resonance_frequency = self.__dataframe__[
+            "Resonance_Frequency"][i:j].mean()
         avg_dissipation = self.__dataframe__["Dissipation"][i:j].mean()
         # Compute the ys_diss, ys_freq, and ys_diff
         self.__dataframe__["ys_diss"] = (
@@ -444,11 +453,13 @@ class QDataPipeline:
         )
         diff_factor = 1.5
         self.__dataframe__["Difference"] = (
-            self.__dataframe__["ys_freq"] - diff_factor * self.__dataframe__["ys_diss"]
+            self.__dataframe__["ys_freq"] -
+            diff_factor * self.__dataframe__["ys_diss"]
         )
 
         # Drop the intermediate columns if not needed
-        self.__dataframe__["Resonance_Frequency"] = self.__dataframe__["ys_freq"]
+        self.__dataframe__[
+            "Resonance_Frequency"] = self.__dataframe__["ys_freq"]
         self.__dataframe__["Dissipation"] = self.__dataframe__["ys_diss"]
         self.__dataframe__["Cumulative"] = savgol_filter(
             self.__dataframe__["Dissipation"].values
@@ -491,7 +502,8 @@ class QDataPipeline:
         start_slopes = np.where(
             np.arange(start + 1, len(data)) < buffer,
             0,
-            (data[start + 1 :] - data[start]) / np.arange(start + 1, len(data) - start),
+            (data[start + 1:] - data[start]) /
+            np.arange(start + 1, len(data) - start),
         )
 
         # Compute where there is a significant positive change in the start slopes.
@@ -502,7 +514,7 @@ class QDataPipeline:
         for i in range(1, len(start_slopes)):
             if start_slopes[i] < start_slopes[start] + 0.1:
                 start_tmp = i
-        self.__dataframe__ = self.__dataframe__.loc[start + start_tmp :]
+        self.__dataframe__ = self.__dataframe__.loc[start + start_tmp:]
         # self.__dataframe__ = self.__dataframe__.reset_index(drop=True)
         self.head_trim = start + start_tmp - factor
 
