@@ -1,0 +1,22 @@
+name: autopep8
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  autopep8:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Set up Python
+      uses: actions/setup-python@v2
+      with:
+        python-version: '3.x'
+    - name: Run autopep8
+      run: pip install autopep8 && autopep8 --in-place --recursive .
+    - name: Commit changes
+      uses: stefanzweifel/git-auto-commit-action@v4
+      with:
+        commit_message: "autopep8 fixes"
