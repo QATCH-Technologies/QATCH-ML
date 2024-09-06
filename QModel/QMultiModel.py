@@ -272,7 +272,8 @@ class QMultiModel:
         Example:
             best_hyperparams = self.tune(evaluations=300)
         """
-        print(f"[STATUS] Running model tuning for {evaluations} max iterations")
+        print(
+            f"[STATUS] Running model tuning for {evaluations} max iterations")
         space = {
             "max_depth": hp.choice("max_depth", np.arange(1, 20, 1, dtype=int)),
             "eta": hp.uniform("eta", 0, 1),
@@ -427,7 +428,8 @@ class QPredictor:
 
         adj_prediction = prediction * adjustment
         lq_idx = next((i for i, x in enumerate(adj) if x == 1), -1) + i
-        uq_idx = next((i for i, x in reversed(list(enumerate(adj))) if x == 1), -1) + i
+        uq_idx = next((i for i, x in reversed(
+            list(enumerate(adj))) if x == 1), -1) + i
         return adj_prediction, (lq_idx, uq_idx)
 
     def find_and_sort_peaks(self, signal):
@@ -448,6 +450,35 @@ class QPredictor:
         density = len(peaks) / len(signal)
 
         return density
+
+    def adjustment_poi_2(self, df, candidates, guess, emp, actual, bounds):
+        # CONSIDER JUST ADJUSTING POI 1-3 for bad examples only.  Very good fo good examples.
+        # diss = df["Dissipation"]
+        # rf = df["Resonance_Frequency"]
+        # diff = df["Difference"]
+        # diss_peaks, _ = find_peaks(diss)
+        # rf_peaks, _ = find_peaks(rf)
+        # diff_peaks, _ = find_peaks(diff)
+        # initial_guess = np.array(guess)
+        # candidate_points = np.array(candidates)
+        # rf_points = np.array(rf_peaks)
+        # diss_points = np.array(diss_peaks)
+        # diff_points = np.array(diff_peaks)
+        # x_min, x_max = bounds
+        # candidates = np.append(candidates, guess)
+        # candidate_density = len(candidates) / (x_max - x_min)
+        # fig, ax = plt.subplots()
+        # ax.plot(diff, color="grey")
+        # ax.fill_betweenx(
+        #     [0, max(diss)], bounds[0], bounds[1], color=f"yellow", alpha=0.5
+        # )
+        # ax.axvline(guess, color="green", linestyle='dotted', label="guess")
+        # ax.axvline(emp, color="purple", label="emp")
+        # ax.axvline(actual, color="orange", linestyle="--", label="actual")
+        # # ax.axvline(adjusted_point, color="brown", label="adjusted")
+        # plt.legend()
+        # plt.show()
+        return np.average((guess, emp))
 
     def adjustmet_poi_4(self, df, candidates, guess, actual, bounds):
         diss = df["Dissipation"]
@@ -502,7 +533,8 @@ class QPredictor:
             closest_rf_point = filtered_rf_points[closest_rf_idx]
 
             # Calculate distances from candidate points to the closest RF point
-            distances_to_closest_rf = np.abs(candidate_points - closest_rf_point)
+            distances_to_closest_rf = np.abs(
+                candidate_points - closest_rf_point)
 
             # Find the closest candidate point to the closest RF point
             closest_candidate_idx = np.argmin(distances_to_closest_rf)
@@ -538,80 +570,122 @@ class QPredictor:
             # plt.show()
             return guess
 
+    def find_zero_slope_regions(self, data, threshold=1e-3, min_region_length=1):
+        # Calculate the first derivative (approximate slope)
+        slopes = np.diff(data)
+
+        # Identify regions where the slope is approximately zero
+        zero_slope_mask = np.abs(slopes) < threshold
+
+        # Find consecutive regions of near-zero slope
+        regions = []
+        start_idx = None
+
+        for i, is_zero_slope in enumerate(zero_slope_mask):
+            if is_zero_slope and start_idx is None:
+                start_idx = i
+            elif not is_zero_slope and start_idx is not None:
+                if i - start_idx >= min_region_length:
+                    # Store the region as (start, end)
+                    regions.append((start_idx, i))
+                start_idx = None
+
+        # Handle case where the last region extends to the end of the array
+        if start_idx is not None and len(data) - start_idx - 1 >= min_region_length:
+            regions.append((start_idx, len(data) - 1))
+
+        return regions
+
     def adjustmet_poi_5(self, df, candidates, emp_guess, guess, actual, bounds):
         diss = df["Dissipation"]
         rf = df["Resonance_Frequency"]
+
         diff = df["Difference"]
+
         diss_peaks, _ = find_peaks(diss)
         rf_peaks, _ = find_peaks(rf)
         diff_peaks, _ = find_peaks(diff)
         initial_guess = np.array(guess)
         candidate_points = np.array(candidates)
         rf_points = np.array(rf_peaks)
+
         diss_points = np.array(diss_peaks)
         diff_points = np.array(diff_peaks)
+        np.concatenate((rf_points, diff_points, diss_points))
         x_min, x_max = bounds
-        # Filter RF points within the bounds
-        # rf_points = np.concatenate((rf_points, diss_points))
-        candidates = np.append(candidates, guess)
-        within_bounds = (rf_points >= x_min) & (rf_points <= x_max)
-        filtered_rf_points = rf_points[within_bounds]
+        candidate_density = len(candidates) / (x_max - x_min)
+        if candidate_density < 0.01:
+            zero_slope = self.find_zero_slope_regions(rf)
+            # Filter RF points within the bounds
+            # rf_points = np.concatenate((rf_points, diss_points))
+            candidates = np.append(candidates, guess)
+            within_bounds = (rf_points >= x_min) & (rf_points <= x_max)
+            filtered_rf_points = rf_points[within_bounds]
 
-        # If no RF points within the bounds, return None or handle accordingly
-        if filtered_rf_points.size == 0:
-            print("[INFO] No RF Peaks found")
-            return guess
+            for (l, r) in zero_slope:
+                np.append(rf_points, l)
+                np.append(rf_points, r)
+            # If no RF points within the bounds, return None or handle accordingly
+            if filtered_rf_points.size == 0:
+                print("[INFO] No RF Peaks found")
+                return guess
 
-        # Calculate proximity weight for each RF point based on diff and diss points
-        def calculate_weight(rf_point):
-            multiplier = 2
-            diff_in_proximity = np.sum(
-                np.abs(np.array(diff_points) - rf_point) < 0.02 * len(rf)
+            # Calculate proximity weight for each RF point based on diff and diss points
+            def calculate_weight(rf_point):
+                # multiplier = 2
+                # diff_in_proximity = np.sum(
+                #     np.abs(np.array(diff_points) - rf_point) < 0.02 * len(rf)
+                # )
+                # weight = diff_in_proximity
+
+                # # Apply multiplier if a diss point is nearby
+                # if np.any(np.abs(np.array(diss_points) - rf_point) < 0.02 * len(rf)):
+                #     weight *= multiplier
+                return 1
+
+            # Calculate weights for filtered RF points
+            weights = np.array(
+                [calculate_weight(rf_point) for rf_point in filtered_rf_points]
             )
-            weight = diff_in_proximity
 
-            # Apply multiplier if a diss point is nearby
-            if np.any(np.abs(np.array(diss_points) - rf_point) < 0.02 * len(rf)):
-                weight *= multiplier
-            return weight
+            # Calculate weighted distances from initial guess to each filtered RF point
+            distances_to_rf = np.abs(filtered_rf_points - initial_guess)
+            weighted_distances = distances_to_rf / weights  # Adjust distance by weight
 
-        # Calculate weights for filtered RF points
-        weights = np.array(
-            [calculate_weight(rf_point) for rf_point in filtered_rf_points]
-        )
+            # Find the closest RF point to the initial guess, considering weights
+            closest_rf_idx = np.argmin(weighted_distances)
+            closest_rf_point = filtered_rf_points[closest_rf_idx]
 
-        # Calculate weighted distances from initial guess to each filtered RF point
-        distances_to_rf = np.abs(filtered_rf_points - initial_guess)
-        weighted_distances = distances_to_rf / weights  # Adjust distance by weight
+            # Calculate distances from candidate points to the closest RF point
+            distances_to_closest_rf = np.abs(
+                candidate_points - closest_rf_point)
 
-        # Find the closest RF point to the initial guess, considering weights
-        closest_rf_idx = np.argmin(weighted_distances)
-        closest_rf_point = filtered_rf_points[closest_rf_idx]
-
-        # Calculate distances from candidate points to the closest RF point
-        distances_to_closest_rf = np.abs(candidate_points - closest_rf_point)
-
-        # Find the closest candidate point to the closest RF point
-        closest_candidate_idx = np.argmin(distances_to_closest_rf)
-        adjusted_point = candidate_points[closest_candidate_idx]
-        # fig, ax = plt.subplots()
-        # ax.plot(diss, color="grey")
-        # ax.fill_betweenx(
-        #     [0, max(diss)], bounds[0], bounds[1], color=f"yellow", alpha=0.5
-        # )
-        # ax.scatter(diss_peaks, diss[diss_peaks], color="red", label="diss peaks")
-        # ax.scatter(diff_peaks, diss[diff_peaks], color="green", label="diff peaks")
-        # ax.scatter(rf_points, diss[rf_points], color="blue", label="rf peaks")
-        # ax.scatter(
-        #     emp_guess, diss[emp_guess], color="pink", marker="x", label="emp guess"
-        # )
-        # ax.scatter(candidates, diss[candidates], color="black", label="candidates")
-        # ax.axvline(guess, color="orange", label="guess")
-        # ax.axvline(actual, color="orange", linestyle="--", label="actual")
-        # ax.axvline(adjusted_point, color="brown", label="adjusted")
-        # plt.legend()
-        # plt.show()
-        return adjusted_point
+            # Find the closest candidate point to the closest RF point
+            closest_candidate_idx = np.argmin(distances_to_closest_rf)
+            adjusted_point = candidate_points[closest_candidate_idx]
+            # fig, ax = plt.subplots()
+            # ax.plot(diss, color="grey")
+            # ax.fill_betweenx(
+            #     [0, max(diss)], bounds[0], bounds[1], color=f"yellow", alpha=0.5
+            # )
+            # ax.scatter(diss_peaks, diss[diss_peaks],
+            #         color="red", label="diss peaks")
+            # ax.scatter(diff_peaks, diss[diff_peaks],
+            #         color="green", label="diff peaks")
+            # ax.scatter(rf_points, diss[rf_points], color="blue", label="rf peaks")
+            # ax.scatter(
+            #     emp_guess, diss[emp_guess], color="pink", marker="x", label="emp guess"
+            # )
+            # ax.scatter(candidates, diss[candidates],
+            #         color="black", label="candidates")
+            # ax.axvline(guess, color="purple", linestyle='dotted', label="guess")
+            # ax.axvline(actual, color="orange", linestyle="--", label="actual")
+            # ax.axvline(adjusted_point, color="brown", label="adjusted")
+            # plt.legend()
+            # plt.show()
+            return adjusted_point
+        else:
+            return guess
 
     def predict(self, file_buffer, type=-1, start=-1, stop=-1, act=None):
         # Load CSV data and drop unnecessary columns
@@ -627,7 +701,8 @@ class QPredictor:
         file_buffer_2 = file_buffer
         if not isinstance(file_buffer_2, str):
             if hasattr(file_buffer_2, "seekable") and file_buffer_2.seekable():
-                file_buffer_2.seek(0)  # reset ByteIO buffer to beginning of stream
+                # reset ByteIO buffer to beginning of stream
+                file_buffer_2.seek(0)
             else:
                 # ERROR: 'file_buffer_2' must be 'BytesIO' type here, but it's not seekable!
                 raise Exception(
@@ -679,8 +754,8 @@ class QPredictor:
         ############################
         # Process data using QDataPipeline
         qdp = QDataPipeline(file_buffer_2)
-        rel_time = qdp.__dataframe__["Relative_time"]
         df2 = qdp.__dataframe__
+        rel_time = qdp.__dataframe__["Relative_time"]
         qdp.preprocess(poi_filepath=None)
         df = qdp.get_dataframe()
         inc_regions = qdp.common_increases()
@@ -750,7 +825,10 @@ class QPredictor:
         candidates_4 = self.find_and_sort_peaks(adj_4)
         candidates_5 = self.find_and_sort_peaks(adj_5)
         candidates_6 = self.find_and_sort_peaks(adj_6)
-        poi_4 = self.adjustmet_poi_4(df2, candidates_4, extracted_4, act[3], bounds_4)
+        poi_2 = self.adjustment_poi_2(
+            df2, candidates_2, extracted_2, emp_points[1], act[1], bounds_2)
+        poi_4 = self.adjustmet_poi_4(
+            df2, candidates_4, extracted_4, act[3], bounds_4)
         poi_5 = self.adjustmet_poi_5(
             df2, candidates_5, extracted_5, emp_points[4], act[4], bounds_5
         )
