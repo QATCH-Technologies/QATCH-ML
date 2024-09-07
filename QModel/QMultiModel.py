@@ -444,10 +444,86 @@ class QPredictor:
         return sorted_peaks
 
     def peak_density(self, signal, peaks, segment_le):
-
         density = len(peaks) / len(signal)
-
         return density
+
+    def find_zero_slope_regions(self, data, threshold=1e-3, min_region_length=1):
+        # Calculate the first derivative (approximate slope)
+        slopes = np.diff(data)
+
+        # Identify regions where the slope is approximately zero
+        zero_slope_mask = np.abs(slopes) < threshold
+
+        # Find consecutive regions of near-zero slope
+        regions = []
+        start_idx = None
+
+        for i, is_zero_slope in enumerate(zero_slope_mask):
+            if is_zero_slope and start_idx is None:
+                start_idx = i
+            elif not is_zero_slope and start_idx is not None:
+                if i - start_idx >= min_region_length:
+                    # Store the region as (start, end)
+                    regions.append((start_idx, i))
+                start_idx = None
+
+        # Handle case where the last region extends to the end of the array
+        if start_idx is not None and len(data) - start_idx - 1 >= min_region_length:
+            regions.append((start_idx, len(data) - 1))
+
+        return regions
+
+    def adjustment_poi_1(self, guess, diss_raw, actual):
+
+        zero_slope = self.find_zero_slope_regions(
+            self.normalize(diss_raw), 0.0075, 100)
+        adjusted_guess = guess
+
+        if len(zero_slope) >= 2:
+            l = zero_slope[0][1]
+            r = zero_slope[1][0]
+            peaks_between, _ = find_peaks(diss_raw[l: r])
+            between = []
+            for p in peaks_between:
+                between.append(p + l)
+            # if emp_guess < l:
+            #     adjusted_guess = r
+
+            if between is not None and len(between) > 0:
+                between = np.array(between)
+                distances = np.abs(between - guess)
+                if adjusted_guess >= r:
+                    furthest_index = np.argmax(distances)
+                    distances[furthest_index] = min(distances)
+                    second_furthest_index = np.argmax(distances)
+                    adjusted_guess = between[second_furthest_index]
+                else:
+                    nearest_index = np.argmin(distances)
+                    distances[nearest_index] = np.argmin(distances)
+                    adjusted_guess = between[nearest_index]
+
+        else:
+            peaks, _ = find_peaks(diss_raw)
+            distances = np.abs(peaks - adjusted_guess)
+            nearest_peak_index = peaks[np.argmin(distances)]
+            adjusted_guess = nearest_peak_index
+
+        if abs(adjusted_guess - actual) > 5:
+            fig, ax = plt.subplots()
+            ax.plot(diss_raw, color="grey")
+            for (l, r) in zero_slope:
+                ax.fill_between((l, r), max(diss_raw), alpha=0.5)
+            ax.scatter(between, diss_raw[between])
+            ax.axvline(guess, color="green",
+                       linestyle='dotted', label="guess")
+
+            ax.axvline(adjusted_guess, color="brown", label="adjusted")
+            ax.axvline(actual, color="orange", linestyle="--", label="actual")
+            plt.legend()
+
+            plt.show()
+
+        return adjusted_guess
 
     def adjustment_poi_2(self, df, candidates, guess, emp, actual, bounds):
         # CONSIDER JUST ADJUSTING POI 1-3 for bad examples only.  Very good fo good examples.
@@ -476,7 +552,7 @@ class QPredictor:
         # # ax.axvline(adjusted_point, color="brown", label="adjusted")
         # plt.legend()
         # plt.show()
-        return np.average((guess, emp))
+        return emp
 
     def adjustmet_poi_4(self, df, candidates, guess, actual, bounds):
         diss = df["Dissipation"]
@@ -568,32 +644,6 @@ class QPredictor:
             # plt.show()
             return guess
 
-    def find_zero_slope_regions(self, data, threshold=1e-3, min_region_length=1):
-        # Calculate the first derivative (approximate slope)
-        slopes = np.diff(data)
-
-        # Identify regions where the slope is approximately zero
-        zero_slope_mask = np.abs(slopes) < threshold
-
-        # Find consecutive regions of near-zero slope
-        regions = []
-        start_idx = None
-
-        for i, is_zero_slope in enumerate(zero_slope_mask):
-            if is_zero_slope and start_idx is None:
-                start_idx = i
-            elif not is_zero_slope and start_idx is not None:
-                if i - start_idx >= min_region_length:
-                    # Store the region as (start, end)
-                    regions.append((start_idx, i))
-                start_idx = None
-
-        # Handle case where the last region extends to the end of the array
-        if start_idx is not None and len(data) - start_idx - 1 >= min_region_length:
-            regions.append((start_idx, len(data) - 1))
-
-        return regions
-
     def adjustmet_poi_5(self, df, candidates, emp_guess, guess, actual, bounds):
         diss = df["Dissipation"]
         rf = df["Resonance_Frequency"]
@@ -612,6 +662,7 @@ class QPredictor:
         np.concatenate((rf_points, diff_points, diss_points))
         x_min, x_max = bounds
         candidate_density = len(candidates) / (x_max - x_min)
+        print(f'POI 5 Density: {candidate_density}')
         if candidate_density < 0.01:
             zero_slope = self.find_zero_slope_regions(rf)
             # Filter RF points within the bounds
@@ -667,16 +718,18 @@ class QPredictor:
             #     [0, max(diss)], bounds[0], bounds[1], color=f"yellow", alpha=0.5
             # )
             # ax.scatter(diss_peaks, diss[diss_peaks],
-            #         color="red", label="diss peaks")
+            #            color="red", label="diss peaks")
             # ax.scatter(diff_peaks, diss[diff_peaks],
-            #         color="green", label="diff peaks")
-            # ax.scatter(rf_points, diss[rf_points], color="blue", label="rf peaks")
+            #            color="green", label="diff peaks")
+            # ax.scatter(rf_points, diss[rf_points],
+            #            color="blue", label="rf peaks")
             # ax.scatter(
             #     emp_guess, diss[emp_guess], color="pink", marker="x", label="emp guess"
             # )
             # ax.scatter(candidates, diss[candidates],
-            #         color="black", label="candidates")
-            # ax.axvline(guess, color="purple", linestyle='dotted', label="guess")
+            #            color="black", label="candidates")
+            # ax.axvline(guess, color="purple",
+            #            linestyle='dotted', label="guess")
             # ax.axvline(actual, color="orange", linestyle="--", label="actual")
             # ax.axvline(adjusted_point, color="brown", label="adjusted")
             # plt.legend()
@@ -752,7 +805,7 @@ class QPredictor:
         ############################
         # Process data using QDataPipeline
         qdp = QDataPipeline(file_buffer_2)
-        df2 = qdp.__dataframe__
+        diss_raw = qdp.__dataframe__['Dissipation']
         rel_time = qdp.__dataframe__["Relative_time"]
         qdp.preprocess(poi_filepath=None)
         df = qdp.get_dataframe()
@@ -817,22 +870,24 @@ class QPredictor:
             j=extracted_6,
         )
         adj_6 = extracted_results[6]
-
+        candidates_1 = self.find_and_sort_peaks(extracted_results[1])
         candidates_2 = self.find_and_sort_peaks(adj_2)
         candidates_3 = self.find_and_sort_peaks(adj_3)
         candidates_4 = self.find_and_sort_peaks(adj_4)
         candidates_5 = self.find_and_sort_peaks(adj_5)
         candidates_6 = self.find_and_sort_peaks(adj_6)
+        poi_1 = self.adjustment_poi_1(
+            guess=emp_points[0], diss_raw=diss_raw, actual=act[0])
         poi_2 = self.adjustment_poi_2(
-            df2, candidates_2, extracted_2, emp_points[1], act[1], bounds_2)
+            df, candidates_2, extracted_2, emp_points[1], act[1], bounds_2)
         poi_4 = self.adjustmet_poi_4(
-            df2, candidates_4, extracted_4, act[3], bounds_4)
+            df, candidates_4, extracted_4, act[3], bounds_4)
         poi_5 = self.adjustmet_poi_5(
-            df2, candidates_5, extracted_5, emp_points[4], act[4], bounds_5
+            df, candidates_5, extracted_5, emp_points[4], act[4], bounds_5
         )
-
-        poi_1 = adj_1
         poi_2 = np.argmax(adj_2)
+        if poi_1 >= poi_2:
+            poi_1 = adj_1
         poi_3 = np.argmax(adj_3)
         poi_6 = np.argmax(adj_6)
         pois = [
@@ -844,7 +899,7 @@ class QPredictor:
             poi_6,
         ]
         candidates = [
-            poi_1,
+            [poi_1, adj_1],
             candidates_2,
             candidates_3,
             candidates_4,
