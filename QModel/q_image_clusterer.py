@@ -1,21 +1,82 @@
-import numpy as np
-from sklearn.cluster import KMeans
-from sklearn.metrics import silhouette_score
-import matplotlib.pyplot as plt
-from keras.applications import VGG16
-from keras_preprocessing.image import img_to_array
-from keras.models import Model
-from PIL import Image
-from tqdm import tqdm
+"""
+Clustering Image Analysis and Prediction Package.
+
+This package provides functionality for clustering image datasets and predicting image clusters 
+using KMeans clustering. The package can be used for training a model based on image features 
+and predicting the cluster of new images. It also offers utilities for loading, displaying, 
+and converting image data.
+
+Modules:
+    QDataPipeline: Processes and preprocesses the data from a specified file path or ByteIO object.
+    ImageClusteringModel: Handles model training, saving, loading, and prediction for 
+    KMeans clustering.
+    
+Classes:
+    QDataPipeline:
+        Loads and processes the dataset, providing the data in a format suitable for model input.
+    
+    QClusterer:
+        A class responsible for handling KMeans clustering on image datasets. It 
+        includes methods for:
+        - Training and saving a KMeans model
+        - Loading an existing model
+        - Predicting the cluster for a new image
+        - Visualizing the clustered images
+    
+    Methods:
+        - preprocess: Processes the raw data to generate features for clustering.
+        - train_model: Trains a KMeans model on the image features.
+        - predict_label: Predicts the cluster label for a given image or file.
+        - display_cluster_images: Displays a grid of images per cluster.
+        - convert_to_image: Converts a Matplotlib figure to a PIL Image for further processing.
+        - save_model: Saves the trained model to disk.
+        - load_model: Loads a previously trained model from disk.
+
+Usage Example:
+    # Initialize the pipeline
+    qdp = QDataPipeline("/path/to/file.csv")
+    qdp.preprocess()
+
+    # Initialize the model, train, and save it
+    model = ImageClusteringModel()
+    model.train_model(pil_images=qdp.image_data, n_clusters=5)
+    model.save_model("/path/to/model.pkl")
+
+    # Load the model and predict labels
+    model.load_model("/path/to/model.pkl")
+    predicted_label = model.predict_label("/path/to/image.jpg")
+
+    # Display clustered images
+    model.display_cluster_images(pil_images=qdp.image_data, labels=model.labels_, n_clusters=5)
+
+Requirements:
+    - scikit-learn: Required for KMeans clustering.
+    - Pillow: For image manipulation and conversion.
+    - Matplotlib: For plotting and visualizing data.
+    - joblib: For model persistence (saving and loading).
+
+Raises:
+    ValueError: If model prediction is attempted without training.
+    IOError: If a file or directory cannot be accessed.
+
+Author:
+    Paul MacNichol (paulmacnichol@gmail.com)
+"""
+
 import os
-import joblib
 import math
 import io
+import numpy as np
+import matplotlib.pyplot as plt
+import joblib
+from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score
+from keras.applications import VGG16
+from keras.models import Model
+from keras_preprocessing.image import img_to_array
+from PIL import Image
+from tqdm import tqdm
 from QDataPipeline import QDataPipeline
-import warnings
-import contextlib
-
-warnings.filterwarnings("ignore")
 
 
 class QClusterer:
@@ -27,10 +88,11 @@ class QClusterer:
     """
 
     def __init__(self, model_path: str = None) -> None:
-        """Initializes the ImageClusteringPipeline with a VGG16 model or loads a saved KMeans model.
+        """Initializes the QClusterer pipeline with a VGG16 model or loads a saved KMeans model.
 
         Args:
-            model_path (str, optional): Path to a saved KMeans model. If provided, the model is loaded for prediction.
+            model_path (str, optional): Path to a saved KMeans model. If provided, the model is
+            loaded for prediction.
         """
         # Load pre-trained VGG16 model + higher level layers
         base_model = VGG16(
@@ -44,7 +106,7 @@ class QClusterer:
             )
             self.kmeans = joblib.load(model_path)
         else:
-            print(f"[INFO] Operating in training mode.")
+            print("[INFO] Operating in training mode.")
             self.kmeans = None
 
     def convert_to_image(self, figure: plt.figure = None) -> Image.Image:
@@ -67,21 +129,24 @@ class QClusterer:
         """Loads content from a directory.
 
         Args:
-            data_dir (str): Path to the directory containing image files.
+            data_directory (str): Path to the directory containing image files.
 
         Returns:
             list: List of file paths.
         """
         print(f"[STATUS] Loading content from {data_directory}")
         content = []
+        exclude_suffixes = {"_poi.csv", "_lower.csv"}
+
         for root, _, files in os.walk(data_directory):
-            for file in files:
-                if (
-                    file.endswith(".csv")
-                    and not file.endswith("_poi.csv")
-                    and not file.endswith("_lower.csv")
-                ):
-                    content.append(os.path.join(root, file))
+            csv_files = [
+                file
+                for file in files
+                if file.endswith(".csv")
+                and not any(file.endswith(suffix) for suffix in exclude_suffixes)
+            ]
+            content.extend(os.path.join(root, file) for file in csv_files)
+
         return content
 
     def load_images(self, content: list = None, size: int = -1) -> list:
@@ -167,8 +232,8 @@ class QClusterer:
 
         for k in tqdm(k_values, desc="<<Optimal K>>"):
             kmeans = KMeans(n_clusters=k)
-            labels = kmeans.fit_predict(features)
-            silhouette_scores.append(silhouette_score(features, labels))
+            predicted_labels = kmeans.fit_predict(features)
+            silhouette_scores.append(silhouette_score(features, predicted_labels))
 
         plt.figure(figsize=(10, 5))
         plt.plot(k_values, silhouette_scores, "bx-")
@@ -196,11 +261,11 @@ class QClusterer:
         """
         print(f"[INFO] Clustering with {n_clusters} clusters")
         self.kmeans = KMeans(n_clusters=n_clusters)
-        labels = self.kmeans.fit_predict(features)
-        return labels
+        predicted_labels = self.kmeans.fit_predict(features)
+        return predicted_labels
 
     def visualize_clusters(
-        self, features: np.ndarray = None, labels: np.ndarray = None
+        self, features: np.ndarray = None, predicted_labels: np.ndarray = None
     ) -> None:
         """Visualizes clusters using a scatter plot.
 
@@ -208,13 +273,16 @@ class QClusterer:
             features (np.ndarray): Array of extracted features.
             labels (np.ndarray): Cluster labels.
         """
-        print(f"[STATUS] Visualizing")
-        plt.scatter(features[:, 0], features[:, 1], c=labels, cmap="viridis")
+        print("[STATUS] Visualizing")
+        plt.scatter(features[:, 0], features[:, 1], c=predicted_labels, cmap="viridis")
         plt.title("Clusters of 2D Line Plot Images")
         plt.show()
 
     def display_cluster_images(
-        self, pil_images: list = None, labels: np.ndarray = None, n_clusters: int = 2
+        self,
+        pil_images: list = None,
+        predicted_labels: np.ndarray = None,
+        n_clusters: int = 2,
     ) -> None:
         """Displays a sample of images from each cluster.
 
@@ -223,16 +291,16 @@ class QClusterer:
             labels (np.ndarray): Cluster labels.
             n_clusters (int): Number of clusters.
         """
-        fig, axes = plt.subplots(n_clusters, 1, figsize=(15, n_clusters * 5))
+        plt.subplots(n_clusters, 1, figsize=(15, n_clusters * 5))
 
         for i in range(n_clusters):
-            cluster_indices = np.where(labels == i)[0]
+            cluster_indices = np.where(predicted_labels == i)[0]
             n_images = len(cluster_indices)
 
             n_cols = math.ceil(math.sqrt(n_images))
             n_rows = math.ceil(n_images / n_cols)
 
-            fig, ax = plt.subplots(n_rows, n_cols, figsize=(15, n_rows * 5))
+            _, ax = plt.subplots(n_rows, n_cols, figsize=(15, n_rows * 5))
             ax = ax.flatten()
 
             for j, idx in enumerate(cluster_indices):
@@ -277,16 +345,17 @@ class QClusterer:
 
         optimal_k = self.find_optimal_clusters(features, min_k=min_k, max_k=max_k)
 
-        labels = self.perform_clustering(features, n_clusters=optimal_k)
+        predicted_labels = self.perform_clustering(features, n_clusters=optimal_k)
         if plotting:
-            self.visualize_clusters(features, labels)
+            self.visualize_clusters(features, predicted_labels)
 
-            self.display_cluster_images(images, labels, n_clusters=optimal_k)
+            self.display_cluster_images(images, predicted_labels, n_clusters=optimal_k)
 
-        return labels
+        return predicted_labels
 
     def predict_label(self, file_buffer: str = None) -> int:
-        """Generates an image from the input CSV file, returns it as a PIL image, and predicts the cluster label.
+        """Generates an image from the input CSV file, returns it as a PIL image, and predicts
+        the cluster label.
 
         Args:
             csv_path (str): Path to the CSV file containing data for prediction.
@@ -304,32 +373,12 @@ class QClusterer:
                 file_buffer_2.seek(0)  # reset ByteIO buffer to beginning of stream
             else:
                 # ERROR: 'file_buffer_2' must be 'BytesIO' type here, but it's not seekable!
-                raise Exception(
+                raise IOError(
                     "Cannot 'seek' stream prior to passing to 'QDataPipeline'."
                 )
         else:
             # Assuming 'file_buffer_2' is a string to a file path, this will work fine as-is
             pass
-        if not isinstance(file_buffer, str):
-            csv_headers = next(file_buffer)
-
-            if isinstance(csv_headers, bytes):
-                csv_headers = csv_headers.decode()
-
-            if "Ambient" in csv_headers:
-                csv_cols = (2, 4, 6, 7)
-            else:
-                csv_cols = (2, 3, 5, 6)
-
-            file_data = np.loadtxt(
-                file_buffer.readlines(), delimiter=",", skiprows=0, usecols=csv_cols
-            )
-        # data_path = "QModel Passthrough"
-        # relative_time = file_data[:, 0]
-        # # temperature = file_data[:,1]
-        # resonance_frequency = file_data[:, 2]
-        # dissipation = file_data[:, 3]
-        # Load and preprocess the image from CSV
         qdp = QDataPipeline(file_buffer)
         qdp.preprocess()
         data = qdp.__dataframe__["Dissipation"]
