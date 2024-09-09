@@ -33,19 +33,19 @@ np.set_printoptions(threshold=sys.maxsize)
 QDataPipeline_found = False
 try:
     if not QDataPipeline_found:
-        from QDataPipeline import QDataPipeline
+        from q_data_pipeline import QDataPipeline
     QDataPipeline_found = True
 except:
     QDataPipeline_found = False
 try:
     if not QDataPipeline_found:
-        from QModel.QDataPipeline import QDataPipeline
+        from qmodel.q_data_pipeline import QDataPipeline
     QDataPipeline_found = True
 except:
     QDataPipeline_found = False
 try:
     if not QDataPipeline_found:
-        from QATCH.QModel.QDataPipeline import QDataPipeline
+        from QATCH.qmodel.q_data_pipeline import QDataPipeline
     QDataPipeline_found = True
 except:
     QDataPipeline_found = False
@@ -270,8 +270,7 @@ class QMultiModel:
         Example:
             best_hyperparams = self.tune(evaluations=300)
         """
-        print(
-            f"[STATUS] Running model tuning for {evaluations} max iterations")
+        print(f"[STATUS] Running model tuning for {evaluations} max iterations")
         space = {
             "max_depth": hp.choice("max_depth", np.arange(1, 20, 1, dtype=int)),
             "eta": hp.uniform("eta", 0, 1),
@@ -366,11 +365,11 @@ class QPredictor:
         self.__model__ = xgb.Booster()
 
         self.__model__.load_model(model_path)
-        with open("QModel/SavedModels/label_0.pkl", "rb") as file:
+        with open("SavedModels/label_0.pkl", "rb") as file:
             self.__label_0__ = pickle.load(file)
-        with open("QModel/SavedModels/label_1.pkl", "rb") as file:
+        with open("SavedModels/label_1.pkl", "rb") as file:
             self.__label_1__ = pickle.load(file)
-        with open("QModel/SavedModels/label_2.pkl", "rb") as file:
+        with open("SavedModels/label_2.pkl", "rb") as file:
             self.__label_2__ = pickle.load(file)
 
     def normalize(self, data):
@@ -426,8 +425,7 @@ class QPredictor:
 
         adj_prediction = prediction * adjustment
         lq_idx = next((i for i, x in enumerate(adj) if x == 1), -1) + i
-        uq_idx = next((i for i, x in reversed(
-            list(enumerate(adj))) if x == 1), -1) + i
+        uq_idx = next((i for i, x in reversed(list(enumerate(adj))) if x == 1), -1) + i
         return adj_prediction, (lq_idx, uq_idx)
 
     def find_and_sort_peaks(self, signal):
@@ -475,14 +473,13 @@ class QPredictor:
 
     def adjustment_poi_1(self, guess, diss_raw, actual):
 
-        zero_slope = self.find_zero_slope_regions(
-            self.normalize(diss_raw), 0.0075, 100)
+        zero_slope = self.find_zero_slope_regions(self.normalize(diss_raw), 0.0075, 100)
         adjusted_guess = guess
 
         if len(zero_slope) >= 2:
             l = zero_slope[0][1]
             r = zero_slope[1][0]
-            peaks_between, _ = find_peaks(diss_raw[l: r])
+            peaks_between, _ = find_peaks(diss_raw[l:r])
             between = []
             for p in peaks_between:
                 between.append(p + l)
@@ -511,11 +508,10 @@ class QPredictor:
         if abs(adjusted_guess - actual) > 5:
             fig, ax = plt.subplots()
             ax.plot(diss_raw, color="grey")
-            for (l, r) in zero_slope:
+            for l, r in zero_slope:
                 ax.fill_between((l, r), max(diss_raw), alpha=0.5)
             ax.scatter(between, diss_raw[between])
-            ax.axvline(guess, color="green",
-                       linestyle='dotted', label="guess")
+            ax.axvline(guess, color="green", linestyle="dotted", label="guess")
 
             ax.axvline(adjusted_guess, color="brown", label="adjusted")
             ax.axvline(actual, color="orange", linestyle="--", label="actual")
@@ -607,8 +603,7 @@ class QPredictor:
             closest_rf_point = filtered_rf_points[closest_rf_idx]
 
             # Calculate distances from candidate points to the closest RF point
-            distances_to_closest_rf = np.abs(
-                candidate_points - closest_rf_point)
+            distances_to_closest_rf = np.abs(candidate_points - closest_rf_point)
 
             # Find the closest candidate point to the closest RF point
             closest_candidate_idx = np.argmin(distances_to_closest_rf)
@@ -662,7 +657,7 @@ class QPredictor:
         np.concatenate((rf_points, diff_points, diss_points))
         x_min, x_max = bounds
         candidate_density = len(candidates) / (x_max - x_min)
-        print(f'POI 5 Density: {candidate_density}')
+        print(f"POI 5 Density: {candidate_density}")
         if candidate_density < 0.01:
             zero_slope = self.find_zero_slope_regions(rf)
             # Filter RF points within the bounds
@@ -671,7 +666,7 @@ class QPredictor:
             within_bounds = (rf_points >= x_min) & (rf_points <= x_max)
             filtered_rf_points = rf_points[within_bounds]
 
-            for (l, r) in zero_slope:
+            for l, r in zero_slope:
                 np.append(rf_points, l)
                 np.append(rf_points, r)
             # If no RF points within the bounds, return None or handle accordingly
@@ -706,8 +701,7 @@ class QPredictor:
             closest_rf_point = filtered_rf_points[closest_rf_idx]
 
             # Calculate distances from candidate points to the closest RF point
-            distances_to_closest_rf = np.abs(
-                candidate_points - closest_rf_point)
+            distances_to_closest_rf = np.abs(candidate_points - closest_rf_point)
 
             # Find the closest candidate point to the closest RF point
             closest_candidate_idx = np.argmin(distances_to_closest_rf)
@@ -805,13 +799,10 @@ class QPredictor:
         ############################
         # Process data using QDataPipeline
         qdp = QDataPipeline(file_buffer_2)
-        diss_raw = qdp.__dataframe__['Dissipation']
+        diss_raw = qdp.__dataframe__["Dissipation"]
         rel_time = qdp.__dataframe__["Relative_time"]
         qdp.preprocess(poi_filepath=None)
         df = qdp.get_dataframe()
-        inc_regions = qdp.common_increases()
-        zeroes = qdp.common_zeroes()
-
         f_names = self.__model__.feature_names
         df = df[f_names]
         d_data = xgb.DMatrix(df)
@@ -877,11 +868,12 @@ class QPredictor:
         candidates_5 = self.find_and_sort_peaks(adj_5)
         candidates_6 = self.find_and_sort_peaks(adj_6)
         poi_1 = self.adjustment_poi_1(
-            guess=emp_points[0], diss_raw=diss_raw, actual=act[0])
+            guess=emp_points[0], diss_raw=diss_raw, actual=act[0]
+        )
         poi_2 = self.adjustment_poi_2(
-            df, candidates_2, extracted_2, emp_points[1], act[1], bounds_2)
-        poi_4 = self.adjustmet_poi_4(
-            df, candidates_4, extracted_4, act[3], bounds_4)
+            df, candidates_2, extracted_2, emp_points[1], act[1], bounds_2
+        )
+        poi_4 = self.adjustmet_poi_4(df, candidates_4, extracted_4, act[3], bounds_4)
         poi_5 = self.adjustmet_poi_5(
             df, candidates_5, extracted_5, emp_points[4], act[4], bounds_5
         )

@@ -12,9 +12,6 @@ Modules:
     KMeans clustering.
     
 Classes:
-    QDataPipeline:
-        Loads and processes the dataset, providing the data in a format suitable for model input.
-    
     QClusterer:
         A class responsible for handling KMeans clustering on image datasets. It 
         includes methods for:
@@ -76,7 +73,7 @@ from keras.models import Model
 from keras_preprocessing.image import img_to_array
 from PIL import Image
 from tqdm import tqdm
-from QDataPipeline import QDataPipeline
+from q_data_pipeline import QDataPipeline
 
 
 class QClusterer:
@@ -379,7 +376,7 @@ class QClusterer:
         else:
             # Assuming 'file_buffer_2' is a string to a file path, this will work fine as-is
             pass
-        qdp = QDataPipeline(file_buffer)
+        qdp = QDataPipeline(data_filepath=file_buffer)
         qdp.preprocess()
         data = qdp.__dataframe__["Dissipation"]
 

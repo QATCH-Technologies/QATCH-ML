@@ -8,7 +8,7 @@ from imblearn.over_sampling import SMOTE
 from imblearn.pipeline import Pipeline
 from imblearn.under_sampling import RandomUnderSampler
 from joblib import dump, load
-from QDataPipeline import QDataPipeline
+from q_data_pipeline import QDataPipeline
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from sklearn.model_selection import train_test_split

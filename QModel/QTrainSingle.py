@@ -8,7 +8,7 @@ from imblearn.over_sampling import SMOTE
 from imblearn.pipeline import Pipeline
 from imblearn.under_sampling import RandomUnderSampler
 from joblib import dump, load
-from QDataPipline import QDataPipeline
+from q_data_pipeline import QDataPipeline
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from sklearn.model_selection import train_test_split
@@ -210,7 +210,6 @@ if TRAINING:
     qmodel_6_L.train_model()
     qmodel_6_L.save_model("QModel_6_T0_L")
 
-    
 
 data_df = pd.DataFrame()
 content = []
@@ -247,10 +246,10 @@ for filename in content:
 
         # qdp.__dataframe__ = qdp.__dataframe__.drop(columns=["Class", "Pooling"])
         if delta == -1:
-            print('[INFO] Predicting using Short model')
+            print("[INFO] Predicting using Short model")
             predictions = qmp_S.predict(data_file)
         else:
-            print('[INFO] Predicting using Long model')
+            print("[INFO] Predicting using Long model")
             predictions = qmp_L.predict(data_file)
         if PLOTTING:
             palette = sns.color_palette("husl", 6)

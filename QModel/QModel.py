@@ -32,19 +32,19 @@ if not ModelData_found:
 QDataPipeline_found = False
 try:
     if not QDataPipeline_found:
-        from QDataPipeline import QDataPipeline
+        from q_data_pipeline import QDataPipeline
     QDataPipeline_found = True
 except:
     QDataPipeline_found = False
 try:
     if not QDataPipeline_found:
-        from QModel.QDataPipeline import QDataPipeline
+        from qmodel.q_data_pipeline import QDataPipeline
     QDataPipeline_found = True
 except:
     QDataPipeline_found = False
 try:
     if not QDataPipeline_found:
-        from QATCH.QModel.QDataPipeline import QDataPipeline
+        from QATCH.qmodel.q_data_pipeline import QDataPipeline
     QDataPipeline_found = True
 except:
     QDataPipeline_found = False
@@ -365,8 +365,7 @@ class QModelPredict:
                 t > 2 / periodicity5, poi5_min_val, signal_region_equation_POI5
             )
 
-        signal_region_equation_POI4 = np.where(
-            t < 0.03, 0, signal_region_equation_POI4)
+        signal_region_equation_POI4 = np.where(t < 0.03, 0, signal_region_equation_POI4)
         if period_skip5:
             signal_region_equation_POI4 = np.where(
                 t > 2 / periodicity5, 0, signal_region_equation_POI4
@@ -378,8 +377,7 @@ class QModelPredict:
         signal_region_equation_POI5 = np.where(
             t > 0.75, poi4_min_val, signal_region_equation_POI5
         )
-        signal_region_equation_POI5 = np.where(
-            t > 0.90, 0, signal_region_equation_POI5)
+        signal_region_equation_POI5 = np.where(t > 0.90, 0, signal_region_equation_POI5)
 
         return signal_region_equation_POI4, signal_region_equation_POI5
 
@@ -465,7 +463,7 @@ class QModelPredict:
             bound_6[0][0],
         ]
         approx_4, approx_5 = self.generate_zone_probabilities(
-            rel_time[model_results[0]: model_results[5]]
+            rel_time[model_results[0] : model_results[5]]
         )
 
         approx_4 = np.concatenate(

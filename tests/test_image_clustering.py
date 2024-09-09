@@ -3,8 +3,11 @@ from unittest.mock import patch, MagicMock
 import numpy as np
 from PIL import Image
 from sklearn.cluster import KMeans
-from qmodel.q_image_clusterer import QClusterer
 import matplotlib.pyplot as plt
+import os
+import sys
+
+from qmodel.q_image_clusterer import QClusterer
 
 
 class TestQClusterer(unittest.TestCase):

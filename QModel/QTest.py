@@ -7,27 +7,27 @@ import pandas as pd
 import seaborn as sns
 import joblib
 from ModelData import ModelData
-from QDataPipeline import QDataPipeline
+from q_data_pipeline import QDataPipeline
 from tqdm import tqdm
 
 from QModel import QModelPredict
 from QMultiModel import QPredictor
-from QImageClusterer import QClusterer
+from q_image_clusterer import QClusterer
 
 TEST_BATCH_SIZE = 0.99
-VALIDATION_DATASETS_PATH = "content/test_data/test"
+VALIDATION_DATASETS_PATH = "../content/test_data/test"
 S_PREDICTOR = QModelPredict(
-    "QModel/SavedModels/QModel_1.json",
-    "QModel/SavedModels/QModel_2.json",
-    "QModel/SavedModels/QModel_3.json",
-    "QModel/SavedModels/QModel_4.json",
-    "QModel/SavedModels/QModel_5.json",
-    "QModel/SavedModels/QModel_6.json",
+    "SavedModels/QModel_1.json",
+    "SavedModels/QModel_2.json",
+    "SavedModels/QModel_3.json",
+    "SavedModels/QModel_4.json",
+    "SavedModels/QModel_5.json",
+    "SavedModels/QModel_6.json",
 )
-M_PREDICTOR_0 = QPredictor("QModel/SavedModels/QMultiType_0.json")
-M_PREDICTOR_1 = QPredictor("QModel/SavedModels/QMultiType_1.json")
-M_PREDICTOR_2 = QPredictor("QModel/SavedModels/QMultiType_2.json")
-qcr = QClusterer(model_path="QModel/SavedModels/cluster.joblib")
+M_PREDICTOR_0 = QPredictor("SavedModels/QMultiType_0.json")
+M_PREDICTOR_1 = QPredictor("SavedModels/QMultiType_1.json")
+M_PREDICTOR_2 = QPredictor("SavedModels/QMultiType_2.json")
+qcr = QClusterer(model_path="SavedModels/cluster.joblib")
 
 
 def load_test_dataset(path, test_size):
@@ -48,7 +48,7 @@ def load_test_dataset(path, test_size):
 
 
 def test_md_on_file(filename, act_poi):
-    qdp = QDataPipeline(filename)
+    qdp = QDataPipeline(data_filepath=filename)
     md_predictor = ModelData()
     md_result = md_predictor.IdentifyPoints(data_path=filename)
     if isinstance(md_result, int):
@@ -274,8 +274,7 @@ def metrics_view(
         edgecolor="black",
     )
 
-    plt.title(
-        f"Comparison of {test_name} Scores for {model_1_name} and {model_2_name}")
+    plt.title(f"Comparison of {test_name} Scores for {model_1_name} and {model_2_name}")
     plt.xlabel("POI #")
     plt.ylabel(f"{test_name} Score")
     plt.xticks(points)  # Set x-ticks to be the point indices
@@ -475,6 +474,7 @@ def run():
     print(
         f"[INFO] Prediction Quality:\n\t- Over={over_prediction}\n\t- Under={under_prediction}\n\t- Exact={exact}"
     )
+
     mm_ppr = extract_results(mm_list)
     qmp_ppr = extract_results(qmp_list)
     md_ppr = extract_results(md_list)
