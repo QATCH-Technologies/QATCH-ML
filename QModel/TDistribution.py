@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from qmodel.q_data_pipeline import QDataPipeline
+from q_data_pipeline import QDataPipeline
 from tqdm import tqdm
 import pickle
 
