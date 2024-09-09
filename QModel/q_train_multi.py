@@ -1,3 +1,52 @@
+"""
+Module for Data Processing and Machine Learning Pipeline with XGBoost.
+
+This module includes functions and classes for preprocessing data, performing dimensionality
+reduction, and building machine learning pipelines using XGBoost. It provides utilities for
+normalizing data, visualizing feature correlations, and applying dimensionality reduction
+techniques such as PCA and t-SNE. It also includes functionality for resampling datasets to
+balance class distributions using SMOTE and Random Under-Sampling.
+
+The module integrates various components such as:
+    - `normalize`: Normalizes numpy arrays to the range [0, 1].
+    - `correlation_view`: Visualizes Pearson correlation matrices.
+    - `tsne_view`: Applies and visualizes t-SNE for dimensionality reduction.
+    - `pca_view`: Applies and visualizes PCA for dimensionality reduction.
+    - `resample_df`: Resamples a DataFrame using SMOTE and Random Under-Sampling.
+    - `load_content`: Loads paths of CSV files from a specified directory while excluding
+    certain file patterns.
+    - `xgb_pipeline`: Processes multiple datasets for XGBoost preprocessing.
+
+Additionally, the module handles the training and testing of models using the `QMultiModel` and
+`QPredictor` classes, and supports visualization of predictions versus actual values.
+
+Dependencies:
+    - numpy
+    - pandas
+    - matplotlib
+    - seaborn
+    - imbalanced-learn
+    - scikit-learn
+    - tqdm
+    - joblib
+
+Classes:
+    - `QDataPipeline`: For preprocessing data.
+    - `QMultiModel`: For building and training multi-target models.
+    - `QPredictor`: For making predictions with a trained model.
+
+Usage:
+The module script can be run directly to perform end-to-end training and testing of models.
+Configuration and file paths are set through global variables and are dependent on the specific
+project setup.
+
+Example:
+    python QTrainMulti.py
+
+Author(s):
+    Paul MacNichol (paulmacnichol@gmail.com)
+"""
+
 import os
 import numpy as np
 import matplotlib.pyplot as plt
