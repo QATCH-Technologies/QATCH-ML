@@ -14,7 +14,7 @@ Supported versions of this project are listed bellow,
 
 If you discover a vulnerability in our project, please follow these steps to report it:
 
-1. **Report the Issue**: Open an issue on our [GitHub repository](https://github.com/QATCH-Technologies/QATCH-ML)) or send an email to [paulmacnihcol@gmail.com](paulmacnihcol@gmail.com). Provide as much detail as possible, including steps to reproduce, potential impact, and any other relevant information.
+1. **Report the Issue**: Open an issue on our [GitHub repository](https://github.com/QATCH-Technologies/QATCH-ML) or send an email to [paulmacnihcol@gmail.com](paulmacnihcol@gmail.com). Provide as much detail as possible, including steps to reproduce, potential impact, and any other relevant information.
 
 2. **Response Time**: We aim to acknowledge receipt of your report within 48 hours. We will provide a more detailed response within 5 business days. Please be patient as we work to assess and address the issue.
 
