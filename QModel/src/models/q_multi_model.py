@@ -1,5 +1,6 @@
 import sys
 import os
+import random
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -595,7 +596,8 @@ class QPredictor:
         # Find the closest RF point to the initial guess, considering weights
         closest_idx = np.argmin(distances)
         adjustment = peaks[closest_idx]
-        adjustment = (adjustment + guess) // 2
+
+        adjustment = random.uniform(adjustment, guess)
         if abs(guess - adjustment) > 75:
             adjustment = guess
         # if abs(guess - adjustment) > 5:
