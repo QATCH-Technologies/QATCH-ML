@@ -586,8 +586,8 @@ class QPredictor:
             delta = stop - start
             start = poi_1_guess
             stop = start + delta
-        peaks, _ = find_peaks(diss_invert[start:stop])
-        peaks = peaks + bounds[0]
+        peaks, _ = find_peaks(diss_invert)
+        # peaks = peaks + bounds[0]
         if len(peaks) == 0:
             return guess
 
@@ -598,6 +598,10 @@ class QPredictor:
         adjustment = peaks[closest_idx]
 
         adjustment = random.uniform(adjustment, guess)
+        points = np.array([adjustment, guess])
+        weights = np.array([0.3, 0.7])
+        weighted_mean = np.average(points, weights=weights)
+        adjustment = int(weighted_mean)
         if abs(guess - adjustment) > 75:
             adjustment = guess
         # if abs(guess - adjustment) > 5:
@@ -607,10 +611,17 @@ class QPredictor:
         #         [0, max(diss_raw)], bounds[0], bounds[1], color=f"yellow", alpha=0.5
         #     )
         #     ax.axvline(guess, color="green", linestyle="dotted", label="guess")
+
         #     ax.scatter(peaks, diss_raw[peaks])
         #     ax.axvline(adjustment, color="brown", label="adjusted")
         #     ax.axvline(actual[0], color="tan", linestyle="--", label="actual 1")
         #     ax.axvline(actual[1], color="orange", linestyle="--", label="actual 2")
+        #     ax.scatter(
+        #         peaks[closest_idx],
+        #         diss_raw[peaks[closest_idx]],
+        #         color="red",
+        #         marker="x",
+        #     )
         #     plt.legend()
 
         #     plt.show()
