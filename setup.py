@@ -1,23 +1,8 @@
 from setuptools import setup, find_packages
-from setuptools.command.test import test as TestCommand
-import pytest
-
-
-class PyTest(TestCommand):
-    user_options = [("pytest-args=", "a", "Arguments passed to pytest")]
-
-    def initialize_options(self):
-        TestCommand.initialize_options(self)
-        self.pytest_args = []
-
-    def run_tests(self):
-        errno = pytest.main(self.pytest_args)
-        raise SystemExit(errno)
-
 
 setup(
     name="qmodel",
-    version="2.0.0",
+    version="2.0.1",
     description="ML system for QATCH Technologies NanoVisQ software.",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
@@ -41,12 +26,7 @@ setup(
         "pillow",
         "imblearn",
         "seaborn",
-        "pytest",
     ],
-    tests_require=[
-        "pytest",
-    ],
-    cmdclass={"test": PyTest},
     classifiers=[
         "Programming Language :: Python :: 3",
         "Programming Language :: Python :: 3.6",

@@ -61,6 +61,7 @@ Author:
 """
 
 import os
+import sys
 import math
 import io
 import numpy as np
@@ -73,6 +74,8 @@ from keras.models import Model
 from keras_preprocessing.image import img_to_array
 from PIL import Image
 from tqdm import tqdm
+
+# sys.path.insert(0, os.path.join(os.getcwd(), "models"))
 from q_data_pipeline import QDataPipeline
 
 

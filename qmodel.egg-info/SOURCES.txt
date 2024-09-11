@@ -1,9 +1,0 @@
-AUTHORS.md
-README.md
-setup.py
-qmodel.egg-info/PKG-INFO
-qmodel.egg-info/SOURCES.txt
-qmodel.egg-info/dependency_links.txt
-qmodel.egg-info/not-zip-safe
-qmodel.egg-info/requires.txt
-qmodel.egg-info/top_level.txt

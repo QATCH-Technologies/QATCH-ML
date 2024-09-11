@@ -1,6 +1,6 @@
 import os
 import random
-
+import sys
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -10,24 +10,25 @@ from ModelData import ModelData
 from q_data_pipeline import QDataPipeline
 from tqdm import tqdm
 
-from QModel import QModelPredict
-from QMultiModel import QPredictor
+
+from q_model import QModelPredict
+from q_multi_model import QPredictor
 from q_image_clusterer import QClusterer
 
 TEST_BATCH_SIZE = 0.99
-VALIDATION_DATASETS_PATH = "../content/test_data/test"
+VALIDATION_DATASETS_PATH = "content/test_data/test"
 S_PREDICTOR = QModelPredict(
-    "SavedModels/QModel_1.json",
-    "SavedModels/QModel_2.json",
-    "SavedModels/QModel_3.json",
-    "SavedModels/QModel_4.json",
-    "SavedModels/QModel_5.json",
-    "SavedModels/QModel_6.json",
+    "QModel/SavedModels/QModel_1.json",
+    "QModel/SavedModels/QModel_2.json",
+    "QModel/SavedModels/QModel_3.json",
+    "QModel/SavedModels/QModel_4.json",
+    "QModel/SavedModels/QModel_5.json",
+    "QModel/SavedModels/QModel_6.json",
 )
-M_PREDICTOR_0 = QPredictor("SavedModels/QMultiType_0.json")
-M_PREDICTOR_1 = QPredictor("SavedModels/QMultiType_1.json")
-M_PREDICTOR_2 = QPredictor("SavedModels/QMultiType_2.json")
-qcr = QClusterer(model_path="SavedModels/cluster.joblib")
+M_PREDICTOR_0 = QPredictor("QModel/SavedModels/QMultiType_0.json")
+M_PREDICTOR_1 = QPredictor("QModel/SavedModels/QMultiType_1.json")
+M_PREDICTOR_2 = QPredictor("QModel/SavedModels/QMultiType_2.json")
+qcr = QClusterer(model_path="QModel/SavedModels/cluster.joblib")
 
 
 def load_test_dataset(path, test_size):

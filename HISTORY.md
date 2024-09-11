@@ -1,5 +1,11 @@
 # History
+## 2.0.1 (09-11-2024)
+### Added
 
+### Changed
+### Fixed
+### Deprecated
+### Removed
 ## 2.0.0 (09-09-2024)
 ### Added
 - Significant Refactorted changes to the module structure.

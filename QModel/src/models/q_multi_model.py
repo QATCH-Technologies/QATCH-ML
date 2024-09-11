@@ -1,4 +1,5 @@
 import sys
+import os
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -7,12 +8,11 @@ from hyperopt import STATUS_OK, Trials, fmin, hp, tpe
 from hyperopt.early_stop import no_progress_loss
 from scipy.signal import find_peaks
 from sklearn.model_selection import train_test_split
-from ModelData import ModelData
-from QConstants import *
 import pickle
 from scipy.signal import find_peaks
 
-np.set_printoptions(threshold=sys.maxsize)
+from ModelData import ModelData
+from QConstants import *
 
 # ModelData_found = False
 # try:
@@ -39,13 +39,13 @@ except:
     QDataPipeline_found = False
 try:
     if not QDataPipeline_found:
-        from qmodel.q_data_pipeline import QDataPipeline
+        from models.q_data_pipeline import QDataPipeline
     QDataPipeline_found = True
 except:
     QDataPipeline_found = False
 try:
     if not QDataPipeline_found:
-        from QATCH.qmodel.q_data_pipeline import QDataPipeline
+        from QATCH.models.q_data_pipeline import QDataPipeline
     QDataPipeline_found = True
 except:
     QDataPipeline_found = False
@@ -365,11 +365,11 @@ class QPredictor:
         self.__model__ = xgb.Booster()
 
         self.__model__.load_model(model_path)
-        with open("SavedModels/label_0.pkl", "rb") as file:
+        with open("QModel/SavedModels/label_0.pkl", "rb") as file:
             self.__label_0__ = pickle.load(file)
-        with open("SavedModels/label_1.pkl", "rb") as file:
+        with open("QModel/SavedModels/label_1.pkl", "rb") as file:
             self.__label_1__ = pickle.load(file)
-        with open("SavedModels/label_2.pkl", "rb") as file:
+        with open("QModel/SavedModels/label_2.pkl", "rb") as file:
             self.__label_2__ = pickle.load(file)
 
     def normalize(self, data):
@@ -505,50 +505,48 @@ class QPredictor:
             nearest_peak_index = peaks[np.argmin(distances)]
             adjusted_guess = nearest_peak_index
 
-        if abs(adjusted_guess - actual) > 5:
-            fig, ax = plt.subplots()
-            ax.plot(diss_raw, color="grey")
-            for l, r in zero_slope:
-                ax.fill_between((l, r), max(diss_raw), alpha=0.5)
-            ax.scatter(between, diss_raw[between])
-            ax.axvline(guess, color="green", linestyle="dotted", label="guess")
+        # if abs(adjusted_guess - actual) > 5:
+        #     fig, ax = plt.subplots()
+        #     ax.plot(diss_raw, color="grey")
+        #     for l, r in zero_slope:
+        #         ax.fill_between((l, r), max(diss_raw), alpha=0.5)
+        #     ax.scatter(between, diss_raw[between])
+        #     ax.axvline(guess, color="green", linestyle="dotted", label="guess")
 
-            ax.axvline(adjusted_guess, color="brown", label="adjusted")
-            ax.axvline(actual, color="orange", linestyle="--", label="actual")
-            plt.legend()
+        #     ax.axvline(adjusted_guess, color="brown", label="adjusted")
+        #     ax.axvline(actual, color="orange", linestyle="--", label="actual")
+        #     plt.legend()
 
-            plt.show()
+        #     plt.show()
 
         return adjusted_guess
 
-    def adjustment_poi_2(self, df, candidates, guess, emp, actual, bounds):
-        # CONSIDER JUST ADJUSTING POI 1-3 for bad examples only.  Very good fo good examples.
-        # diss = df["Dissipation"]
-        # rf = df["Resonance_Frequency"]
-        # diff = df["Difference"]
-        # diss_peaks, _ = find_peaks(diss)
-        # rf_peaks, _ = find_peaks(rf)
-        # diff_peaks, _ = find_peaks(diff)
-        # initial_guess = np.array(guess)
-        # candidate_points = np.array(candidates)
-        # rf_points = np.array(rf_peaks)
-        # diss_points = np.array(diss_peaks)
-        # diff_points = np.array(diff_peaks)
-        # x_min, x_max = bounds
-        # candidates = np.append(candidates, guess)
-        # candidate_density = len(candidates) / (x_max - x_min)
-        # fig, ax = plt.subplots()
-        # ax.plot(diff, color="grey")
-        # ax.fill_betweenx(
-        #     [0, max(diss)], bounds[0], bounds[1], color=f"yellow", alpha=0.5
-        # )
-        # ax.axvline(guess, color="green", linestyle='dotted', label="guess")
-        # ax.axvline(emp, color="purple", label="emp")
-        # ax.axvline(actual, color="orange", linestyle="--", label="actual")
-        # # ax.axvline(adjusted_point, color="brown", label="adjusted")
-        # plt.legend()
-        # plt.show()
-        return emp
+    def adjustment_poi_2(self, guess, diss_raw, actual, bounds, poi_1_guess):
+        diss_raw = self.normalize(diss_raw)
+        zero_slope = self.find_zero_slope_regions(
+            data=diss_raw[poi_1_guess : bounds[1]],
+            threshold=0.0025,
+            min_region_length=10,
+        )
+        if abs(guess - actual) > 5:
+            fig, ax = plt.subplots()
+            ax.plot(diss_raw, color="grey")
+            for l, r in zero_slope:
+                ax.fill_between(
+                    (poi_1_guess + l, poi_1_guess + r), max(diss_raw), alpha=0.5
+                )
+            # ax.fill_betweenx(
+            #     [0, max(diss_raw)], bounds[0], bounds[1], color=f"yellow", alpha=0.5
+            # )
+            ax.axvline(guess, color="green", linestyle="dotted", label="guess")
+
+            # ax.axvline(adjusted_guess, color="brown", label="adjusted")
+            ax.axvline(actual, color="orange", linestyle="--", label="actual")
+            ax.axvline(poi_1_guess, color="brown")
+            plt.legend()
+
+            plt.show()
+        return guess
 
     def adjustmet_poi_4(self, df, candidates, guess, actual, bounds):
         diss = df["Dissipation"]
@@ -871,7 +869,11 @@ class QPredictor:
             guess=emp_points[0], diss_raw=diss_raw, actual=act[0]
         )
         poi_2 = self.adjustment_poi_2(
-            df, candidates_2, extracted_2, emp_points[1], act[1], bounds_2
+            guess=np.argmax(adj_2),
+            diss_raw=diss_raw,
+            actual=act[1],
+            bounds=bounds_2,
+            poi_1_guess=poi_1,
         )
         poi_4 = self.adjustmet_poi_4(df, candidates_4, extracted_4, act[3], bounds_4)
         poi_5 = self.adjustmet_poi_5(
