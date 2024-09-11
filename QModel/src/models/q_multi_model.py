@@ -445,6 +445,52 @@ class QPredictor:
         density = len(peaks) / len(signal)
         return density
 
+    def find_dynamic_increase(
+        self, data, target_points=5, multiplier=3.0, reduction_factor=0.5, window_size=3
+    ):
+        if window_size < 2 or window_size >= len(data):
+            return -1
+
+        # Calculate the first derivative (differences between consecutive points)
+        diff = np.diff(data)
+        slope_change = []
+        for i in range(len(diff) - window_size + 1):
+            # Calculate the slope change over the current window
+            window_slope_change = np.mean(np.diff(diff[i : i + window_size]))
+            slope_change.append(window_slope_change)
+
+        slope_change = np.array(slope_change)
+
+        # Calculate baseline threshold (std deviation of slope changes in the sliding windows)
+        baseline = np.std(slope_change)
+
+        significant_points = []
+        current_multiplier = multiplier
+
+        # Iteratively reduce the threshold until enough significant points are found
+        while len(significant_points) < target_points and current_multiplier > 0:
+            # Calculate the current dynamic threshold
+            dynamic_threshold = current_multiplier * baseline
+
+            # Find new points where the change in slope exceeds the dynamic threshold
+            new_points = np.where(slope_change > dynamic_threshold)[0]
+
+            # Add new significant points to the list, ensuring no duplicates
+            for point in new_points:
+                if point + window_size - 1 not in [
+                    p for p in significant_points
+                ]:  # Adjust for window size
+                    significant_points.append(
+                        point + window_size - 1
+                    )  # Store index and slope change
+                    if len(significant_points) >= target_points:
+                        break
+
+            # Reduce the multiplier for the next iteration
+            current_multiplier *= reduction_factor
+
+        return significant_points[:target_points]
+
     def find_zero_slope_regions(self, data, threshold=1e-3, min_region_length=1):
         # Calculate the first derivative (approximate slope)
         slopes = np.diff(data)
@@ -522,31 +568,52 @@ class QPredictor:
         return adjusted_guess
 
     def adjustment_poi_2(self, guess, diss_raw, actual, bounds, poi_1_guess):
+
         diss_raw = self.normalize(diss_raw)
-        zero_slope = self.find_zero_slope_regions(
-            data=diss_raw[poi_1_guess : bounds[1]],
-            threshold=0.0025,
-            min_region_length=10,
-        )
-        if abs(guess - actual) > 5:
-            fig, ax = plt.subplots()
-            ax.plot(diss_raw, color="grey")
-            for l, r in zero_slope:
-                ax.fill_between(
-                    (poi_1_guess + l, poi_1_guess + r), max(diss_raw), alpha=0.5
-                )
-            # ax.fill_betweenx(
-            #     [0, max(diss_raw)], bounds[0], bounds[1], color=f"yellow", alpha=0.5
-            # )
-            ax.axvline(guess, color="green", linestyle="dotted", label="guess")
+        diss_invert = -diss_raw
+        start = bounds[0]
+        stop = bounds[1]
+        if guess < bounds[0]:
+            start = guess
 
-            # ax.axvline(adjusted_guess, color="brown", label="adjusted")
-            ax.axvline(actual, color="orange", linestyle="--", label="actual")
-            ax.axvline(poi_1_guess, color="brown")
-            plt.legend()
+        if guess > bounds[1]:
+            stop = guess
+        if start < poi_1_guess:
+            start = poi_1_guess
 
-            plt.show()
-        return guess
+        if stop < poi_1_guess:
+            delta = stop - start
+            start = poi_1_guess
+            stop = start + delta
+        peaks, _ = find_peaks(diss_invert[start:stop])
+        peaks = peaks + bounds[0]
+        if len(peaks) == 0:
+            return guess
+
+        distances = np.abs(peaks - guess)
+
+        # Find the closest RF point to the initial guess, considering weights
+        closest_idx = np.argmin(distances)
+        adjustment = peaks[closest_idx]
+        adjustment = (adjustment + guess) // 2
+        if abs(guess - adjustment) > 75:
+            adjustment = guess
+        # if abs(guess - adjustment) > 5:
+        #     fig, ax = plt.subplots()
+        #     ax.plot(diss_raw, color="grey")
+        #     ax.fill_betweenx(
+        #         [0, max(diss_raw)], bounds[0], bounds[1], color=f"yellow", alpha=0.5
+        #     )
+        #     ax.axvline(guess, color="green", linestyle="dotted", label="guess")
+        #     ax.scatter(peaks, diss_raw[peaks])
+        #     ax.axvline(adjustment, color="brown", label="adjusted")
+        #     ax.axvline(actual[0], color="tan", linestyle="--", label="actual 1")
+        #     ax.axvline(actual[1], color="orange", linestyle="--", label="actual 2")
+        #     plt.legend()
+
+        #     plt.show()
+
+        return adjustment
 
     def adjustmet_poi_4(self, df, candidates, guess, actual, bounds):
         diss = df["Dissipation"]
@@ -824,14 +891,16 @@ class QPredictor:
             extracted_1 = start
         if stop > -1:
             extracted_6 = stop
-
+        poi_1 = self.adjustment_poi_1(
+            guess=emp_points[0], diss_raw=diss_raw, actual=act[0]
+        )
         adj_1 = emp_points[0]
         adj_2, bounds_2 = self.adjust_predictions(
             prediction=extracted_results[2],
             rel_time=rel_time,
             poi_num=2,
             type=type,
-            i=start_bound,
+            i=poi_1,
             j=extracted_6,
         )
         adj_3, bounds_3 = self.adjust_predictions(
@@ -839,7 +908,7 @@ class QPredictor:
             rel_time=rel_time,
             poi_num=3,
             type=type,
-            i=start_bound,
+            i=poi_1,
             j=extracted_6,
         )
         adj_4, bounds_4 = self.adjust_predictions(
@@ -847,7 +916,7 @@ class QPredictor:
             rel_time=rel_time,
             poi_num=4,
             type=type,
-            i=start_bound,
+            i=poi_1,
             j=extracted_6,
         )
         adj_5, bounds_5 = self.adjust_predictions(
@@ -855,7 +924,7 @@ class QPredictor:
             rel_time=rel_time,
             poi_num=5,
             type=type,
-            i=start_bound,
+            i=poi_1,
             j=extracted_6,
         )
         adj_6 = extracted_results[6]
@@ -865,21 +934,19 @@ class QPredictor:
         candidates_4 = self.find_and_sort_peaks(adj_4)
         candidates_5 = self.find_and_sort_peaks(adj_5)
         candidates_6 = self.find_and_sort_peaks(adj_6)
-        poi_1 = self.adjustment_poi_1(
-            guess=emp_points[0], diss_raw=diss_raw, actual=act[0]
-        )
+
         poi_2 = self.adjustment_poi_2(
-            guess=np.argmax(adj_2),
+            guess=emp_points[1],
             diss_raw=diss_raw,
-            actual=act[1],
+            actual=act,
             bounds=bounds_2,
             poi_1_guess=poi_1,
         )
+        # poi_2 = emp_points[1]
         poi_4 = self.adjustmet_poi_4(df, candidates_4, extracted_4, act[3], bounds_4)
         poi_5 = self.adjustmet_poi_5(
             df, candidates_5, extracted_5, emp_points[4], act[4], bounds_5
         )
-        poi_2 = np.argmax(adj_2)
         if poi_1 >= poi_2:
             poi_1 = adj_1
         poi_3 = np.argmax(adj_3)
