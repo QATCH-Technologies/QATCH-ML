@@ -23,7 +23,7 @@
 ### Added
 - Significant Refactorted changes to the module structure.
 - Added setup script.
-- Added AUTHORS.md, CODE_OF_CONDUCT.md, MAKEFILE, `test_requriments.txt`, `.readthedocs.yaml`
+- Added `AUTHORS.md`, `CODE_OF_CONDUCT.md`, `MAKEFILE`, `test_requriments.txt`, `.readthedocs.yaml`
 - Added skeleton test suite (currently not working).
 - `q_log.py` module in place for all future logging (not yet fully integrated)
 - Added `__init__.py` for all submodules
