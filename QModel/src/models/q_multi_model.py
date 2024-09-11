@@ -590,16 +590,14 @@ class QPredictor:
         # peaks = peaks + bounds[0]
         if len(peaks) == 0:
             return guess
-
-        distances = np.abs(peaks - guess)
-
+        valid_peaks = peaks[peaks < guess]
+        distances = np.abs(valid_peaks - guess)
+        
         # Find the closest RF point to the initial guess, considering weights
         closest_idx = np.argmin(distances)
         adjustment = peaks[closest_idx]
-
-        adjustment = random.uniform(adjustment, guess)
         points = np.array([adjustment, guess])
-        weights = np.array([0.3, 0.7])
+        weights = np.array([0.25, 0.75])
         weighted_mean = np.average(points, weights=weights)
         adjustment = int(weighted_mean)
         if abs(guess - adjustment) > 75:

@@ -1,7 +1,7 @@
 # History
 ## 2.0.1 (09-11-2024)
 ### Added
-- Bounding and adjustment for POI 2
+- Bounding and adjustment for POI 2 within 2.01 IQR MAE from true.
 - `__init__` files for `file_io`, `models`, `tests`, and `utils` directories
 
 ### Changed
@@ -21,7 +21,7 @@
 
 ## 2.0.0 (09-09-2024)
 ### Added
-- Significant Refactorted changes to the module structure.
+- Significant Refactorted changes to the modutructure.
 - Added setup script.
 - Added `AUTHORS.md`, `CODE_OF_CONDUCT.md`, `MAKEFILE`, `test_requriments.txt`, `.readthedocs.yaml`
 - Added skeleton test suite (currently not working).
