@@ -592,37 +592,39 @@ class QPredictor:
             return guess
         valid_peaks = peaks[peaks < guess]
         distances = np.abs(valid_peaks - guess)
-        
+
         # Find the closest RF point to the initial guess, considering weights
         closest_idx = np.argmin(distances)
         adjustment = peaks[closest_idx]
+        if adjustment < poi_1_guess:
+            return guess
         points = np.array([adjustment, guess])
         weights = np.array([0.25, 0.75])
         weighted_mean = np.average(points, weights=weights)
         adjustment = int(weighted_mean)
         if abs(guess - adjustment) > 75:
             adjustment = guess
-        # if abs(guess - adjustment) > 5:
-        #     fig, ax = plt.subplots()
-        #     ax.plot(diss_raw, color="grey")
-        #     ax.fill_betweenx(
-        #         [0, max(diss_raw)], bounds[0], bounds[1], color=f"yellow", alpha=0.5
-        #     )
-        #     ax.axvline(guess, color="green", linestyle="dotted", label="guess")
+        if abs(actual - adjustment) > 5:
+            fig, ax = plt.subplots()
+            ax.plot(diss_raw, color="grey")
+            ax.fill_betweenx(
+                [0, max(diss_raw)], bounds[0], bounds[1], color=f"yellow", alpha=0.5
+            )
+            ax.axvline(guess, color="green", linestyle="dotted", label="guess")
 
-        #     ax.scatter(peaks, diss_raw[peaks])
-        #     ax.axvline(adjustment, color="brown", label="adjusted")
-        #     ax.axvline(actual[0], color="tan", linestyle="--", label="actual 1")
-        #     ax.axvline(actual[1], color="orange", linestyle="--", label="actual 2")
-        #     ax.scatter(
-        #         peaks[closest_idx],
-        #         diss_raw[peaks[closest_idx]],
-        #         color="red",
-        #         marker="x",
-        #     )
-        #     plt.legend()
+            ax.scatter(peaks, diss_raw[peaks])
+            ax.axvline(adjustment, color="brown", label="adjusted")
+            ax.axvline(actual[0], color="tan", linestyle="--", label="actual 1")
+            ax.axvline(actual[1], color="orange", linestyle="--", label="actual 2")
+            ax.scatter(
+                peaks[closest_idx],
+                diss_raw[peaks[closest_idx]],
+                color="red",
+                marker="x",
+            )
+            plt.legend()
 
-        #     plt.show()
+            plt.show()
 
         return adjustment
 
