@@ -1,4 +1,20 @@
 # History
+## 2.0.2 (09-13-2024)
+### Added
+- Working on adjustment for POI 6.  Very broken at the moment!
+
+### Changed
+- No chagnes
+
+### Fixed
+- No fixes
+
+### Deprecated
+- No deprecations
+
+### Removed
+- No removals
+
 ## 2.0.1 (09-11-2024)
 ### Added
 - Bounding and adjustment for POI 2 within 2.01 IQR MAE from true.

@@ -271,7 +271,8 @@ class QMultiModel:
         Example:
             best_hyperparams = self.tune(evaluations=300)
         """
-        print(f"[STATUS] Running model tuning for {evaluations} max iterations")
+        print(
+            f"[STATUS] Running model tuning for {evaluations} max iterations")
         space = {
             "max_depth": hp.choice("max_depth", np.arange(1, 20, 1, dtype=int)),
             "eta": hp.uniform("eta", 0, 1),
@@ -426,7 +427,8 @@ class QPredictor:
 
         adj_prediction = prediction * adjustment
         lq_idx = next((i for i, x in enumerate(adj) if x == 1), -1) + i
-        uq_idx = next((i for i, x in reversed(list(enumerate(adj))) if x == 1), -1) + i
+        uq_idx = next((i for i, x in reversed(
+            list(enumerate(adj))) if x == 1), -1) + i
         return adj_prediction, (lq_idx, uq_idx)
 
     def find_and_sort_peaks(self, signal):
@@ -457,7 +459,7 @@ class QPredictor:
         slope_change = []
         for i in range(len(diff) - window_size + 1):
             # Calculate the slope change over the current window
-            window_slope_change = np.mean(np.diff(diff[i : i + window_size]))
+            window_slope_change = np.mean(np.diff(diff[i: i + window_size]))
             slope_change.append(window_slope_change)
 
         slope_change = np.array(slope_change)
@@ -520,7 +522,8 @@ class QPredictor:
 
     def adjustment_poi_1(self, guess, diss_raw, actual):
 
-        zero_slope = self.find_zero_slope_regions(self.normalize(diss_raw), 0.0075, 100)
+        zero_slope = self.find_zero_slope_regions(
+            self.normalize(diss_raw), 0.0075, 100)
         adjusted_guess = guess
 
         if len(zero_slope) >= 2:
@@ -604,27 +607,29 @@ class QPredictor:
         adjustment = int(weighted_mean)
         if abs(guess - adjustment) > 75:
             adjustment = guess
-        if abs(actual - adjustment) > 5:
-            fig, ax = plt.subplots()
-            ax.plot(diss_raw, color="grey")
-            ax.fill_betweenx(
-                [0, max(diss_raw)], bounds[0], bounds[1], color=f"yellow", alpha=0.5
-            )
-            ax.axvline(guess, color="green", linestyle="dotted", label="guess")
+        # if abs(actual - adjustment) > 5:
+        #     fig, ax = plt.subplots()
+        #     ax.plot(diss_raw, color="grey")
+        #     ax.fill_betweenx(
+        #         [0, max(diss_raw)], bounds[0], bounds[1], color=f"yellow", alpha=0.5
+        #     )
+        #     ax.axvline(guess, color="green", linestyle="dotted", label="guess")
 
-            ax.scatter(peaks, diss_raw[peaks])
-            ax.axvline(adjustment, color="brown", label="adjusted")
-            ax.axvline(actual[0], color="tan", linestyle="--", label="actual 1")
-            ax.axvline(actual[1], color="orange", linestyle="--", label="actual 2")
-            ax.scatter(
-                peaks[closest_idx],
-                diss_raw[peaks[closest_idx]],
-                color="red",
-                marker="x",
-            )
-            plt.legend()
+        #     ax.scatter(peaks, diss_raw[peaks])
+        #     ax.axvline(adjustment, color="brown", label="adjusted")
+        #     ax.axvline(actual[0], color="tan",
+        #                linestyle="--", label="actual 1")
+        #     ax.axvline(actual[1], color="orange",
+        #                linestyle="--", label="actual 2")
+        #     ax.scatter(
+        #         peaks[closest_idx],
+        #         diss_raw[peaks[closest_idx]],
+        #         color="red",
+        #         marker="x",
+        #     )
+        #     plt.legend()
 
-            plt.show()
+        #     plt.show()
 
         return adjustment
 
@@ -681,7 +686,8 @@ class QPredictor:
             closest_rf_point = filtered_rf_points[closest_rf_idx]
 
             # Calculate distances from candidate points to the closest RF point
-            distances_to_closest_rf = np.abs(candidate_points - closest_rf_point)
+            distances_to_closest_rf = np.abs(
+                candidate_points - closest_rf_point)
 
             # Find the closest candidate point to the closest RF point
             closest_candidate_idx = np.argmin(distances_to_closest_rf)
@@ -779,7 +785,8 @@ class QPredictor:
             closest_rf_point = filtered_rf_points[closest_rf_idx]
 
             # Calculate distances from candidate points to the closest RF point
-            distances_to_closest_rf = np.abs(candidate_points - closest_rf_point)
+            distances_to_closest_rf = np.abs(
+                candidate_points - closest_rf_point)
 
             # Find the closest candidate point to the closest RF point
             closest_candidate_idx = np.argmin(distances_to_closest_rf)
@@ -809,6 +816,28 @@ class QPredictor:
             return adjusted_point
         else:
             return guess
+
+    def adjustment_poi_6(self, guess, diff, actual, poi_5_guess, threshold=0.1):
+        peaks, _ = find_peaks(diff)
+        valid_peaks = peaks[peaks > poi_5_guess]
+        adjustment = min(valid_peaks, key=lambda x: abs(x - guess))
+        for i in range(adjustment + 1, len(diff) - 1):
+            if diff[i] - diff[i + 1] >= threshold:
+                print('Moved')
+                adjustment = i + 1
+
+        if abs(guess - actual[5]) > 5:
+            fig, ax = plt.subplots()
+            ax.plot(diff, color="grey")
+            ax.axvline(guess, color="green", linestyle="dotted", label="guess")
+            ax.axvline(actual[5], color="orange",
+                       linestyle="--", label="actual")
+            ax.axvline(adjustment, color="brown", label="adjustment")
+            ax.axvline(poi_5_guess)
+            ax.scatter(valid_peaks, diff[valid_peaks])
+            plt.legend()
+            plt.show()
+        return adjustment
 
     def predict(self, file_buffer, type=-1, start=-1, stop=-1, act=None):
         # Load CSV data and drop unnecessary columns
@@ -956,14 +985,16 @@ class QPredictor:
             poi_1_guess=poi_1,
         )
         # poi_2 = emp_points[1]
-        poi_4 = self.adjustmet_poi_4(df, candidates_4, extracted_4, act[3], bounds_4)
+        poi_4 = self.adjustmet_poi_4(
+            df, candidates_4, extracted_4, act[3], bounds_4)
         poi_5 = self.adjustmet_poi_5(
             df, candidates_5, extracted_5, emp_points[4], act[4], bounds_5
         )
         if poi_1 >= poi_2:
             poi_1 = adj_1
         poi_3 = np.argmax(adj_3)
-        poi_6 = np.argmax(adj_6)
+        poi_6 = self.adjustment_poi_6(
+            np.argmax(adj_6), df['Difference'], act, poi_5)
         pois = [
             poi_1,
             poi_2,
