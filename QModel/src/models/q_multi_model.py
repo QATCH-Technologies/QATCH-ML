@@ -10,7 +10,7 @@ from hyperopt.early_stop import no_progress_loss
 from scipy.signal import find_peaks
 from sklearn.model_selection import train_test_split
 import pickle
-from scipy.signal import find_peaks
+from scipy.signal import find_peaks, peak_widths
 
 from ModelData import ModelData
 from QConstants import *
@@ -817,27 +817,51 @@ class QPredictor:
         else:
             return guess
 
-    def adjustment_poi_6(self, guess, diff, actual, poi_5_guess, threshold=0.1):
-        peaks, _ = find_peaks(diff)
-        valid_peaks = peaks[peaks > poi_5_guess]
-        adjustment = min(valid_peaks, key=lambda x: abs(x - guess))
-        for i in range(adjustment + 1, len(diff) - 1):
-            if diff[i] - diff[i + 1] >= threshold:
-                print('Moved')
-                adjustment = i + 1
+    def adjustment_poi_6(self, guess, diff, rf, diss, actual, poi_5_guess, threshold=0.1):
+        trend = diff[guess] - diff[len(diff) - 1]
+        near = guess
+        adjustment = guess
+        if trend > 0:
+            print("decreasing")
 
-        if abs(guess - actual[5]) > 5:
+            # Find all peak indices in the data
+            diff_peaks, _ = find_peaks(diff)
+
+            if len(diff_peaks) == 0:
+                raise ValueError("No peaks found in the data.")
+
+            # Calculate the distance between the point and each peak
+            distances = np.abs(diff_peaks - guess)
+
+            # Find the index of the nearest peak
+            nearest_peak_idx = np.argmin(distances)
+
+            # Return the index of the nearest peak
+            near = diff_peaks[nearest_peak_idx]
+            widths, _, _, _ = peak_widths(diff, diff_peaks)
+            near_width = widths[nearest_peak_idx]
+
+            adjustment = near
+
+        elif trend < 0:
+            print("increasing")
+        else:
+            print("flat")
+
+        if abs(near - actual[5]) > 5:
             fig, ax = plt.subplots()
-            ax.plot(diff, color="grey")
+            plt.title(trend)
+            ax.plot(self.normalize(diff), label='diff', color="grey")
             ax.axvline(guess, color="green", linestyle="dotted", label="guess")
             ax.axvline(actual[5], color="orange",
                        linestyle="--", label="actual")
-            ax.axvline(adjustment, color="brown", label="adjustment")
-            ax.axvline(poi_5_guess)
-            ax.scatter(valid_peaks, diff[valid_peaks])
+            ax.axvline(poi_5_guess, label='POI_5 Guess')
+            ax.axvline(near, label='Nearest', color='red', linestyle='dotted')
+            ax.axvline(adjustment, label='Adj',
+                       color='red')
             plt.legend()
             plt.show()
-        return adjustment
+        return near
 
     def predict(self, file_buffer, type=-1, start=-1, stop=-1, act=None):
         # Load CSV data and drop unnecessary columns
@@ -994,7 +1018,7 @@ class QPredictor:
             poi_1 = adj_1
         poi_3 = np.argmax(adj_3)
         poi_6 = self.adjustment_poi_6(
-            np.argmax(adj_6), df['Difference'], act, poi_5)
+            np.argmax(adj_6), df['Difference'], df['Resonance_Frequency'], diss_raw, act, poi_5)
         pois = [
             poi_1,
             poi_2,
