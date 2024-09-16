@@ -10,8 +10,8 @@ from hyperopt.early_stop import no_progress_loss
 from scipy.signal import find_peaks
 from sklearn.model_selection import train_test_split
 import pickle
-from scipy.signal import find_peaks, peak_widths
-
+from scipy.signal import find_peaks, argrelextrema
+from scipy.interpolate import interp1d
 from ModelData import ModelData
 from QConstants import *
 
@@ -812,71 +812,77 @@ class QPredictor:
         else:
             return guess
 
-    def adjustment_poi_6(self, guess, diff, actual, poi_5_guess, threshold=0.005):
-        trend = diff[guess] - diff[len(diff) - 1]
-        near = guess
+    def adjustment_poi_6(self, guess, diff, actual, poi_5_guess, threshold=0.0005):
         adjustment = guess
-        # Compute the first derivative (slope)
-        slope = np.diff(diff)
 
-        # Compute the second derivative (change in slope)
-        slope_change = np.diff(slope)
+        def find_slope_changes(x, y):
+            # Ensure inputs are numpy arrays for easier manipulation
+            x = np.array(x)
+            y = np.array(y)
 
-        print(trend)
+            # Calculate slopes between consecutive points
+            slopes = (y[1:] - y[:-1]) / (x[1:] - x[:-1])
+
+            # Calculate derivatives of slopes
+            slope_derivatives = np.diff(slopes)
+
+            # Identify significant changes
+            significant_increasing_indices = (
+                np.where(slope_derivatives > threshold)[0] + 1
+            )
+            significant_decreasing_indices = (
+                np.where(slope_derivatives < -threshold)[0] + 1
+            )
+
+            # Get the corresponding points
+            significant_increasing_points = [
+                (x[i], y[i]) for i in significant_increasing_indices
+            ]
+            significant_decreasing_points = [
+                (x[i], y[i]) for i in significant_decreasing_indices
+            ]
+
+            return significant_increasing_points + significant_decreasing_points
 
         def nearest_peak(peaks, point):
-            # Calculate the distance between the point and each peak
-            distances = np.abs(peaks - point)
+            nearest_peak_idx = np.argmin(np.abs(peaks - point))
+            return peaks[nearest_peak_idx]
 
-            # Find the index of the nearest peak
-            nearest_peak_idx = np.argmin(distances)
+        def envelope(signal):
+            data = np.array(signal)
+            maxima_indices = argrelextrema(data, np.greater)[0]
+            upper_envelope = np.interp(
+                np.arange(len(data)), maxima_indices, data[maxima_indices]
+            )
+            minima_indices = argrelextrema(data, np.less)[0]
+            lower_envelope = np.interp(
+                np.arange(len(data)), minima_indices, data[minima_indices]
+            )
+            return upper_envelope, lower_envelope, (maxima_indices, minima_indices)
 
-            # Return the index of the nearest peak
-            near = peaks[nearest_peak_idx]
-            return near
-
-        diff_peaks, _ = find_peaks(diff)
-
-        if len(diff_peaks) == 0:
-            raise ValueError("No peaks found in the data.")
-        if trend > 0:
-            print("Decreasing")
-            slope_change = slope_change * -1
-
-        elif trend < 0:
-            print("Increasing")
-        else:
-            print("Flat")
-        guess = nearest_peak(diff_peaks, guess)
-        change_peaks, _ = find_peaks(slope_change)
-
-        nearest_change_1 = nearest_peak(change_peaks, guess)
-        # nearest_change_2 = np.argmax(slope_change[guess:]) + guess
-
-        adjustment = nearest_change_1
-        print(np.argmax(diff), len(diff - 1))
-        if np.argmax(diff) == len(diff - 1):
-            
-            adjustment = np.argmax(diff)
-
-        if abs(adjustment - actual[5]) > 300:
+        ue, le, _ = envelope(diff)
+        slope = np.diff(diff)
+        slope_change = np.diff(slope)
+        # diff_peaks, _ = find_peaks(diff)
+        # slope_peaks, _ = find_peaks(slope_change)
+        # env_points = find_slope_changes(np.arange(len(ue)), ue)
+        # move_1 = nearest_peak(env_points, guess)
+        # move_2 = nearest_peak(diff_peaks, move_1)
+        # adjustment = nearest_peak(slope_peaks, move_2)
+        if abs(adjustment - actual[5]) > 5:
             fig, ax = plt.subplots()
-            plt.title(trend)
-            ax.plot(self.normalize(diff), label="diff", color="grey")
+            ax.plot(self.normalize(ue))
+            ax.plot(self.normalize(le))
+            # ax.scatter(env_points, self.normalize(ue)[env_points], marker="x")
             ax.plot(self.normalize(slope_change), label="2nd Deriv")
-            ax.axvline(guess, color="green", linestyle="dotted", label="guess")
-            ax.axvline(actual[5], color="orange", linestyle="--", label="actual")
-            ax.axvline(poi_5_guess, label="POI_5 Guess")
-            ax.axvline(adjustment, label="Adj", color="red")
-            # ax.scatter(
-            #     diff_peaks, self.normalize(diff[diff_peaks]), label="Normal peaks"
-            # )
-            # ax.scatter(
-            #     change_peaks,
-            #     self.normalize(diff[change_peaks]),
-            #     label="slope changes",
-            #     marker="x",
-            # )
+
+            ax.plot(self.normalize(diff), label="diff", color="grey")
+            ax.axvline(guess, color="green", linestyle="dotted", label="Initial guess")
+            ax.axvline(actual[5], color="orange", linestyle="--", label="Actual")
+            # ax.axvline(poi_5_guess, label="POI_5 Guess")
+            # ax.axvline(move_1, color="pink", label="Move 1")
+            # ax.axvline(move_2, color="purple", label="Move 2")
+            ax.axvline(adjustment, label="Adjustment", color="red")
             plt.legend()
             plt.show()
         return adjustment
