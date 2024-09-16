@@ -271,7 +271,8 @@ class QMultiModel:
         Example:
             best_hyperparams = self.tune(evaluations=300)
         """
-        print(f"[STATUS] Running model tuning for {evaluations} max iterations")
+        print(
+            f"[STATUS] Running model tuning for {evaluations} max iterations")
         space = {
             "max_depth": hp.choice("max_depth", np.arange(1, 20, 1, dtype=int)),
             "eta": hp.uniform("eta", 0, 1),
@@ -426,7 +427,8 @@ class QPredictor:
 
         adj_prediction = prediction * adjustment
         lq_idx = next((i for i, x in enumerate(adj) if x == 1), -1) + i
-        uq_idx = next((i for i, x in reversed(list(enumerate(adj))) if x == 1), -1) + i
+        uq_idx = next((i for i, x in reversed(
+            list(enumerate(adj))) if x == 1), -1) + i
         return adj_prediction, (lq_idx, uq_idx)
 
     def find_and_sort_peaks(self, signal):
@@ -457,7 +459,7 @@ class QPredictor:
         slope_change = []
         for i in range(len(diff) - window_size + 1):
             # Calculate the slope change over the current window
-            window_slope_change = np.mean(np.diff(diff[i : i + window_size]))
+            window_slope_change = np.mean(np.diff(diff[i: i + window_size]))
             slope_change.append(window_slope_change)
 
         slope_change = np.array(slope_change)
@@ -520,7 +522,8 @@ class QPredictor:
 
     def adjustment_poi_1(self, guess, diss_raw, actual):
 
-        zero_slope = self.find_zero_slope_regions(self.normalize(diss_raw), 0.0075, 100)
+        zero_slope = self.find_zero_slope_regions(
+            self.normalize(diss_raw), 0.0075, 100)
         adjusted_guess = guess
 
         if len(zero_slope) >= 2:
@@ -683,7 +686,8 @@ class QPredictor:
             closest_rf_point = filtered_rf_points[closest_rf_idx]
 
             # Calculate distances from candidate points to the closest RF point
-            distances_to_closest_rf = np.abs(candidate_points - closest_rf_point)
+            distances_to_closest_rf = np.abs(
+                candidate_points - closest_rf_point)
 
             # Find the closest candidate point to the closest RF point
             closest_candidate_idx = np.argmin(distances_to_closest_rf)
@@ -737,7 +741,6 @@ class QPredictor:
         np.concatenate((rf_points, diff_points, diss_points))
         x_min, x_max = bounds
         candidate_density = len(candidates) / (x_max - x_min)
-        print(f"POI 5 Density: {candidate_density}")
         if candidate_density < 0.01:
             zero_slope = self.find_zero_slope_regions(rf)
             # Filter RF points within the bounds
@@ -781,7 +784,8 @@ class QPredictor:
             closest_rf_point = filtered_rf_points[closest_rf_idx]
 
             # Calculate distances from candidate points to the closest RF point
-            distances_to_closest_rf = np.abs(candidate_points - closest_rf_point)
+            distances_to_closest_rf = np.abs(
+                candidate_points - closest_rf_point)
 
             # Find the closest candidate point to the closest RF point
             closest_candidate_idx = np.argmin(distances_to_closest_rf)
@@ -812,41 +816,71 @@ class QPredictor:
         else:
             return guess
 
-    def adjustment_poi_6(self, guess, diff, actual, poi_5_guess, threshold=0.0005):
+    def adjustment_poi_6(self, guess, diff, actual, poi_5_guess):
         adjustment = guess
-
-        def find_slope_changes(x, y):
-            # Ensure inputs are numpy arrays for easier manipulation
-            x = np.array(x)
-            y = np.array(y)
-
-            # Calculate slopes between consecutive points
-            slopes = (y[1:] - y[:-1]) / (x[1:] - x[:-1])
-
-            # Calculate derivatives of slopes
-            slope_derivatives = np.diff(slopes)
-
-            # Identify significant changes
-            significant_increasing_indices = (
-                np.where(slope_derivatives > threshold)[0] + 1
-            )
-            significant_decreasing_indices = (
-                np.where(slope_derivatives < -threshold)[0] + 1
-            )
-
-            # Get the corresponding points
-            significant_increasing_points = [
-                (x[i], y[i]) for i in significant_increasing_indices
-            ]
-            significant_decreasing_points = [
-                (x[i], y[i]) for i in significant_decreasing_indices
-            ]
-
-            return significant_increasing_points + significant_decreasing_points
 
         def nearest_peak(peaks, point):
             nearest_peak_idx = np.argmin(np.abs(peaks - point))
             return peaks[nearest_peak_idx]
+
+        def decomp(data, zero_slope_threshold=5e-2):
+            # Compute the first derivative (difference between consecutive points)
+            derivatives = np.diff(data)
+
+            # Initialize lists to store the start and end indices of each region
+            increasing_regions = []
+            decreasing_regions = []
+            zero_slope_regions = []
+
+            # Initialize variables to track the current region type and its start index
+            current_region = None
+            start_idx = 0
+
+            # Iterate through the derivative to find regions
+            for i, slope in enumerate(derivatives):
+                if slope > zero_slope_threshold:
+                    if current_region != 'increasing':
+                        if current_region is not None:
+                            if current_region == 'increasing':
+                                increasing_regions.append((start_idx, i))
+                            elif current_region == 'decreasing':
+                                decreasing_regions.append((start_idx, i))
+                            elif current_region == 'zero':
+                                zero_slope_regions.append((start_idx, i))
+                        current_region = 'increasing'
+                        start_idx = i
+                elif slope < -zero_slope_threshold:
+                    if current_region != 'decreasing':
+                        if current_region is not None:
+                            if current_region == 'increasing':
+                                increasing_regions.append((start_idx, i))
+                            elif current_region == 'decreasing':
+                                decreasing_regions.append((start_idx, i))
+                            elif current_region == 'zero':
+                                zero_slope_regions.append((start_idx, i))
+                        current_region = 'decreasing'
+                        start_idx = i
+                else:
+                    if current_region != 'zero':
+                        if current_region is not None:
+                            if current_region == 'increasing':
+                                increasing_regions.append((start_idx, i))
+                            elif current_region == 'decreasing':
+                                decreasing_regions.append((start_idx, i))
+                            elif current_region == 'zero':
+                                zero_slope_regions.append((start_idx, i))
+                        current_region = 'zero'
+                        start_idx = i
+
+            # Append the last region
+            if current_region == 'increasing':
+                increasing_regions.append((start_idx, len(data) - 1))
+            elif current_region == 'decreasing':
+                decreasing_regions.append((start_idx, len(data) - 1))
+            elif current_region == 'zero':
+                zero_slope_regions.append((start_idx, len(data) - 1))
+
+            return increasing_regions, decreasing_regions, zero_slope_regions
 
         def envelope(signal):
             data = np.array(signal)
@@ -854,38 +888,67 @@ class QPredictor:
             upper_envelope = np.interp(
                 np.arange(len(data)), maxima_indices, data[maxima_indices]
             )
-            minima_indices = argrelextrema(data, np.less)[0]
-            lower_envelope = np.interp(
-                np.arange(len(data)), minima_indices, data[minima_indices]
-            )
-            return upper_envelope, lower_envelope, (maxima_indices, minima_indices)
 
-        ue, le, _ = envelope(diff)
+            return upper_envelope, maxima_indices
+
+        ue, maxima_indices = envelope(diff)
+        increasing, decreasing, zero = decomp(diff)
         slope = np.diff(diff)
+        ue_slope = np.diff(np.diff(np.diff(ue)))
         slope_change = np.diff(slope)
-        # diff_peaks, _ = find_peaks(diff)
-        # slope_peaks, _ = find_peaks(slope_change)
-        # env_points = find_slope_changes(np.arange(len(ue)), ue)
-        # move_1 = nearest_peak(env_points, guess)
-        # move_2 = nearest_peak(diff_peaks, move_1)
-        # adjustment = nearest_peak(slope_peaks, move_2)
-        if abs(adjustment - actual[5]) > 5:
+        slope_change_inv = slope_change * -1
+        diff_peaks, _ = find_peaks(diff)
+        slope_peaks_1, _ = find_peaks(slope_change)
+        slope_peaks_2, _ = find_peaks(slope_change_inv)
+        slope_peaks = np.concatenate((slope_peaks_1, slope_peaks_2))
+        ue_peaks, _ = find_peaks(ue_slope)
+        diff = self.normalize(diff)
+        if len(increasing) < 1:
+            return guess
+        divider = decreasing[-1][0]
+        if len(slope_peaks[slope_peaks > divider]) < 1:
+            return guess
+        adjustment = nearest_peak(slope_peaks[slope_peaks > divider], divider)
+        x = np.arange(len(diff))
+        if abs(adjustment - actual[5]) > 300:
             fig, ax = plt.subplots()
             ax.plot(self.normalize(ue))
-            ax.plot(self.normalize(le))
-            # ax.scatter(env_points, self.normalize(ue)[env_points], marker="x")
+            ax.plot(self.normalize(ue_slope), color='tan')
+            ax.scatter(maxima_indices, diff[maxima_indices], marker="x")
+            ax.scatter(slope_peaks, diff[slope_peaks])
+            ax.scatter(diff_peaks, diff[diff_peaks], marker='v')
+            ax.scatter(ue_peaks, diff[ue_peaks], marker='*')
             ax.plot(self.normalize(slope_change), label="2nd Deriv")
 
             ax.plot(self.normalize(diff), label="diff", color="grey")
-            ax.axvline(guess, color="green", linestyle="dotted", label="Initial guess")
-            ax.axvline(actual[5], color="orange", linestyle="--", label="Actual")
+            ax.axvline(guess, color="green", linestyle="dotted",
+                       label="Initial guess")
+            ax.axvline(actual[5], color="orange",
+                       linestyle="--", label="Actual")
+            # Plot filled regions for increasing sections
+            ax.axvline(divider, linestyle='dotted',
+                       color='black', label='divider')
+            # for (l, r) in increasing:
+            #     plt.fill_between(x[l:r+2], diff[l:r+2], color='green',
+            #                      alpha=0.5, label="Increasing" if l == increasing[0][0] else "")
+
+            # # Plot filled regions for decreasing sections
+            # for (l, r) in decreasing:
+            #     plt.fill_between(x[l:r+2], diff[l:r+2], color='red',
+            #                      alpha=0.5, label="Decreasing" if l == decreasing[0][0] else "")
+
+            # # Plot filled regions for zero slope sections
+            # for (l, r) in zero:
+            #     plt.fill_between(x[l:r+2], diff[l:r+2], color='blue',
+            #                      alpha=0.5, label="Zero Slope" if l == zero[0][0] else "")
+
             # ax.axvline(poi_5_guess, label="POI_5 Guess")
             # ax.axvline(move_1, color="pink", label="Move 1")
             # ax.axvline(move_2, color="purple", label="Move 2")
             ax.axvline(adjustment, label="Adjustment", color="red")
             plt.legend()
             plt.show()
-        return adjustment
+        return guess
 
     def predict(self, file_buffer, type=-1, start=-1, stop=-1, act=None):
         # Load CSV data and drop unnecessary columns
@@ -1034,7 +1097,8 @@ class QPredictor:
             poi_1_guess=poi_1,
         )
         # poi_2 = emp_points[1]
-        poi_4 = self.adjustmet_poi_4(df, candidates_4, extracted_4, act[3], bounds_4)
+        poi_4 = self.adjustmet_poi_4(
+            df, candidates_4, extracted_4, act[3], bounds_4)
         poi_5 = self.adjustmet_poi_5(
             df, candidates_5, extracted_5, emp_points[4], act[4], bounds_5
         )
