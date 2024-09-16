@@ -200,6 +200,7 @@ class QDataPipeline:
             raise ValueError(
                 f"[QDataPipeline.__init__] Filepath required, found {data_filepath}."
             )
+        self.__difference_raw__ = None
 
     def preprocess(self, poi_filepath: str = None) -> None:
         """
@@ -240,7 +241,7 @@ class QDataPipeline:
         # STEP 1
         # Compute the difference curve of this dataframe.
         self.compute_difference()
-
+        self.__difference_raw__ = self.__dataframe__["Difference"]
         # OPTIONAL
         # For training datasets, add the POI flags to the dataframe.
         if poi_filepath is not None:

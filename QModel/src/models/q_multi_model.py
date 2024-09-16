@@ -271,8 +271,7 @@ class QMultiModel:
         Example:
             best_hyperparams = self.tune(evaluations=300)
         """
-        print(
-            f"[STATUS] Running model tuning for {evaluations} max iterations")
+        print(f"[STATUS] Running model tuning for {evaluations} max iterations")
         space = {
             "max_depth": hp.choice("max_depth", np.arange(1, 20, 1, dtype=int)),
             "eta": hp.uniform("eta", 0, 1),
@@ -427,8 +426,7 @@ class QPredictor:
 
         adj_prediction = prediction * adjustment
         lq_idx = next((i for i, x in enumerate(adj) if x == 1), -1) + i
-        uq_idx = next((i for i, x in reversed(
-            list(enumerate(adj))) if x == 1), -1) + i
+        uq_idx = next((i for i, x in reversed(list(enumerate(adj))) if x == 1), -1) + i
         return adj_prediction, (lq_idx, uq_idx)
 
     def find_and_sort_peaks(self, signal):
@@ -459,7 +457,7 @@ class QPredictor:
         slope_change = []
         for i in range(len(diff) - window_size + 1):
             # Calculate the slope change over the current window
-            window_slope_change = np.mean(np.diff(diff[i: i + window_size]))
+            window_slope_change = np.mean(np.diff(diff[i : i + window_size]))
             slope_change.append(window_slope_change)
 
         slope_change = np.array(slope_change)
@@ -522,8 +520,7 @@ class QPredictor:
 
     def adjustment_poi_1(self, guess, diss_raw, actual):
 
-        zero_slope = self.find_zero_slope_regions(
-            self.normalize(diss_raw), 0.0075, 100)
+        zero_slope = self.find_zero_slope_regions(self.normalize(diss_raw), 0.0075, 100)
         adjusted_guess = guess
 
         if len(zero_slope) >= 2:
@@ -686,8 +683,7 @@ class QPredictor:
             closest_rf_point = filtered_rf_points[closest_rf_idx]
 
             # Calculate distances from candidate points to the closest RF point
-            distances_to_closest_rf = np.abs(
-                candidate_points - closest_rf_point)
+            distances_to_closest_rf = np.abs(candidate_points - closest_rf_point)
 
             # Find the closest candidate point to the closest RF point
             closest_candidate_idx = np.argmin(distances_to_closest_rf)
@@ -785,8 +781,7 @@ class QPredictor:
             closest_rf_point = filtered_rf_points[closest_rf_idx]
 
             # Calculate distances from candidate points to the closest RF point
-            distances_to_closest_rf = np.abs(
-                candidate_points - closest_rf_point)
+            distances_to_closest_rf = np.abs(candidate_points - closest_rf_point)
 
             # Find the closest candidate point to the closest RF point
             closest_candidate_idx = np.argmin(distances_to_closest_rf)
@@ -817,51 +812,74 @@ class QPredictor:
         else:
             return guess
 
-    def adjustment_poi_6(self, guess, diff, rf, diss, actual, poi_5_guess, threshold=0.1):
+    def adjustment_poi_6(self, guess, diff, actual, poi_5_guess, threshold=0.005):
         trend = diff[guess] - diff[len(diff) - 1]
         near = guess
         adjustment = guess
-        if trend > 0:
-            print("decreasing")
+        # Compute the first derivative (slope)
+        slope = np.diff(diff)
 
-            # Find all peak indices in the data
-            diff_peaks, _ = find_peaks(diff)
+        # Compute the second derivative (change in slope)
+        slope_change = np.diff(slope)
 
-            if len(diff_peaks) == 0:
-                raise ValueError("No peaks found in the data.")
+        print(trend)
 
+        def nearest_peak(peaks, point):
             # Calculate the distance between the point and each peak
-            distances = np.abs(diff_peaks - guess)
+            distances = np.abs(peaks - point)
 
             # Find the index of the nearest peak
             nearest_peak_idx = np.argmin(distances)
 
             # Return the index of the nearest peak
-            near = diff_peaks[nearest_peak_idx]
-            widths, _, _, _ = peak_widths(diff, diff_peaks)
-            near_width = widths[nearest_peak_idx]
+            near = peaks[nearest_peak_idx]
+            return near
 
-            adjustment = near
+        diff_peaks, _ = find_peaks(diff)
+
+        if len(diff_peaks) == 0:
+            raise ValueError("No peaks found in the data.")
+        if trend > 0:
+            print("Decreasing")
+            slope_change = slope_change * -1
 
         elif trend < 0:
-            print("increasing")
+            print("Increasing")
         else:
-            print("flat")
+            print("Flat")
+        guess = nearest_peak(diff_peaks, guess)
+        change_peaks, _ = find_peaks(slope_change)
 
-        if abs(near - actual[5]) > 5:
+        nearest_change_1 = nearest_peak(change_peaks, guess)
+        # nearest_change_2 = np.argmax(slope_change[guess:]) + guess
+
+        adjustment = nearest_change_1
+        print(np.argmax(diff), len(diff - 1))
+        if np.argmax(diff) == len(diff - 1):
+            
+            adjustment = np.argmax(diff)
+
+        if abs(adjustment - actual[5]) > 300:
             fig, ax = plt.subplots()
             plt.title(trend)
-            ax.plot(self.normalize(diff), label='diff', color="grey")
+            ax.plot(self.normalize(diff), label="diff", color="grey")
+            ax.plot(self.normalize(slope_change), label="2nd Deriv")
             ax.axvline(guess, color="green", linestyle="dotted", label="guess")
-            ax.axvline(actual[5], color="orange",
-                       linestyle="--", label="actual")
-            ax.axvline(poi_5_guess, label='POI_5 Guess')
-            ax.axvline(near, label='Nearest', color='red', linestyle='dotted')
-            ax.axvline(adjustment, label='Adj',
-                       color='red')
+            ax.axvline(actual[5], color="orange", linestyle="--", label="actual")
+            ax.axvline(poi_5_guess, label="POI_5 Guess")
+            ax.axvline(adjustment, label="Adj", color="red")
+            # ax.scatter(
+            #     diff_peaks, self.normalize(diff[diff_peaks]), label="Normal peaks"
+            # )
+            # ax.scatter(
+            #     change_peaks,
+            #     self.normalize(diff[change_peaks]),
+            #     label="slope changes",
+            #     marker="x",
+            # )
             plt.legend()
             plt.show()
-        return near
+        return adjustment
 
     def predict(self, file_buffer, type=-1, start=-1, stop=-1, act=None):
         # Load CSV data and drop unnecessary columns
@@ -933,6 +951,7 @@ class QPredictor:
         diss_raw = qdp.__dataframe__["Dissipation"]
         rel_time = qdp.__dataframe__["Relative_time"]
         qdp.preprocess(poi_filepath=None)
+        diff_raw = qdp.__difference_raw__
         df = qdp.get_dataframe()
         f_names = self.__model__.feature_names
         df = df[f_names]
@@ -1009,8 +1028,7 @@ class QPredictor:
             poi_1_guess=poi_1,
         )
         # poi_2 = emp_points[1]
-        poi_4 = self.adjustmet_poi_4(
-            df, candidates_4, extracted_4, act[3], bounds_4)
+        poi_4 = self.adjustmet_poi_4(df, candidates_4, extracted_4, act[3], bounds_4)
         poi_5 = self.adjustmet_poi_5(
             df, candidates_5, extracted_5, emp_points[4], act[4], bounds_5
         )
@@ -1018,7 +1036,11 @@ class QPredictor:
             poi_1 = adj_1
         poi_3 = np.argmax(adj_3)
         poi_6 = self.adjustment_poi_6(
-            np.argmax(adj_6), df['Difference'], df['Resonance_Frequency'], diss_raw, act, poi_5)
+            np.argmax(adj_6),
+            df["Difference"],
+            act,
+            poi_5,
+        )
         pois = [
             poi_1,
             poi_2,
