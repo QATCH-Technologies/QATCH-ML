@@ -1,4 +1,21 @@
 # History
+## 2.0.1 (09-30-2024)
+### Added
+- POI 6 adjustment in place by adding difference and QModel signal's together and taking maxima.
+
+### Changed
+- No chagnes
+
+### Fixed
+- Candidate lists of points are now returned correctly.
+- Each guessed POI value is added to the head of each respective candidate list.
+
+### Deprecated
+- No deprecations
+
+### Removed
+- No removals
+
 ## 2.0.2 (09-13-2024)
 ### Added
 - Working on adjustment for POI 6.  Very broken at the moment!
