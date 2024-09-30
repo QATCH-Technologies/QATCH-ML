@@ -231,10 +231,27 @@ class QMultiModel:
             verbose_eval=VERBOSE_EVAL,
         )
 
-    def update_model(self) -> None:
-        # TODO: Implement functionality to pass a model path and load it then update the model with a new dataset.
+    def update_model(
+        self,
+        new_df: pd.DataFrame = None,
+        predictors: list = None,
+        target_features: str = "Class",
+    ) -> None:
         print(f"[STATUS] Updating multi-target model")
-        pass
+        d_new = xgb.DMatrix(
+            new_df[predictors],
+            new_df[target_features].values,
+        )
+        self.__model__ = xgb.train(
+            self.__params__,
+            d_new,
+            MAX_ROUNDS,
+            evals=self.__watchlist__,
+            early_stopping_rounds=EARLY_STOP,
+            maximize=True,
+            verbose_eval=VERBOSE_EVAL,
+            xgb_model=self.__model__,
+        )
 
     def objective(self, params: dict = None) -> None:
         """
@@ -451,11 +468,17 @@ class QPredictor:
         adjustment = np.concatenate(
             (np.zeros(i), np.array(adj), (np.zeros(len(prediction) - j)))
         )
+        if len(prediction) == len(adjustment):
+            adj_prediction = prediction * adjustment
+            lq_idx = next((i for i, x in enumerate(adj) if x == 1), -1) + i
+            uq_idx = (
+                next((i for i, x in reversed(list(enumerate(adj))) if x == 1), -1) + i
+            )
+            return adj_prediction, (lq_idx, uq_idx)
 
-        adj_prediction = prediction * adjustment
         lq_idx = next((i for i, x in enumerate(adj) if x == 1), -1) + i
         uq_idx = next((i for i, x in reversed(list(enumerate(adj))) if x == 1), -1) + i
-        return adj_prediction, (lq_idx, uq_idx)
+        return prediction, (lq_idx, uq_idx)
 
     def find_and_sort_peaks(self, signal):
         # Find peaks
@@ -546,7 +569,7 @@ class QPredictor:
 
         return regions
 
-    def adjustment_poi_1(self, guess, diss_raw, actual):
+    def adjustment_poi_1(self, guess, diss_raw):
 
         zero_slope = self.find_zero_slope_regions(self.normalize(diss_raw), 0.0075, 100)
         adjusted_guess = guess
@@ -681,7 +704,7 @@ class QPredictor:
 
             # If no RF points within the bounds, return None or handle accordingly
             if filtered_rf_points.size == 0:
-                print("[INFO] No RF Peaks found")
+
                 return guess
 
             # Calculate proximity weight for each RF point based on diff and diss points
@@ -697,6 +720,8 @@ class QPredictor:
                     weight *= multiplier
                 return weight
 
+            epsilon = 1e-10
+
             # Calculate weights for filtered RF points
             weights = np.array(
                 [calculate_weight(rf_point) for rf_point in filtered_rf_points]
@@ -704,7 +729,11 @@ class QPredictor:
 
             # Calculate weighted distances from initial guess to each filtered RF point
             distances_to_rf = np.abs(filtered_rf_points - initial_guess)
-            weighted_distances = distances_to_rf / weights  # Adjust distance by weight
+
+            # Prevent division by zero by replacing zero weights with epsilon
+            weighted_distances = distances_to_rf / np.where(
+                weights == 0, epsilon, weights
+            )
 
             # Find the closest RF point to the initial guess, considering weights
             closest_rf_idx = np.argmin(weighted_distances)
@@ -778,7 +807,6 @@ class QPredictor:
                 np.append(rf_points, r)
             # If no RF points within the bounds, return None or handle accordingly
             if filtered_rf_points.size == 0:
-                print("[INFO] No RF Peaks found")
                 return guess
 
             # Calculate proximity weight for each RF point based on diff and diss points
@@ -972,10 +1000,23 @@ class QPredictor:
             extracted_1 = start
         if stop > -1:
             extracted_6 = stop
-        poi_1 = self.adjustment_poi_1(
-            guess=emp_points[0], diss_raw=diss_raw, actual=act[0]
-        )
-        adj_1 = emp_points[0]
+
+        if len(emp_points) <= 0:
+            start_1 = extracted_1
+            start_2 = extracted_2
+            start_3 = extracted_3
+            start_4 = extracted_4
+            start_5 = extracted_5
+            start_6 = extracted_6
+        else:
+            start_1 = emp_points[0]
+            start_2 = emp_points[1]
+            start_3 = emp_points[2]
+            start_4 = emp_points[3]
+            start_5 = emp_points[4]
+            start_6 = emp_points[5]
+        adj_1 = start_1
+        poi_1 = self.adjustment_poi_1(guess=start_1, diss_raw=diss_raw)
         adj_2, bounds_2 = self.adjust_predictions(
             prediction=extracted_results[2],
             rel_time=rel_time,
@@ -1017,7 +1058,7 @@ class QPredictor:
         candidates_6 = self.find_and_sort_peaks(adj_6)
 
         poi_2 = self.adjustment_poi_2(
-            guess=emp_points[1],
+            guess=start_2,
             diss_raw=diss_raw,
             actual=act[1],
             bounds=bounds_2,
@@ -1026,7 +1067,7 @@ class QPredictor:
         # poi_2 = emp_points[1]
         poi_4 = self.adjustmet_poi_4(df, candidates_4, extracted_4, act[3], bounds_4)
         poi_5 = self.adjustmet_poi_5(
-            df, candidates_5, extracted_5, emp_points[4], act[4], bounds_5
+            df, candidates_5, extracted_5, start_5, act[4], bounds_5
         )
         if poi_1 >= poi_2:
             poi_1 = adj_1
