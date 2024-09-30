@@ -4,7 +4,7 @@
 - POI 6 adjustment in place by adding difference and QModel signal's together and taking maxima.
 
 ### Changed
-- No chagnes
+- Adjusted POI cannot be reported in as duplicate values in the candidtate lists 
 
 ### Fixed
 - Candidate lists of points are now returned correctly.
@@ -21,7 +21,7 @@
 - Working on adjustment for POI 6.  Very broken at the moment!
 
 ### Changed
-- No chagnes
+- No changes
 
 ### Fixed
 - No fixes

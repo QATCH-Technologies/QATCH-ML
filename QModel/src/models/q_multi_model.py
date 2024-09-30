@@ -1004,6 +1004,17 @@ class QPredictor:
             act,
             poi_5,
         )
+
+        def remove_point(arr, point):
+            arr = np.array(arr)
+            return arr[arr != point]
+
+        candidates_1 = remove_point(candidates_1, poi_1)
+        candidates_2 = remove_point(candidates_2, poi_2)
+        candidates_3 = remove_point(candidates_3, poi_3)
+        candidates_4 = remove_point(candidates_4, poi_4)
+        candidates_5 = remove_point(candidates_5, poi_5)
+        candidates_6 = remove_point(candidates_6, poi_6)
         pois = [
             poi_1,
             poi_2,
