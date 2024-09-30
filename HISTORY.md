@@ -1,5 +1,5 @@
 # History
-## 2.0.1 (09-30-2024)
+## 2.0.3 (09-30-2024)
 ### Added
 - POI 6 adjustment in place by adding difference and QModel signal's together and taking maxima.
 
