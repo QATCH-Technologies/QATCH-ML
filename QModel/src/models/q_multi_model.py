@@ -12,24 +12,47 @@ from sklearn.model_selection import train_test_split
 import pickle
 from scipy.signal import find_peaks, argrelextrema
 from scipy.interpolate import interp1d
-from ModelData import ModelData
-from QConstants import *
+# from ModelData import ModelData
 
-# ModelData_found = False
-# try:
-#     if not ModelData_found:
-#         import QModel.ModelData
-#     ModelData_found = True
-# except:
-#     ModelData_found = False
-# try:
-#     if not ModelData_found:
-#         from QATCH.models.ModelData import ModelData
-#     ModelData_found = True
-# except:
-#     ModelData_found = False
-# if not ModelData_found:
-#     raise ImportError("Cannot find 'ModelData' in any expected location.")
+Architecture_found = False
+try:
+    from QATCH.common.architecture import Architecture
+    Architecture_found = True
+except:
+    Architecture_found = False
+    # Not finding this if OK: will use 'cwd' as 'root' path
+
+QConstants_found = False
+try:
+    if not QConstants_found:
+        from QConstants import *
+    QConstants_found = True
+except:
+    QConstants_found = False
+try:
+    if not QConstants_found:
+        from QATCH.QModel.QConstants import *
+    QConstants_found = True
+except:
+    QConstants_found = False
+if not QConstants_found:
+    raise ImportError("Cannot find 'QConstants' in any expected location.")
+
+ModelData_found = False
+try:
+    if not ModelData_found:
+        from ModelData import ModelData
+    ModelData_found = True
+except:
+    ModelData_found = False
+try:
+    if not ModelData_found:
+        from QATCH.models.ModelData import ModelData
+    ModelData_found = True
+except:
+    ModelData_found = False
+if not ModelData_found:
+    raise ImportError("Cannot find 'ModelData' in any expected location.")
 
 QDataPipeline_found = False
 try:
@@ -40,13 +63,7 @@ except:
     QDataPipeline_found = False
 try:
     if not QDataPipeline_found:
-        from models.q_data_pipeline import QDataPipeline
-    QDataPipeline_found = True
-except:
-    QDataPipeline_found = False
-try:
-    if not QDataPipeline_found:
-        from QATCH.models.q_data_pipeline import QDataPipeline
+        from QATCH.QModel.q_data_pipeline import QDataPipeline
     QDataPipeline_found = True
 except:
     QDataPipeline_found = False
@@ -366,12 +383,23 @@ class QPredictor:
         self.__model__ = xgb.Booster()
 
         self.__model__.load_model(model_path)
-        with open("QModel/SavedModels/label_0.pkl", "rb") as file:
-            self.__label_0__ = pickle.load(file)
-        with open("QModel/SavedModels/label_1.pkl", "rb") as file:
-            self.__label_1__ = pickle.load(file)
-        with open("QModel/SavedModels/label_2.pkl", "rb") as file:
-            self.__label_2__ = pickle.load(file)
+        # with open("QModel/SavedModels/label_0.pkl", "rb") as file:
+        #     self.__label_0__ = pickle.load(file)
+        # with open("QModel/SavedModels/label_1.pkl", "rb") as file:
+        #     self.__label_1__ = pickle.load(file)
+        # with open("QModel/SavedModels/label_2.pkl", "rb") as file:
+        #     self.__label_2__ = pickle.load(file)
+        # Find the pickle files dynamically, using Architecture path (if available)
+        if Architecture_found:
+            relative_root = os.path.join(Architecture.get_path(), "QATCH")
+        else:
+            relative_root = os.getcwd()
+        pickle_path = os.path.join(relative_root,
+                                   "QModel/SavedModels/label_{}.pkl")
+        for i in range(3):
+            with open(pickle_path.format(i), "rb") as file:
+                setattr(self, f"__label_{i}__", pickle.load(file))
+
 
     def normalize(self, data):
         return (data - np.min(data)) / (np.max(data) - np.min(data))
@@ -842,7 +870,7 @@ class QPredictor:
         #     plt.show()
         return adjustment
 
-    def predict(self, file_buffer, type=-1, start=-1, stop=-1, act=None):
+    def predict(self, file_buffer, type=-1, start=-1, stop=-1, act=[None]*6):
         # Load CSV data and drop unnecessary columns
         df = pd.read_csv(file_buffer)
         columns_to_drop = ["Date", "Time", "Ambient", "Temperature"]
@@ -853,20 +881,11 @@ class QPredictor:
 
         df = df.drop(columns=columns_to_drop)
 
-        file_buffer_2 = file_buffer
-        if not isinstance(file_buffer_2, str):
-            if hasattr(file_buffer_2, "seekable") and file_buffer_2.seekable():
-                # reset ByteIO buffer to beginning of stream
-                file_buffer_2.seek(0)
-            else:
-                # ERROR: 'file_buffer_2' must be 'BytesIO' type here, but it's not seekable!
-                raise Exception(
-                    "Cannot 'seek' stream prior to passing to 'QDataPipeline'."
-                )
-        else:
-            # Assuming 'file_buffer_2' is a string to a file path, this will work fine as-is
-            pass
         if not isinstance(file_buffer, str):
+            if hasattr(file_buffer, "seekable") and file_buffer.seekable():
+                # reset ByteIO buffer to beginning of stream
+                file_buffer.seek(0)
+
             csv_headers = next(file_buffer)
 
             if isinstance(csv_headers, bytes):
@@ -904,9 +923,25 @@ class QPredictor:
                     max_pair = max(pt, key=lambda x: x[1])
                     emp_points.append(max_pair[0])
             start_bound = emp_points[0]
+
         ############################
         # MAIN PREDICTION PIPELINE #
         ############################
+
+        file_buffer_2 = file_buffer
+        if not isinstance(file_buffer_2, str):
+            if hasattr(file_buffer_2, "seekable") and file_buffer_2.seekable():
+                # reset ByteIO buffer to beginning of stream
+                file_buffer_2.seek(0)
+            else:
+                # ERROR: 'file_buffer_2' must be 'BytesIO' type here, but it's not seekable!
+                raise Exception(
+                    "Cannot 'seek' stream prior to passing to 'QDataPipeline'."
+                )
+        else:
+            # Assuming 'file_buffer_2' is a string to a file path, this will work fine as-is
+            pass
+
         # Process data using QDataPipeline
         qdp = QDataPipeline(file_buffer_2)
         diss_raw = qdp.__dataframe__["Dissipation"]
@@ -984,7 +1019,7 @@ class QPredictor:
         poi_2 = self.adjustment_poi_2(
             guess=emp_points[1],
             diss_raw=diss_raw,
-            actual=act,
+            actual=act[1],
             bounds=bounds_2,
             poi_1_guess=poi_1,
         )
@@ -1001,7 +1036,7 @@ class QPredictor:
             adj_6,
             df["Difference"],
             df["Dissipation"],
-            act,
+            act[5],
             poi_5,
         )
 

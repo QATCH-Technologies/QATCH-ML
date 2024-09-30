@@ -76,7 +76,23 @@ from PIL import Image
 from tqdm import tqdm
 
 # sys.path.insert(0, os.path.join(os.getcwd(), "models"))
-from q_data_pipeline import QDataPipeline
+# from q_data_pipeline import QDataPipeline
+
+QDataPipeline_found = False
+try:
+    if not QDataPipeline_found:
+        from q_data_pipeline import QDataPipeline
+    QDataPipeline_found = True
+except:
+    QDataPipeline_found = False
+try:
+    if not QDataPipeline_found:
+        from QATCH.QModel.q_data_pipeline import QDataPipeline
+    QDataPipeline_found = True
+except:
+    QDataPipeline_found = False
+if not QDataPipeline_found:
+    raise ImportError("Cannot find 'QDataPipeline' in any expected location.")
 
 
 class QClusterer:
