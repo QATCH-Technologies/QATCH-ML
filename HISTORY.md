@@ -2,6 +2,8 @@
 ## 2.0.3 (09-30-2024)
 ### Added
 - POI 6 adjustment in place by adding difference and QModel signal's together and taking maxima.
+- Added functionality for updating QModel but not yet a fully integrated system.
+- Added new datasets pulled from Production Data.
 
 ### Changed
 - Adjusted POI cannot be reported in as duplicate values in the candidtate lists 
@@ -9,6 +11,7 @@
 ### Fixed
 - Candidate lists of points are now returned correctly.
 - Each guessed POI value is added to the head of each respective candidate list.
+- Added updates for edge case errors that occured during adjustment phase of testing.
 
 ### Deprecated
 - No deprecations
