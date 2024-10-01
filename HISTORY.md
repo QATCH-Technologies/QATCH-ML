@@ -1,4 +1,20 @@
 # History
+## 2.0.4 (10-01-2024)
+### Added
+- Confidence reporting per candidate POI in candidate list.
+
+### Changed
+- `q_multi_model` predictor now returns a best point along with a candidate list that is now a list of tuples where each tuple contains a list of ca
+
+### Fixed
+- No fixes
+
+### Deprecated
+- No deprecations
+
+### Removed
+- No removals
+
 ## 2.0.3 (09-30-2024)
 ### Added
 - POI 6 adjustment in place by adding difference and QModel signal's together and taking maxima.

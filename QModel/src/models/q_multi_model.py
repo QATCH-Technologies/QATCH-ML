@@ -12,11 +12,13 @@ from sklearn.model_selection import train_test_split
 import pickle
 from scipy.signal import find_peaks, argrelextrema
 from scipy.interpolate import interp1d
+
 # from ModelData import ModelData
 
 Architecture_found = False
 try:
     from QATCH.common.architecture import Architecture
+
     Architecture_found = True
 except:
     Architecture_found = False
@@ -411,12 +413,10 @@ class QPredictor:
             relative_root = os.path.join(Architecture.get_path(), "QATCH")
         else:
             relative_root = os.getcwd()
-        pickle_path = os.path.join(relative_root,
-                                   "QModel/SavedModels/label_{}.pkl")
+        pickle_path = os.path.join(relative_root, "QModel/SavedModels/label_{}.pkl")
         for i in range(3):
             with open(pickle_path.format(i), "rb") as file:
                 setattr(self, f"__label_{i}__", pickle.load(file))
-
 
     def normalize(self, data):
         return (data - np.min(data)) / (np.max(data) - np.min(data))
@@ -898,7 +898,7 @@ class QPredictor:
         #     plt.show()
         return adjustment
 
-    def predict(self, file_buffer, type=-1, start=-1, stop=-1, act=[None]*6):
+    def predict(self, file_buffer, type=-1, start=-1, stop=-1, act=[None] * 6):
         # Load CSV data and drop unnecessary columns
         df = pd.read_csv(file_buffer)
         columns_to_drop = ["Date", "Time", "Ambient", "Temperature"]
@@ -1091,6 +1091,13 @@ class QPredictor:
         candidates_4 = remove_point(candidates_4, poi_4)
         candidates_5 = remove_point(candidates_5, poi_5)
         candidates_6 = remove_point(candidates_6, poi_6)
+        confidence_1 = np.array(extracted_results[1])[candidates_1]
+        confidence_2 = np.array(adj_2)[candidates_2]
+        confidence_3 = np.array(adj_3)[candidates_3]
+        confidence_4 = np.array(adj_4)[candidates_4]
+        confidence_5 = np.array(adj_5)[candidates_5]
+        confidence_6 = np.array(adj_6)[candidates_6]
+
         pois = [
             poi_1,
             poi_2,
@@ -1106,11 +1113,11 @@ class QPredictor:
         candidates_5 = np.insert(candidates_5, 0, poi_5)
         candidates_6 = np.insert(candidates_6, 0, poi_6)
         candidates = [
-            candidates_1,
-            candidates_2,
-            candidates_3,
-            candidates_4,
-            candidates_5,
-            candidates_6,
+            (candidates_1, confidence_1),
+            (candidates_2, confidence_2),
+            (candidates_3, confidence_3),
+            (candidates_4, confidence_4),
+            (candidates_5, confidence_5),
+            (candidates_6, confidence_6),
         ]
         return pois, candidates

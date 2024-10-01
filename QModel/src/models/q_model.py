@@ -449,8 +449,7 @@ class QModelPredict:
         if not isinstance(emp_predictions, list):
             start_bound = bound_1[0][0]
         model_results = [
-            emp_points[0],
-            # bound_1[0][0],
+            bound_1[0][0],
             # emp_points[1],
             bound_2[0][0],
             # emp_points[2],
