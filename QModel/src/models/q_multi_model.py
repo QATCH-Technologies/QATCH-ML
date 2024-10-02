@@ -1098,14 +1098,6 @@ class QPredictor:
         confidence_5 = np.array(adj_5)[candidates_5]
         confidence_6 = np.array(adj_6)[candidates_6]
 
-        pois = [
-            poi_1,
-            poi_2,
-            poi_3,
-            poi_4,
-            poi_5,
-            poi_6,
-        ]
         candidates_1 = np.insert(candidates_1, 0, poi_1)
         candidates_2 = np.insert(candidates_2, 0, poi_2)
         candidates_3 = np.insert(candidates_3, 0, poi_3)
@@ -1120,4 +1112,4 @@ class QPredictor:
             (candidates_5, confidence_5),
             (candidates_6, confidence_6),
         ]
-        return pois, candidates
+        return candidates

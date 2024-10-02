@@ -1,4 +1,19 @@
 # History
+## 2.0.5 (10-02-2024)
+### Added
+- No Additions
+
+### Changed
+- `q_multi_model` predictor does not return POI list.
+
+### Fixed
+- No fixes
+
+### Deprecated
+- No deprecations
+
+### Removed
+- No removals
 ## 2.0.4 (10-01-2024)
 ### Added
 - Confidence reporting per candidate POI in candidate list.
