@@ -19,6 +19,8 @@ EARLY_STOP = 50
 VERBOSE_EVAL = 50
 """ The target supervision feature. """
 DISTANCES = [1.15, 1.61, 2.17, 5.00, 10.90, 16.2]
+""" The maximum number of candidates to return points and confidences for. """
+MAX_GUESSES = 10
 """ The label=0 is a 'good' target label. """
 GOOD_LABEL = 0
 """ The label=1 is a 'bad' target label. """

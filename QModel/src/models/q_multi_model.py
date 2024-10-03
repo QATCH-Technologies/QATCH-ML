@@ -17,8 +17,8 @@ from scipy.interpolate import interp1d
 
 Architecture_found = False
 try:
-    from QATCH.common.architecture import Architecture
-
+    if not Architecture_found:
+        from QATCH.common.architecture import Architecture
     Architecture_found = True
 except:
     Architecture_found = False
@@ -1072,31 +1072,33 @@ class QPredictor:
         if poi_1 >= poi_2:
             poi_1 = adj_1
         poi_3 = np.argmax(adj_3)
-        poi_6 = self.adjustment_poi_6(
-            np.argmax(adj_6),
-            adj_6,
-            df["Difference"],
-            df["Dissipation"],
-            act[5],
-            poi_5,
-        )
 
-        def remove_point(arr, point):
+        # skip adjustment of point 6 when inverted (drop applied to outlet)
+        if diff_raw.mean() < 0:
+            poi_6 = start_6
+        else:
+            poi_6 = self.adjustment_poi_6(
+                np.argmax(adj_6),
+                adj_6,
+                df["Difference"],
+                df["Dissipation"],
+                act[5],
+                poi_5,
+            )
+
+        def sort_and_remove_point(arr, point):
             arr = np.array(arr)
+            if len(arr) > MAX_GUESSES - 1:
+                arr = arr[:MAX_GUESSES - 1]
+            arr.sort()
             return arr[arr != point]
 
-        candidates_1 = remove_point(candidates_1, poi_1)
-        candidates_2 = remove_point(candidates_2, poi_2)
-        candidates_3 = remove_point(candidates_3, poi_3)
-        candidates_4 = remove_point(candidates_4, poi_4)
-        candidates_5 = remove_point(candidates_5, poi_5)
-        candidates_6 = remove_point(candidates_6, poi_6)
-        confidence_1 = np.array(extracted_results[1])[candidates_1]
-        confidence_2 = np.array(adj_2)[candidates_2]
-        confidence_3 = np.array(adj_3)[candidates_3]
-        confidence_4 = np.array(adj_4)[candidates_4]
-        confidence_5 = np.array(adj_5)[candidates_5]
-        confidence_6 = np.array(adj_6)[candidates_6]
+        candidates_1 = sort_and_remove_point(candidates_1, poi_1)
+        candidates_2 = sort_and_remove_point(candidates_2, poi_2)
+        candidates_3 = sort_and_remove_point(candidates_3, poi_3)
+        candidates_4 = sort_and_remove_point(candidates_4, poi_4)
+        candidates_5 = sort_and_remove_point(candidates_5, poi_5)
+        candidates_6 = sort_and_remove_point(candidates_6, poi_6)
 
         candidates_1 = np.insert(candidates_1, 0, poi_1)
         candidates_2 = np.insert(candidates_2, 0, poi_2)
@@ -1104,6 +1106,16 @@ class QPredictor:
         candidates_4 = np.insert(candidates_4, 0, poi_4)
         candidates_5 = np.insert(candidates_5, 0, poi_5)
         candidates_6 = np.insert(candidates_6, 0, poi_6)
+
+        confidence_1 = np.array(extracted_results[1])[candidates_1]
+        confidence_2 = np.array(adj_2)[candidates_2]
+        confidence_3 = np.array(adj_3)[candidates_3]
+        confidence_4 = np.array(adj_4)[candidates_4]
+        confidence_5 = np.array(adj_5)[candidates_5]
+        confidence_6 = np.array(adj_6)[candidates_6]
+
+        # TODO: Adjust 1st confidence to be better than 2nd guess
+
         candidates = [
             (candidates_1, confidence_1),
             (candidates_2, confidence_2),
@@ -1112,4 +1124,5 @@ class QPredictor:
             (candidates_5, confidence_5),
             (candidates_6, confidence_6),
         ]
+
         return candidates
