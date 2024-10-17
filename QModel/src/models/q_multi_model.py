@@ -307,7 +307,8 @@ class QMultiModel:
         Example:
             best_hyperparams = self.tune(evaluations=300)
         """
-        print(f"[STATUS] Running model tuning for {evaluations} max iterations")
+        print(f"[STATUS] Running model tuning for {
+              evaluations} max iterations")
         space = {
             "max_depth": hp.choice("max_depth", np.arange(1, 20, 1, dtype=int)),
             "eta": hp.uniform("eta", 0, 1),
@@ -413,7 +414,8 @@ class QPredictor:
             relative_root = os.path.join(Architecture.get_path(), "QATCH")
         else:
             relative_root = os.getcwd()
-        pickle_path = os.path.join(relative_root, "QModel/SavedModels/label_{}.pkl")
+        pickle_path = os.path.join(
+            relative_root, "QModel/SavedModels/label_{}.pkl")
         for i in range(3):
             with open(pickle_path.format(i), "rb") as file:
                 setattr(self, f"__label_{i}__", pickle.load(file))
@@ -477,7 +479,8 @@ class QPredictor:
             return adj_prediction, (lq_idx, uq_idx)
 
         lq_idx = next((i for i, x in enumerate(adj) if x == 1), -1) + i
-        uq_idx = next((i for i, x in reversed(list(enumerate(adj))) if x == 1), -1) + i
+        uq_idx = next((i for i, x in reversed(
+            list(enumerate(adj))) if x == 1), -1) + i
         return prediction, (lq_idx, uq_idx)
 
     def find_and_sort_peaks(self, signal):
@@ -508,7 +511,7 @@ class QPredictor:
         slope_change = []
         for i in range(len(diff) - window_size + 1):
             # Calculate the slope change over the current window
-            window_slope_change = np.mean(np.diff(diff[i : i + window_size]))
+            window_slope_change = np.mean(np.diff(diff[i: i + window_size]))
             slope_change.append(window_slope_change)
 
         slope_change = np.array(slope_change)
@@ -571,7 +574,8 @@ class QPredictor:
 
     def adjustment_poi_1(self, guess, diss_raw):
 
-        zero_slope = self.find_zero_slope_regions(self.normalize(diss_raw), 0.0075, 100)
+        zero_slope = self.find_zero_slope_regions(
+            self.normalize(diss_raw), 0.0075, 100)
         adjusted_guess = guess
 
         if len(zero_slope) >= 2:
@@ -740,7 +744,8 @@ class QPredictor:
             closest_rf_point = filtered_rf_points[closest_rf_idx]
 
             # Calculate distances from candidate points to the closest RF point
-            distances_to_closest_rf = np.abs(candidate_points - closest_rf_point)
+            distances_to_closest_rf = np.abs(
+                candidate_points - closest_rf_point)
 
             # Find the closest candidate point to the closest RF point
             closest_candidate_idx = np.argmin(distances_to_closest_rf)
@@ -836,7 +841,8 @@ class QPredictor:
             closest_rf_point = filtered_rf_points[closest_rf_idx]
 
             # Calculate distances from candidate points to the closest RF point
-            distances_to_closest_rf = np.abs(candidate_points - closest_rf_point)
+            distances_to_closest_rf = np.abs(
+                candidate_points - closest_rf_point)
 
             # Find the closest candidate point to the closest RF point
             closest_candidate_idx = np.argmin(distances_to_closest_rf)
@@ -904,7 +910,8 @@ class QPredictor:
         columns_to_drop = ["Date", "Time", "Ambient", "Temperature"]
         if not all(col in df.columns for col in columns_to_drop):
             raise ValueError(
-                f"[QModelPredict predict()]: Input data must contain the following columns: {columns_to_drop}"
+                f"[QModelPredict predict()]: Input data must contain the following columns: {
+                    columns_to_drop}"
             )
 
         df = df.drop(columns=columns_to_drop)
@@ -1065,7 +1072,15 @@ class QPredictor:
             poi_1_guess=poi_1,
         )
         # poi_2 = emp_points[1]
-        poi_4 = self.adjustmet_poi_4(df, candidates_4, extracted_4, act[3], bounds_4)
+        poi_4 = self.adjustmet_poi_4(
+            df, candidates_4, extracted_4, act[3], bounds_4)
+
+        # Hot fix to prevent out of order poi_4 and poi_5
+        if bounds_5[0] < poi_4:
+            lst = list(bounds_5)
+            lst[0] = poi_4 + 1
+            bounds_5 = tuple(lst)
+
         poi_5 = self.adjustmet_poi_5(
             df, candidates_5, extracted_5, start_5, act[4], bounds_5
         )
