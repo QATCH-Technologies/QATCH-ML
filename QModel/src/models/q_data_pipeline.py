@@ -237,7 +237,10 @@ class QDataPipeline:
             ],
             inplace=True,
         )
-
+        t_delta = self.find_time_delta()
+        if t_delta > 0:
+            print("[INFO] Applying downsampling")
+            self.downsample(k=t_delta, factor=20)
         # STEP 1
         # Compute the difference curve of this dataframe.
         self.compute_difference()
@@ -704,6 +707,26 @@ class QDataPipeline:
         """
         self.__dataframe__.replace([np.inf, -np.inf], 0)
         self.__dataframe__.replace(np.nan, 0)
+
+    def downsample(self, k: int, factor: int) -> None:
+        """
+        Downsample the dataframe up to position `k` by keeping every `factor`-th row.
+
+        Parameters:
+        k (int): Position up to which downsampling is performed.
+        factor (int): Downsample by this factor.
+        """
+        if k > len(self.__dataframe__):
+            raise ValueError("k is out of bounds for the dataframe length.")
+
+        # Select the part to downsample
+        df_downsampled = self.__dataframe__.iloc[:k].iloc[::factor]
+
+        # Select the rest of the dataframe
+        df_rest = self.__dataframe__.iloc[k:]
+
+        # Concatenate the downsampled part with the rest of the dataframe
+        self.__dataframe__ = pd.concat([df_downsampled, df_rest]).reset_index(drop=True)
 
     def compute_gradient(self, column: str) -> None:
         """

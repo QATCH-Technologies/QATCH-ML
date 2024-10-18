@@ -1,4 +1,20 @@
 # History
+## 2.0.6 (10-18-2024)
+### Added
+- Added downsampling functionality for `q_data_pipeline`.  Currently broken and working to integrate it but the endpoint exists.
+
+### Changed
+- No changes
+
+### Fixed
+- `q_validation` now handles return from q_multi_model correctly
+
+### Deprecated
+- No deprecations
+
+### Removed
+- No removals
+
 ## 2.0.5 (10-02-2024)
 ### Added
 - No Additions

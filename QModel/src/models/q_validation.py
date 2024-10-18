@@ -66,34 +66,31 @@ def test_md_on_file(filename, act_poi):
 def test_mm_on_file(filename, act_poi):
     label = qcr.predict_label(filename)
     if label == 0:
-        predictions, candidates = M_PREDICTOR_0.predict(
-            filename, type=label, act=act_poi
-        )
+        candidates = M_PREDICTOR_0.predict(filename, type=label, act=act_poi)
     elif label == 1:
-        predictions, candidates = M_PREDICTOR_1.predict(
-            filename, type=label, act=act_poi
-        )
+        candidates = M_PREDICTOR_1.predict(filename, type=label, act=act_poi)
     elif label == 2:
-        predictions, candidates = M_PREDICTOR_2.predict(
-            filename, type=label, act=act_poi
-        )
+        candidates = M_PREDICTOR_2.predict(filename, type=label, act=act_poi)
     else:
         raise ValueError(f"Invalid predicted label was: {label}")
     good = []
     bad = []
     initial = 0.01
     post = 0.05
-    for i, (x, y) in enumerate(zip(predictions, act_poi)):
+    pois = []
+    for c in candidates:
+        pois.append(c[0][0])
+    for i, (x, y) in enumerate(zip(pois, act_poi)):
         if i < 3:
             if abs(x - y) >= initial * y:
-                bad.append((filename, act_poi, predictions, label))
+                bad.append((filename, act_poi, pois, label))
                 break
         else:
             if abs(x - y) >= post * y:
-                bad.append((filename, act_poi, predictions, label))
+                bad.append((filename, act_poi, pois, label))
                 break
-    good.append((filename, act_poi, predictions))
-    return list(zip(predictions, act_poi)), good, bad
+    good.append((filename, act_poi, pois))
+    return list(zip(pois, act_poi)), good, bad
 
 
 def test_qmp_on_file(filename, act_poi):
@@ -419,17 +416,34 @@ def run():
     content = load_test_dataset(VALIDATION_DATASETS_PATH, TEST_BATCH_SIZE)
     good_list = []
     bad_list = []
+    longest_run = (-1, "")
+    partial_fills = []
+    long_runs = []
     for filename in tqdm(content, desc="<<Running Tests>>"):
         if (
             filename.endswith(".csv")
             and not filename.endswith("_poi.csv")
             and not filename.endswith("_lower.csv")
         ):
+
             test_file = filename
             poi_file = filename.replace(".csv", "_poi.csv")
             if os.path.exists(poi_file):
+                test_df = pd.read_csv(test_file)
+                max_index = test_df.index.max()
                 act_poi = pd.read_csv(poi_file, header=None).values
                 act_poi = [int(x[0]) for x in act_poi]
+                if max(act_poi) >= max_index - 1:
+                    partial_fills.append(test_file)
+
+                test_qdp = QDataPipeline(data_filepath=test_file)
+                if (
+                    test_qdp.find_time_delta() > 0
+                    and max(test_df["Relative_time"]) < 1800
+                ):
+                    long_runs.append(test_file)
+                    if max(test_df["Relative_time"]) > longest_run[0]:
+                        longest_run = (max(test_df["Relative_time"]), test_file)
 
                 mm_results, good, bad = test_mm_on_file(test_file, act_poi)
                 good_list.append(good)
@@ -444,6 +458,22 @@ def run():
                 mm_deltas.append(compute_deltas(mm_results))
                 qmp_deltas.append(compute_deltas(qmp_results))
                 md_deltas.append(compute_deltas(md_results))
+    print(f"--- EXPLORATORY RESULTS ---")
+    print(f"Long Runs: {len(long_runs)}")
+    for f in long_runs:
+        print(f"\t-{f}")
+    input()
+    print(f"Longest run:  {longest_run}")
+    print(f"Partial Fills: {len(partial_fills)}")
+    for f in partial_fills:
+        print(f"\t-{f}")
+    input()
+    intersection = [value for value in long_runs if value in partial_fills]
+
+    print(f"Cross Reference: {len(intersection)}")
+    for f in intersection:
+        print(f"\t-{f}")
+    input()
     # for bad in bad_list:
     #     print(bad)
     #     if len(bad) > 0:
