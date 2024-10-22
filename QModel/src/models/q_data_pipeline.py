@@ -237,10 +237,6 @@ class QDataPipeline:
             ],
             inplace=True,
         )
-        t_delta = self.find_time_delta()
-        if t_delta > 0:
-            print("[INFO] Applying downsampling")
-            self.downsample(k=t_delta, factor=20)
         # STEP 1
         # Compute the difference curve of this dataframe.
         self.compute_difference()
@@ -298,6 +294,37 @@ class QDataPipeline:
         self.remove_trend("Dissipation")
         self.remove_trend("Resonance_Frequency")
         self.remove_trend("Difference")
+        # t_delta = self.find_time_delta()
+        # if t_delta > 0:
+
+        #     downsampling_factor = self.get_downsampling_factor()
+        #     print(f"[INFO] Applying downsampling with factor of {downsampling_factor}")
+        #     self.downsample(k=t_delta, factor=downsampling_factor)
+
+    def get_downsampling_factor(self) -> int:
+        # Calculate time deltas at the start and end of the dataframe
+        delta_start = (
+            self.__dataframe__["Relative_time"].iloc[2]
+            - self.__dataframe__["Relative_time"].iloc[1]
+        )
+        delta_end = (
+            self.__dataframe__["Relative_time"].iloc[-2]
+            - self.__dataframe__["Relative_time"].iloc[-3]
+        )
+
+        # Determine the larger time delta
+        larger_delta = max(delta_start, delta_end)
+
+        # Calculate how many indices fit within the larger delta at the end
+        indices_in_larger_delta = (
+            self.__dataframe__["Relative_time"].iloc[-1]
+            - self.__dataframe__["Relative_time"].iloc[0]
+        ) // larger_delta
+
+        # Return the downsampling factor, which is the number of indices fitting into the larger delta
+        downsampling_factor = len(self.__dataframe__) // indices_in_larger_delta
+        # return int(downsampling_factor)
+        return 20
 
     def find_time_delta(self) -> int:
         """
@@ -712,6 +739,8 @@ class QDataPipeline:
         """
         Downsample the dataframe up to position `k` by keeping every `factor`-th row.
 
+        If there is a value other than 0 in the "Class" column, remap it to the nearest downsampled point.
+
         Parameters:
         k (int): Position up to which downsampling is performed.
         factor (int): Downsample by this factor.
@@ -720,13 +749,52 @@ class QDataPipeline:
             raise ValueError("k is out of bounds for the dataframe length.")
 
         # Select the part to downsample
-        df_downsampled = self.__dataframe__.iloc[:k].iloc[::factor]
+        df_part = self.__dataframe__.iloc[:k]
+
+        # Find points in 'Class' column with values other than 0
+        non_zero_class = df_part[df_part["Class"] != 0]
+        indices = np.round(non_zero_class.index.to_numpy() / factor).astype(int)
+        indices = [round(value / factor) * factor for value in indices]
+        # Map non-zero class points to nearest downsampled point
+        # print()
+        # print(self.__dataframe__.index[self.__dataframe__["Class"] == 5].tolist())
+        # print(k)
+        for i, idx in enumerate(indices):
+            # print(idx, i + 1)
+            if df_part.at[idx, "Class"] != 0:
+                next_idx = idx + factor
+
+                # Find the next available index that is a multiple of 20
+                while next_idx < len(df_part) and df_part.at[next_idx, "Class"] != 0:
+                    next_idx += factor
+
+                # Check if next_idx is a multiple of 20
+                if next_idx % factor == 0 and next_idx < len(df_part):
+                    df_part.at[next_idx, "Class"] = i + 1
+                elif next_idx >= len(df_part):  # Ensure we don't go out of bounds
+                    print(f"Next index {next_idx} is out of bounds.")
+            else:
+                df_part.at[idx, "Class"] = i + 1
 
         # Select the rest of the dataframe
         df_rest = self.__dataframe__.iloc[k:]
-
         # Concatenate the downsampled part with the rest of the dataframe
-        self.__dataframe__ = pd.concat([df_downsampled, df_rest]).reset_index(drop=True)
+        self.__dataframe__ = pd.concat([df_part.iloc[::factor], df_rest]).reset_index()
+        self.__dataframe__["Class"] = self.__dataframe__["Class"].where(
+            ~(
+                self.__dataframe__["Class"].ne(0)
+                & self.__dataframe__["Class"].duplicated(keep="first")
+            ),
+            0,
+        )
+
+        non_zero_count = (self.__dataframe__["Class"] != 0).sum()
+        filtered_df = self.__dataframe__[self.__dataframe__["Class"] != 0]["Class"]
+        # print(filtered_df)
+        # if non_zero_count != 6:
+        #     raise ValueError(
+        #         f"Expected 6 non-zero values in the 'Class' column, but found {non_zero_count}."
+        #     )
 
     def compute_gradient(self, column: str) -> None:
         """

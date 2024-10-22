@@ -61,7 +61,7 @@ from tqdm import tqdm
 import joblib
 from QConstants import M_TARGET, TRAINING, FEATURES, TESTING, PLOTTING
 from q_data_pipeline import QDataPipeline
-from QModel.src.models.q_multi_model import QMultiModel, QPredictor
+from q_multi_model import QMultiModel, QPredictor
 
 
 def normalize(arr: np.ndarray = None) -> np.ndarray:
@@ -282,10 +282,25 @@ def xgb_pipeline(training_content: list) -> pd.DataFrame:
             matched_poi_file = f.replace(".csv", "_poi.csv")
             if not os.path.exists(matched_poi_file):
                 continue
-            qdp_pipeline.preprocess(poi_filepath=matched_poi_file)
-            has_nan = qdp_pipeline.__dataframe__.isna().any().any()
-            if not has_nan:
-                xgb_df = pd.concat([xgb_df, qdp_pipeline.get_dataframe()])
+            t_delta = qdp_pipeline.find_time_delta()
+            actual = pd.read_csv(matched_poi_file, header=None).values
+
+            if (
+                t_delta > 0
+                and max(qdp_pipeline.__dataframe__["Relative_time"]) < 1800
+                and max(actual) < len(qdp_pipeline.__dataframe__) - 1
+            ):
+
+                qdp_pipeline.preprocess(poi_filepath=matched_poi_file)
+
+                indices = qdp_pipeline.__dataframe__.index[
+                    qdp_pipeline.__dataframe__["Class"] != 0
+                ].tolist()
+                # print(f"actual: {actual}")
+                qdp_pipeline.downsample(t_delta, 20)
+                has_nan = qdp_pipeline.__dataframe__.isna().any().any()
+                if not has_nan:
+                    xgb_df = pd.concat([xgb_df, qdp_pipeline.get_dataframe()])
 
     resampled_df = resample_df(xgb_df, M_TARGET, M_TARGET)
     return resampled_df
@@ -296,9 +311,9 @@ if __name__ == "__main__":
     vals = [0, 1, 2]
     for t in vals:
 
-        model_name = f"QMultiType_{t}"
+        model_name = f"QMultiType_long"
         print(f"[INFO] Training {model_name}")
-        TRAIN_PATH = f"../content/label_{t}/train"
+        TRAIN_PATH = r"C:\Users\QATCH\dev\QATCH-ML\content\training_data"
 
         if TRAINING:
             train_content = load_content(TRAIN_PATH)
@@ -311,10 +326,14 @@ if __name__ == "__main__":
             qmodel.train_model()
             qmodel.save_model(model_name)
         if TESTING:
-            cluster_model = joblib.load("SavedModels/cluster.joblib")
+            cluster_model = joblib.load(
+                f"C:\\Users\\QATCH\\dev\\QATCH-ML\\QModel\\SavedModels\\label_{t}.pkl"
+            )
             data_df = pd.DataFrame()
             content = []
-            qmp = QPredictor(f"SavedModels/{model_name}.json")
+            qmp = QPredictor(
+                f"C:\\Users\\QATCH\\dev\\QATCH-ML\\QModel\\SavedModels\\{model_name}.json"
+            )
             TEST_PATH = f"content/label_{t}/test"
             for root, dirs, files in os.walk(TEST_PATH):
                 for file in files:

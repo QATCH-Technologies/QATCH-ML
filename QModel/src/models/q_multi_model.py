@@ -12,6 +12,7 @@ from sklearn.model_selection import train_test_split
 import pickle
 from scipy.signal import find_peaks, argrelextrema
 from scipy.interpolate import interp1d
+from q_long_predictor import QLongPredictor
 
 # from ModelData import ModelData
 
@@ -874,7 +875,6 @@ class QPredictor:
             return guess
 
     def adjustment_poi_6(self, guess, signal, diff, diss, actual, poi_5_guess):
-
         combo = self.normalize(signal[poi_5_guess:]) + self.normalize(
             diff[poi_5_guess:]
         )
@@ -979,174 +979,179 @@ class QPredictor:
         # Process data using QDataPipeline
         qdp = QDataPipeline(file_buffer_2)
         qdp2 = QDataPipeline(file_buffer_2)
-        # t_delta = qdp2.find_time_delta()
-        # if t_delta > 0:
-        #     qdp2.downsample(k=t_delta,factor=20)
-        diss_raw = qdp2.__dataframe__["Dissipation"]
-        rel_time = qdp2.__dataframe__["Relative_time"]
-        qdp.preprocess(poi_filepath=None)
-        diff_raw = qdp.__difference_raw__
-        df = qdp.get_dataframe()
-        f_names = self.__model__.feature_names
-        df = df[f_names]
-        d_data = xgb.DMatrix(df)
+        qlp = QLongPredictor()
+        t_delta = qdp.find_time_delta()
+        if t_delta > 0:
+            qlp.predict(qdp, t_delta)
+            return [1, 2, 3, 4, 5, 6]
+        else:
+            diss_raw = qdp2.__dataframe__["Dissipation"]
+            rel_time = qdp2.__dataframe__["Relative_time"]
+            qdp.preprocess(poi_filepath=None)
+            diff_raw = qdp.__difference_raw__
+            df = qdp.get_dataframe()
+            f_names = self.__model__.feature_names
+            df = df[f_names]
+            d_data = xgb.DMatrix(df)
 
-        results = self.__model__.predict(d_data)
-        normalized_results = self.normalize(results)
-        extracted_results = self.extract_results(normalized_results)
+            results = self.__model__.predict(d_data)
+            normalized_results = self.normalize(results)
+            extracted_results = self.extract_results(normalized_results)
 
-        # extracted_1 = emp_points[0]
-        extracted_1 = np.argmax(extracted_results[1])
-        extracted_2 = np.argmax(extracted_results[2])
-        extracted_3 = np.argmax(extracted_results[3])
-        extracted_4 = np.argmax(extracted_results[4])
-        extracted_5 = np.argmax(extracted_results[5])
-        extracted_6 = np.argmax(extracted_results[6])
-
-        if not isinstance(emp_predictions, list):
+            # extracted_1 = emp_points[0]
             extracted_1 = np.argmax(extracted_results[1])
+            extracted_2 = np.argmax(extracted_results[2])
+            extracted_3 = np.argmax(extracted_results[3])
+            extracted_4 = np.argmax(extracted_results[4])
+            extracted_5 = np.argmax(extracted_results[5])
+            extracted_6 = np.argmax(extracted_results[6])
 
-        if start > -1:
-            extracted_1 = start
-        if stop > -1:
-            extracted_6 = stop
+            if not isinstance(emp_predictions, list):
+                extracted_1 = np.argmax(extracted_results[1])
 
-        if len(emp_points) <= 0:
-            start_1 = extracted_1
-            start_2 = extracted_2
-            start_3 = extracted_3
-            start_4 = extracted_4
-            start_5 = extracted_5
-            start_6 = extracted_6
-        else:
-            start_1 = emp_points[0]
-            start_2 = emp_points[1]
-            start_3 = emp_points[2]
-            start_4 = emp_points[3]
-            start_5 = emp_points[4]
-            start_6 = emp_points[5]
-        adj_1 = start_1
-        poi_1 = self.adjustment_poi_1(guess=start_1, diss_raw=diss_raw)
-        adj_2, bounds_2 = self.adjust_predictions(
-            prediction=extracted_results[2],
-            rel_time=rel_time,
-            poi_num=2,
-            type=type,
-            i=poi_1,
-            j=extracted_6,
-        )
-        adj_3, bounds_3 = self.adjust_predictions(
-            prediction=extracted_results[3],
-            rel_time=rel_time,
-            poi_num=3,
-            type=type,
-            i=poi_1,
-            j=extracted_6,
-        )
-        adj_4, bounds_4 = self.adjust_predictions(
-            prediction=extracted_results[4],
-            rel_time=rel_time,
-            poi_num=4,
-            type=type,
-            i=poi_1,
-            j=extracted_6,
-        )
-        adj_5, bounds_5 = self.adjust_predictions(
-            prediction=extracted_results[5],
-            rel_time=rel_time,
-            poi_num=5,
-            type=type,
-            i=poi_1,
-            j=extracted_6,
-        )
-        adj_6 = extracted_results[6]
-        candidates_1 = self.find_and_sort_peaks(extracted_results[1])
-        candidates_2 = self.find_and_sort_peaks(adj_2)
-        candidates_3 = self.find_and_sort_peaks(adj_3)
-        candidates_4 = self.find_and_sort_peaks(adj_4)
-        candidates_5 = self.find_and_sort_peaks(adj_5)
-        candidates_6 = self.find_and_sort_peaks(adj_6)
+            if start > -1:
+                extracted_1 = start
+            if stop > -1:
+                extracted_6 = stop
 
-        poi_2 = self.adjustment_poi_2(
-            guess=start_2,
-            diss_raw=diss_raw,
-            actual=act[1],
-            bounds=bounds_2,
-            poi_1_guess=poi_1,
-        )
-        # poi_2 = emp_points[1]
-        poi_4 = self.adjustmet_poi_4(df, candidates_4, extracted_4, act[3], bounds_4)
+            if len(emp_points) <= 0:
+                start_1 = extracted_1
+                start_2 = extracted_2
+                start_3 = extracted_3
+                start_4 = extracted_4
+                start_5 = extracted_5
+                start_6 = extracted_6
+            else:
+                start_1 = emp_points[0]
+                start_2 = emp_points[1]
+                start_3 = emp_points[2]
+                start_4 = emp_points[3]
+                start_5 = emp_points[4]
+                start_6 = emp_points[5]
+            adj_1 = start_1
+            poi_1 = self.adjustment_poi_1(guess=start_1, diss_raw=diss_raw)
+            adj_2, bounds_2 = self.adjust_predictions(
+                prediction=extracted_results[2],
+                rel_time=rel_time,
+                poi_num=2,
+                type=type,
+                i=poi_1,
+                j=extracted_6,
+            )
+            adj_3, bounds_3 = self.adjust_predictions(
+                prediction=extracted_results[3],
+                rel_time=rel_time,
+                poi_num=3,
+                type=type,
+                i=poi_1,
+                j=extracted_6,
+            )
+            adj_4, bounds_4 = self.adjust_predictions(
+                prediction=extracted_results[4],
+                rel_time=rel_time,
+                poi_num=4,
+                type=type,
+                i=poi_1,
+                j=extracted_6,
+            )
+            adj_5, bounds_5 = self.adjust_predictions(
+                prediction=extracted_results[5],
+                rel_time=rel_time,
+                poi_num=5,
+                type=type,
+                i=poi_1,
+                j=extracted_6,
+            )
+            adj_6 = extracted_results[6]
+            candidates_1 = self.find_and_sort_peaks(extracted_results[1])
+            candidates_2 = self.find_and_sort_peaks(adj_2)
+            candidates_3 = self.find_and_sort_peaks(adj_3)
+            candidates_4 = self.find_and_sort_peaks(adj_4)
+            candidates_5 = self.find_and_sort_peaks(adj_5)
+            candidates_6 = self.find_and_sort_peaks(adj_6)
 
-        # Hot fix to prevent out of order poi_4 and poi_5
-        # if bounds_5[0] < poi_4:
-        #     lst = list(bounds_5)
-        #     lst[0] = poi_4 + 1
-        #     bounds_5 = tuple(lst)
-
-        poi_5 = self.adjustmet_poi_5(
-            df, candidates_5, extracted_5, start_5, act[4], bounds_5
-        )
-        # poi_5 = np.argmax(adj_5)
-        if poi_1 >= poi_2:
-            poi_1 = adj_1
-        poi_3 = np.argmax(adj_3)
-
-        # skip adjustment of point 6 when inverted (drop applied to outlet)
-        if diff_raw.mean() < 0:
-            poi_6 = start_6
-        else:
-            poi_6 = self.adjustment_poi_6(
-                np.argmax(adj_6),
-                adj_6,
-                df["Difference"],
-                df["Dissipation"],
-                act[5],
-                poi_5,
+            poi_2 = self.adjustment_poi_2(
+                guess=start_2,
+                diss_raw=diss_raw,
+                actual=act[1],
+                bounds=bounds_2,
+                poi_1_guess=poi_1,
+            )
+            # poi_2 = emp_points[1]
+            poi_4 = self.adjustmet_poi_4(
+                df, candidates_4, extracted_4, act[3], bounds_4
             )
 
-        def sort_and_remove_point(arr, point):
-            arr = np.array(arr)
-            if len(arr) > MAX_GUESSES - 1:
-                arr = arr[: MAX_GUESSES - 1]
-            arr.sort()
-            return arr[arr != point]
+            # Hot fix to prevent out of order poi_4 and poi_5
+            # if bounds_5[0] < poi_4:
+            #     lst = list(bounds_5)
+            #     lst[0] = poi_4 + 1
+            #     bounds_5 = tuple(lst)
 
-        candidates_1 = sort_and_remove_point(candidates_1, poi_1)
-        candidates_2 = sort_and_remove_point(candidates_2, poi_2)
-        candidates_3 = sort_and_remove_point(candidates_3, poi_3)
-        candidates_4 = sort_and_remove_point(candidates_4, poi_4)
-        candidates_5 = sort_and_remove_point(candidates_5, poi_5)
-        candidates_6 = sort_and_remove_point(candidates_6, poi_6)
+            poi_5 = self.adjustmet_poi_5(
+                df, candidates_5, extracted_5, start_5, act[4], bounds_5
+            )
+            # poi_5 = np.argmax(adj_5)
+            if poi_1 >= poi_2:
+                poi_1 = adj_1
+            poi_3 = np.argmax(adj_3)
 
-        candidates_1 = np.insert(candidates_1, 0, poi_1)
-        candidates_2 = np.insert(candidates_2, 0, poi_2)
-        candidates_3 = np.insert(candidates_3, 0, poi_3)
-        candidates_4 = np.insert(candidates_4, 0, poi_4)
-        candidates_5 = np.insert(candidates_5, 0, poi_5)
-        candidates_6 = np.insert(candidates_6, 0, poi_6)
+            # skip adjustment of point 6 when inverted (drop applied to outlet)
+            if diff_raw.mean() < 0:
+                poi_6 = start_6
+            else:
+                poi_6 = self.adjustment_poi_6(
+                    np.argmax(adj_6),
+                    adj_6,
+                    df["Difference"],
+                    df["Dissipation"],
+                    act[5],
+                    poi_5,
+                )
 
-        confidence_1 = np.array(extracted_results[1])[candidates_1]
-        confidence_2 = np.array(adj_2)[candidates_2]
-        confidence_3 = np.array(adj_3)[candidates_3]
-        confidence_4 = np.array(adj_4)[candidates_4]
-        confidence_5 = np.array(adj_5)[candidates_5]
-        confidence_6 = np.array(adj_6)[candidates_6]
-        # confidence_1 = []
-        # confidence_2 = []
-        # confidence_3 = []
-        # confidence_4 = []
-        # confidence_5 = []
-        # confidence_6 = []
+            def sort_and_remove_point(arr, point):
+                arr = np.array(arr)
+                if len(arr) > MAX_GUESSES - 1:
+                    arr = arr[: MAX_GUESSES - 1]
+                arr.sort()
+                return arr[arr != point]
 
-        # TODO: Adjust 1st confidence to be better than 2nd guess
+            candidates_1 = sort_and_remove_point(candidates_1, poi_1)
+            candidates_2 = sort_and_remove_point(candidates_2, poi_2)
+            candidates_3 = sort_and_remove_point(candidates_3, poi_3)
+            candidates_4 = sort_and_remove_point(candidates_4, poi_4)
+            candidates_5 = sort_and_remove_point(candidates_5, poi_5)
+            candidates_6 = sort_and_remove_point(candidates_6, poi_6)
 
-        candidates = [
-            (candidates_1, confidence_1),
-            (candidates_2, confidence_2),
-            (candidates_3, confidence_3),
-            (candidates_4, confidence_4),
-            (candidates_5, confidence_5),
-            (candidates_6, confidence_6),
-        ]
+            candidates_1 = np.insert(candidates_1, 0, poi_1)
+            candidates_2 = np.insert(candidates_2, 0, poi_2)
+            candidates_3 = np.insert(candidates_3, 0, poi_3)
+            candidates_4 = np.insert(candidates_4, 0, poi_4)
+            candidates_5 = np.insert(candidates_5, 0, poi_5)
+            candidates_6 = np.insert(candidates_6, 0, poi_6)
 
-        return candidates
+            confidence_1 = np.array(extracted_results[1])[candidates_1]
+            confidence_2 = np.array(adj_2)[candidates_2]
+            confidence_3 = np.array(adj_3)[candidates_3]
+            confidence_4 = np.array(adj_4)[candidates_4]
+            confidence_5 = np.array(adj_5)[candidates_5]
+            confidence_6 = np.array(adj_6)[candidates_6]
+            # confidence_1 = []
+            # confidence_2 = []
+            # confidence_3 = []
+            # confidence_4 = []
+            # confidence_5 = []
+            # confidence_6 = []
+
+            # TODO: Adjust 1st confidence to be better than 2nd guess
+
+            candidates = [
+                (candidates_1, confidence_1),
+                (candidates_2, confidence_2),
+                (candidates_3, confidence_3),
+                (candidates_4, confidence_4),
+                (candidates_5, confidence_5),
+                (candidates_6, confidence_6),
+            ]
+
+            return candidates
