@@ -276,6 +276,7 @@ def xgb_pipeline(training_content: list) -> pd.DataFrame:
     """
     print(f"[INFO] XGB Preprocessing on {len(training_content)} datasets")
     xgb_df = pd.DataFrame()
+    dataset_count = 0
     for f in tqdm(training_content, desc="<<Processing XGB>>"):
         if f.endswith(".csv") and not f.endswith("_poi.csv"):
             qdp_pipeline = QDataPipeline(f, multi_class=True)
@@ -301,8 +302,10 @@ def xgb_pipeline(training_content: list) -> pd.DataFrame:
                 has_nan = qdp_pipeline.__dataframe__.isna().any().any()
                 if not has_nan:
                     xgb_df = pd.concat([xgb_df, qdp_pipeline.get_dataframe()])
+                    dataset_count += 1
 
     resampled_df = resample_df(xgb_df, M_TARGET, M_TARGET)
+    print(f"[INFO] Collected {dataset_count} for training.")
     return resampled_df
 
 
@@ -318,7 +321,7 @@ if __name__ == "__main__":
         if TRAINING:
             train_content = load_content(TRAIN_PATH)
             training_set = xgb_pipeline(train_content)
-            print("[INFO] Building multi-target model")
+            print("[STATUS] Building multi-target model")
             qmodel = QMultiModel(
                 dataset=training_set, predictors=FEATURES, target_features=M_TARGET
             )
@@ -334,6 +337,7 @@ if __name__ == "__main__":
             qmp = QPredictor(
                 f"C:\\Users\\QATCH\\dev\\QATCH-ML\\QModel\\SavedModels\\{model_name}.json"
             )
+            # TEST_PATH = f"content/test_data"
             TEST_PATH = f"content/label_{t}/test"
             for root, dirs, files in os.walk(TEST_PATH):
                 for file in files:
@@ -353,7 +357,7 @@ if __name__ == "__main__":
                     if time_delta == -1:
                         continue
                     print("[INFO] Predicting using multi-target model")
-                    predictions = qmp.predict(data_file)
+                    predictions = qmp.predict(data_file, type=0)
                     pois = []
                     for c in predictions:
                         pois.append(c[0][0])
@@ -384,6 +388,7 @@ if __name__ == "__main__":
                                 linestyle="dashed",
                                 label=f"Actual POI {i + 1}",
                             )
+                        plt.axvline(time_delta, color="black", label="Sampling Shift")
                         plot_name = data_file.replace(TRAIN_PATH, "")
                         plt.xlabel("POIs")
                         plt.ylabel("Dissipation")

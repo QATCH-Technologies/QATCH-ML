@@ -735,7 +735,7 @@ class QDataPipeline:
         self.__dataframe__.replace([np.inf, -np.inf], 0)
         self.__dataframe__.replace(np.nan, 0)
 
-    def downsample(self, k: int, factor: int, mode: int) -> None:
+    def downsample(self, k: int, factor: int) -> None:
         """
         Downsample the dataframe up to position `k` by keeping every `factor`-th row.
 
@@ -750,49 +750,30 @@ class QDataPipeline:
         if k > len(self.__dataframe__):
             raise ValueError("k is out of bounds for the dataframe length.")
 
+        original_df = self.__dataframe__
         # Select the part to downsample
-        df_part = self.__dataframe__.iloc[:k]
+        df_part = original_df.iloc[:k]
         # Select the rest of the dataframe
-        df_rest = self.__dataframe__.iloc[k:]
-        if mode == 0:
-            # Find points in 'Class' column with values other than 0
-            non_zero_class = df_part[df_part["Class"] != 0]
-            indices = np.round(non_zero_class.index.to_numpy() / factor).astype(int)
-            indices = [round(value / factor) * factor for value in indices]
-            for i, idx in enumerate(indices):
-                # print(idx, i + 1)
-                if df_part.at[idx, "Class"] != 0:
-                    next_idx = idx + factor
+        df_rest = original_df.iloc[k:]
+        resampled_df = pd.concat([df_part.iloc[::factor], df_rest])
+        if "Class" in original_df.columns:
+            nonzero_class_rows = original_df[original_df["Class"] != 0]
+            resampled_df = pd.concat([resampled_df, nonzero_class_rows])
+            resampled_df = resampled_df.sort_values(by="Relative_time")
 
-                    # Find the next available index that is a multiple of 20
-                    while (
-                        next_idx < len(df_part) and df_part.at[next_idx, "Class"] != 0
-                    ):
-                        next_idx += factor
+            # import matplotlib.pyplot as plt
+            # import seaborn as sns
 
-                    # Check if next_idx is a multiple of 20
-                    if next_idx % factor == 0 and next_idx < len(df_part):
-                        df_part.at[next_idx, "Class"] = i + 1
-                    elif next_idx >= len(df_part):  # Ensure we don't go out of bounds
-                        print(f"Next index {next_idx} is out of bounds.")
-                else:
-                    df_part.at[idx, "Class"] = i + 1
-
-            # Concatenate the downsampled part with the rest of the dataframe
-            self.__dataframe__ = pd.concat(
-                [df_part.iloc[::factor], df_rest]
-            ).reset_index()
-            self.__dataframe__["Class"] = self.__dataframe__["Class"].where(
-                ~(
-                    self.__dataframe__["Class"].ne(0)
-                    & self.__dataframe__["Class"].duplicated(keep="first")
-                ),
-                0,
-            )
-        else:
-            self.__dataframe__ = pd.concat(
-                [df_part.iloc[::factor], df_rest]
-            ).reset_index()
+            # nonzero_locations = resampled_df[resampled_df["Class"] != 0].index[:6]
+            # palette = sns.color_palette("husl", 7)
+            # plt.figure(figsize=(8, 8))
+            # plt.plot(resampled_df["Dissipation"])
+            # for i, loc in enumerate(nonzero_locations):
+            #     plt.axvline(loc, label=f"POI {i+1}", color=palette[i])
+            # plt.plot(resampled_df["Class"])
+            # plt.legend()
+            # plt.show()
+        self.__dataframe__ = resampled_df.reset_index(drop=True)
 
     def compute_gradient(self, column: str) -> None:
         """

@@ -41,12 +41,13 @@ class QLongPredictor:
 
         return extracted
 
+    def adjustment_poi_6(self, candidates, poi_5_guess):
+        return candidates[candidates >= poi_5_guess]
+
     def predict(self, data: QDataPipeline, t_delta: int):
         original_df = data.__dataframe__
         data.preprocess()
-        data.downsample(k=t_delta, factor=20, mode=1)
-
-        after = data.__dataframe__
+        data.downsample(k=t_delta, factor=20)
         df = data.get_dataframe()
         f_names = self.__model__.feature_names
         df = df[f_names]
@@ -61,6 +62,7 @@ class QLongPredictor:
         candidates_4 = self.find_and_sort_peaks(extracted[4])
         candidates_5 = self.find_and_sort_peaks(extracted[5])
         candidates_6 = self.find_and_sort_peaks(extracted[6])
+        candidates_6 = self.adjustment_poi_6(candidates_6, candidates_5[0])
         confidence_1 = np.array(extracted[1])[candidates_1]
         confidence_2 = np.array(extracted[2])[candidates_2]
         confidence_3 = np.array(extracted[3])[candidates_3]
@@ -83,6 +85,7 @@ class QLongPredictor:
             candidates_5,
             candidates_6,
         ):
+
             r_time_1 = data.__dataframe__.at[poi_1, "Relative_time"]
             r_time_2 = data.__dataframe__.at[poi_2, "Relative_time"]
             r_time_3 = data.__dataframe__.at[poi_3, "Relative_time"]

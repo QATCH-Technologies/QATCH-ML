@@ -1,6 +1,4 @@
-import sys
 import os
-import random
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -11,7 +9,7 @@ from scipy.signal import find_peaks
 from sklearn.model_selection import train_test_split
 import pickle
 from scipy.signal import find_peaks, argrelextrema
-from scipy.interpolate import interp1d
+from q_long_predictor import QLongPredictor
 
 # from ModelData import ModelData
 
@@ -76,9 +74,11 @@ if not QDataPipeline_found:
 class QMultiModel:
     """
     A class used to represent and manage an XGBoost model for multi-target classification tasks.
+
     This class handles the initialization, training, hyperparameter tuning, and management of an XGBoost model.
     It supports multi-target classification with specific hyperparameters and uses cross-validation to optimize
     the model's performance.
+
     Attributes:
         __params__ (dict): A dictionary of hyperparameters used for training the XGBoost model.
         __train_df__ (pd.DataFrame): Training subset of the dataset.
@@ -89,17 +89,23 @@ class QMultiModel:
         __dtest__ (xgb.DMatrix): DMatrix object for the test data.
         __watchlist__ (list): List of DMatrix objects to monitor during training, containing tuples of the form (DMatrix, "name").
         __model__ (xgb.Booster or None): The trained XGBoost model, initially set to None.
+
     Methods:
         __init__(self, dataset, predictors, target_features):
             Initializes the XGBoost model with the specified dataset, predictors, and target features.
+
         train_model(self):
             Trains the multi-target XGBoost model using the training dataset.
+
         objective(self, params):
             Evaluates the performance of the XGBoost model using cross-validation and returns the best AUC score.
+
         tune(self, evaluations=250):
             Tunes the XGBoost model's hyperparameters using Bayesian optimization with Tree-structured Parzen Estimator (TPE).
+
         save_model(self, model_name="QMultiModel"):
             Saves the trained XGBoost model to a specified file.
+
         get_model(self):
             Retrieves the trained XGBoost model.
     """
@@ -112,10 +118,12 @@ class QMultiModel:
     ) -> None:
         """
         Initializes the XGBoost model with the specified dataset, predictors, and target features.
+
         Args:
             dataset (pd.DataFrame): The complete dataset containing both predictors and target features.
             predictors (list[str]): A list of column names in `dataset` that will be used as features for model training.
             target_features (list[str]): A list of column names in `dataset` that will be used as target variables for the model.
+
         Attributes:
             __params__ (dict): A dictionary of hyperparameters used for training the XGBoost model. These include:
                 - objective (str): The learning task and objective ("multi:softprob" for multi-class classification).
@@ -133,13 +141,17 @@ class QMultiModel:
                 - sampling_method (str): Sampling method ("gradient_based").
                 - seed (int): Random seed for reproducibility (SEED).
                 - num_class (int): Number of classes (7).
+
             __train_df__ (pd.DataFrame): Training subset of the dataset.
             __valid_df__ (pd.DataFrame): Validation subset of the dataset.
             __test_df__ (pd.DataFrame): Test subset of the dataset.
+
             __dtrain__ (xgb.DMatrix): DMatrix object for the training data.
             __dvalid__ (xgb.DMatrix): DMatrix object for the validation data.
             __dtest__ (xgb.DMatrix): DMatrix object for the test data.
+
             __watchlist__ (list): List of DMatrix objects to watch during training, containing tuples of the form (DMatrix, "name").
+
             __model__ (xgb.Booster or None): The trained XGBoost model, initially set to None.
         """
         self.__params__ = {
@@ -193,13 +205,18 @@ class QMultiModel:
     def train_model(self) -> None:
         """
         Trains the multi-target XGBoost model using the training dataset.
+
         This method initializes the training process for the XGBoost model with the previously defined parameters and datasets.
         The model is trained over a number of rounds with early stopping if the performance does not improve on the validation set.
+
         During the training process, the model's performance is evaluated on both the training and validation datasets,
         and the best model based on the validation performance is saved.
+
         Prints a status message indicating the start of the training process.
+
         Attributes:
             __model__ (xgb.Booster): The trained XGBoost model after completion of the training process.
+
         Raises:
             ValueError: If any of the necessary parameters or datasets have not been initialized prior to calling this method.
         """
@@ -239,15 +256,19 @@ class QMultiModel:
     def objective(self, params: dict = None) -> None:
         """
         Evaluates the performance of the XGBoost model using cross-validation and returns the best AUC score.
+
         This method performs k-fold cross-validation on the training dataset using the provided hyperparameters.
         The method returns the best AUC score from the cross-validation process, which can be used as the objective function
         in hyperparameter optimization.
+
         Args:
             params (dict): Dictionary of hyperparameters to be used in the XGBoost model during cross-validation.
+
         Returns:
             dict: A dictionary containing the following keys:
                 - "loss" (float): The best mean AUC score on the test set obtained during cross-validation.
                 - "status" (str): The status of the evaluation, typically "ok".
+
         Raises:
             ValueError: If any of the necessary parameters or datasets have not been initialized prior to calling this method.
         """
@@ -267,19 +288,23 @@ class QMultiModel:
     def tune(self, evaluations: int = 250) -> dict:
         """
         Tunes the XGBoost model's hyperparameters using Bayesian optimization with Tree-structured Parzen Estimator (TPE).
+
         This method runs the hyperparameter tuning process for a specified number of iterations.
         It searches for the best hyperparameters within the defined search space by minimizing the loss function.
         The search is based on the performance of the model as evaluated by cross-validation.
+
         Args:
             evaluations (int, optional): The maximum number of iterations for hyperparameter optimization. Default is 250.
+
         Returns:
             dict: A dictionary of the best hyperparameters found during the tuning process.
+
         Raises:
             ValueError: If any of the necessary parameters or datasets have not been initialized prior to calling this method.
+
         Example:
             best_hyperparams = self.tune(evaluations=300)
         """
-        print(f"[STATUS] Running model tuning for {evaluations} max iterations")
         print(f"[STATUS] Running model tuning for {evaluations} max iterations")
         space = {
             "max_depth": hp.choice("max_depth", np.arange(1, 20, 1, dtype=int)),
@@ -334,12 +359,16 @@ class QMultiModel:
     def save_model(self, model_name: str = "QMultiModel") -> None:
         """
         Saves the trained XGBoost model to a specified file.
+
         This method saves the current XGBoost model in JSON format to the specified location.
         The model is saved in the "QModel/SavedModels/" directory with the provided model name.
+
         Args:
             model_name (str, optional): The name of the model file to be saved. Default is "QMultiModel".
+
         Returns:
             None
+
         Example:
             self.save_model(model_name="MyModel")
         """
@@ -350,9 +379,12 @@ class QMultiModel:
     def get_model(self) -> xgb.Booster:
         """
         Retrieves the trained XGBoost model.
+
         This method returns the trained XGBoost model, which can be used for further predictions or analysis.
+
         Returns:
             xgb.Booster: The trained XGBoost model.
+
         Example:
             model = self.get_model()
         """
@@ -368,20 +400,18 @@ class QPredictor:
         self.__model__ = xgb.Booster()
 
         self.__model__.load_model(model_path)
-        # with open("QModel/SavedModels/label_0.pkl", "rb") as file:
-        #     self.__label_0__ = pickle.load(file)
-        # with open("QModel/SavedModels/label_1.pkl", "rb") as file:
-        #     self.__label_1__ = pickle.load(file)
-        # with open("QModel/SavedModels/label_2.pkl", "rb") as file:
-        #     self.__label_2__ = pickle.load(file)
+        with open("QModel/SavedModels/label_0.pkl", "rb") as file:
+            self.__label_0__ = pickle.load(file)
+        with open("QModel/SavedModels/label_1.pkl", "rb") as file:
+            self.__label_1__ = pickle.load(file)
+        with open("QModel/SavedModels/label_2.pkl", "rb") as file:
+            self.__label_2__ = pickle.load(file)
         # Find the pickle files dynamically, using Architecture path (if available)
         if Architecture_found:
             relative_root = os.path.join(Architecture.get_path(), "QATCH")
         else:
             relative_root = os.getcwd()
         pickle_path = os.path.join(relative_root, "QModel/SavedModels/label_{}.pkl")
-        pickle_path = os.path.join(
-            relative_root, "QModel/SavedModels/label_{}.pkl")
         for i in range(3):
             with open(pickle_path.format(i), "rb") as file:
                 setattr(self, f"__label_{i}__", pickle.load(file))
@@ -429,7 +459,6 @@ class QPredictor:
             bounds = self.__label_1__["Class_" + str(poi_num)]
         elif type == 2:
             bounds = self.__label_2__["Class_" + str(poi_num)]
-
         lq = bounds["lq"]
         uq = bounds["uq"]
         adj = np.where((rel_time_norm >= lq) & (rel_time_norm <= uq), 1, 0)
@@ -446,8 +475,6 @@ class QPredictor:
 
         lq_idx = next((i for i, x in enumerate(adj) if x == 1), -1) + i
         uq_idx = next((i for i, x in reversed(list(enumerate(adj))) if x == 1), -1) + i
-        uq_idx = next((i for i, x in reversed(
-            list(enumerate(adj))) if x == 1), -1) + i
         return prediction, (lq_idx, uq_idx)
 
     def find_and_sort_peaks(self, signal):
@@ -479,7 +506,6 @@ class QPredictor:
         for i in range(len(diff) - window_size + 1):
             # Calculate the slope change over the current window
             window_slope_change = np.mean(np.diff(diff[i : i + window_size]))
-            window_slope_change = np.mean(np.diff(diff[i: i + window_size]))
             slope_change.append(window_slope_change)
 
         slope_change = np.array(slope_change)
@@ -543,8 +569,6 @@ class QPredictor:
     def adjustment_poi_1(self, guess, diss_raw):
 
         zero_slope = self.find_zero_slope_regions(self.normalize(diss_raw), 0.0075, 100)
-        zero_slope = self.find_zero_slope_regions(
-            self.normalize(diss_raw), 0.0075, 100)
         adjusted_guess = guess
 
         if len(zero_slope) >= 2:
@@ -572,7 +596,12 @@ class QPredictor:
 
         else:
             peaks, _ = find_peaks(diss_raw)
+            if len(peaks) == 0:
+                return guess
             distances = np.abs(peaks - adjusted_guess)
+            print()
+            print(f"Peaks: {peaks}")
+            print(f"Distances: {distances}")
             nearest_peak_index = peaks[np.argmin(distances)]
             adjusted_guess = nearest_peak_index
 
@@ -668,7 +697,10 @@ class QPredictor:
         diff_points = np.array(diff_peaks)
         x_min, x_max = bounds
         candidates = np.append(candidates, guess)
-        candidate_density = len(candidates) / (x_max - x_min)
+        if x_max - x_min > 0:
+            candidate_density = len(candidates) / (x_max - x_min)
+        else:
+            candidate_density = 1
         if candidate_density < 0.02 or (guess < x_min or guess > x_max):
             # Filter RF points within the bounds
             rf_points = np.concatenate((rf_points, diss_points))
@@ -714,8 +746,6 @@ class QPredictor:
 
             # Calculate distances from candidate points to the closest RF point
             distances_to_closest_rf = np.abs(candidate_points - closest_rf_point)
-            distances_to_closest_rf = np.abs(
-                candidate_points - closest_rf_point)
 
             # Find the closest candidate point to the closest RF point
             closest_candidate_idx = np.argmin(distances_to_closest_rf)
@@ -768,7 +798,10 @@ class QPredictor:
         diff_points = np.array(diff_peaks)
         np.concatenate((rf_points, diff_points, diss_points))
         x_min, x_max = bounds
-        candidate_density = len(candidates) / (x_max - x_min)
+        if x_max - x_min:
+            candidate_density = len(candidates) / (x_max - x_min)
+        else:
+            candidate_density = 1
         if candidate_density < 0.01:
             zero_slope = self.find_zero_slope_regions(rf)
             # Filter RF points within the bounds
@@ -812,8 +845,6 @@ class QPredictor:
 
             # Calculate distances from candidate points to the closest RF point
             distances_to_closest_rf = np.abs(candidate_points - closest_rf_point)
-            distances_to_closest_rf = np.abs(
-                candidate_points - closest_rf_point)
 
             # Find the closest candidate point to the closest RF point
             closest_candidate_idx = np.argmin(distances_to_closest_rf)
@@ -845,7 +876,6 @@ class QPredictor:
             return guess
 
     def adjustment_poi_6(self, guess, signal, diff, diss, actual, poi_5_guess):
-
         combo = self.normalize(signal[poi_5_guess:]) + self.normalize(
             diff[poi_5_guess:]
         )
@@ -881,7 +911,6 @@ class QPredictor:
         columns_to_drop = ["Date", "Time", "Ambient", "Temperature"]
         if not all(col in df.columns for col in columns_to_drop):
             raise ValueError(
-                f"[QModelPredict predict()]: Input data must contain the following columns: {columns_to_drop}"
                 f"[QModelPredict predict()]: Input data must contain the following columns: {columns_to_drop}"
             )
 
@@ -950,8 +979,13 @@ class QPredictor:
 
         # Process data using QDataPipeline
         qdp = QDataPipeline(file_buffer_2)
-        diss_raw = qdp.__dataframe__["Dissipation"]
-        rel_time = qdp.__dataframe__["Relative_time"]
+        qdp2 = QDataPipeline(file_buffer_2)
+        qlp = QLongPredictor()
+        t_delta = qdp.find_time_delta()
+        # if t_delta > 0:
+        qlp_predictions = qlp.predict(qdp2, t_delta)
+        diss_raw = qdp2.__dataframe__["Dissipation"]
+        rel_time = qdp2.__dataframe__["Relative_time"]
         qdp.preprocess(poi_filepath=None)
         diff_raw = qdp.__difference_raw__
         df = qdp.get_dataframe()
@@ -1044,16 +1078,17 @@ class QPredictor:
         )
         # poi_2 = emp_points[1]
         poi_4 = self.adjustmet_poi_4(df, candidates_4, extracted_4, act[3], bounds_4)
-        poi_4 = self.adjustmet_poi_4(
-            df, candidates_4, extracted_4, act[3], bounds_4)
+
         # Hot fix to prevent out of order poi_4 and poi_5
-        if bounds_5[0] < poi_4:
-            lst = list(bounds_5)
-            lst[0] = poi_4 + 1
-            bounds_5 = tuple(lst)
+        # if bounds_5[0] < poi_4:
+        #     lst = list(bounds_5)
+        #     lst[0] = poi_4 + 1
+        #     bounds_5 = tuple(lst)
+
         poi_5 = self.adjustmet_poi_5(
             df, candidates_5, extracted_5, start_5, act[4], bounds_5
         )
+        # poi_5 = np.argmax(adj_5)
         if poi_1 >= poi_2:
             poi_1 = adj_1
         poi_3 = np.argmax(adj_3)
@@ -1074,7 +1109,7 @@ class QPredictor:
         def sort_and_remove_point(arr, point):
             arr = np.array(arr)
             if len(arr) > MAX_GUESSES - 1:
-                arr = arr[:MAX_GUESSES - 1]
+                arr = arr[: MAX_GUESSES - 1]
             arr.sort()
             return arr[arr != point]
 
@@ -1098,16 +1133,25 @@ class QPredictor:
         confidence_4 = np.array(adj_4)[candidates_4]
         confidence_5 = np.array(adj_5)[candidates_5]
         confidence_6 = np.array(adj_6)[candidates_6]
+        # confidence_1 = []
+        # confidence_2 = []
+        # confidence_3 = []
+        # confidence_4 = []
+        # confidence_5 = []
+        # confidence_6 = []
 
         # TODO: Adjust 1st confidence to be better than 2nd guess
-
+        if t_delta > 0:
+            temp_6 = qlp_predictions[5]
+        else:
+            temp_6 = (candidates_6, confidence_6)
         candidates = [
             (candidates_1, confidence_1),
             (candidates_2, confidence_2),
             (candidates_3, confidence_3),
             (candidates_4, confidence_4),
             (candidates_5, confidence_5),
-            (candidates_6, confidence_6),
+            temp_6,
         ]
 
         return candidates
