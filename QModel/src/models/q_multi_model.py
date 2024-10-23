@@ -1,6 +1,4 @@
-import sys
 import os
-import random
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -11,7 +9,6 @@ from scipy.signal import find_peaks
 from sklearn.model_selection import train_test_split
 import pickle
 from scipy.signal import find_peaks, argrelextrema
-from scipy.interpolate import interp1d
 from q_long_predictor import QLongPredictor
 
 # from ModelData import ModelData
@@ -982,8 +979,8 @@ class QPredictor:
         qlp = QLongPredictor()
         t_delta = qdp.find_time_delta()
         if t_delta > 0:
-            qlp.predict(qdp, t_delta)
-            return [1, 2, 3, 4, 5, 6]
+            return qlp.predict(qdp, t_delta)
+            
         else:
             diss_raw = qdp2.__dataframe__["Dissipation"]
             rel_time = qdp2.__dataframe__["Relative_time"]

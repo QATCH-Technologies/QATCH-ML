@@ -735,7 +735,7 @@ class QDataPipeline:
         self.__dataframe__.replace([np.inf, -np.inf], 0)
         self.__dataframe__.replace(np.nan, 0)
 
-    def downsample(self, k: int, factor: int) -> None:
+    def downsample(self, k: int, factor: int, mode: int) -> None:
         """
         Downsample the dataframe up to position `k` by keeping every `factor`-th row.
 
@@ -744,57 +744,55 @@ class QDataPipeline:
         Parameters:
         k (int): Position up to which downsampling is performed.
         factor (int): Downsample by this factor.
+        mode (int): Prediction mode (1) ignores class column.  Training mode (0) adds training column
+            downsampling.
         """
         if k > len(self.__dataframe__):
             raise ValueError("k is out of bounds for the dataframe length.")
 
         # Select the part to downsample
         df_part = self.__dataframe__.iloc[:k]
-
-        # Find points in 'Class' column with values other than 0
-        non_zero_class = df_part[df_part["Class"] != 0]
-        indices = np.round(non_zero_class.index.to_numpy() / factor).astype(int)
-        indices = [round(value / factor) * factor for value in indices]
-        # Map non-zero class points to nearest downsampled point
-        # print()
-        # print(self.__dataframe__.index[self.__dataframe__["Class"] == 5].tolist())
-        # print(k)
-        for i, idx in enumerate(indices):
-            # print(idx, i + 1)
-            if df_part.at[idx, "Class"] != 0:
-                next_idx = idx + factor
-
-                # Find the next available index that is a multiple of 20
-                while next_idx < len(df_part) and df_part.at[next_idx, "Class"] != 0:
-                    next_idx += factor
-
-                # Check if next_idx is a multiple of 20
-                if next_idx % factor == 0 and next_idx < len(df_part):
-                    df_part.at[next_idx, "Class"] = i + 1
-                elif next_idx >= len(df_part):  # Ensure we don't go out of bounds
-                    print(f"Next index {next_idx} is out of bounds.")
-            else:
-                df_part.at[idx, "Class"] = i + 1
-
         # Select the rest of the dataframe
         df_rest = self.__dataframe__.iloc[k:]
-        # Concatenate the downsampled part with the rest of the dataframe
-        self.__dataframe__ = pd.concat([df_part.iloc[::factor], df_rest]).reset_index()
-        self.__dataframe__["Class"] = self.__dataframe__["Class"].where(
-            ~(
-                self.__dataframe__["Class"].ne(0)
-                & self.__dataframe__["Class"].duplicated(keep="first")
-            ),
-            0,
-        )
+        if mode == 0:
+            # Find points in 'Class' column with values other than 0
+            non_zero_class = df_part[df_part["Class"] != 0]
+            indices = np.round(non_zero_class.index.to_numpy() / factor).astype(int)
+            indices = [round(value / factor) * factor for value in indices]
+            for i, idx in enumerate(indices):
+                # print(idx, i + 1)
+                if df_part.at[idx, "Class"] != 0:
+                    next_idx = idx + factor
 
-        non_zero_count = (self.__dataframe__["Class"] != 0).sum()
-        filtered_df = self.__dataframe__[self.__dataframe__["Class"] != 0]["Class"]
-        # print(filtered_df)
-        # if non_zero_count != 6:
-        #     raise ValueError(
-        #         f"Expected 6 non-zero values in the 'Class' column, but found {non_zero_count}."
-        #     )
+                    # Find the next available index that is a multiple of 20
+                    while (
+                        next_idx < len(df_part) and df_part.at[next_idx, "Class"] != 0
+                    ):
+                        next_idx += factor
+
+                    # Check if next_idx is a multiple of 20
+                    if next_idx % factor == 0 and next_idx < len(df_part):
+                        df_part.at[next_idx, "Class"] = i + 1
+                    elif next_idx >= len(df_part):  # Ensure we don't go out of bounds
+                        print(f"Next index {next_idx} is out of bounds.")
+                else:
+                    df_part.at[idx, "Class"] = i + 1
+
+            # Concatenate the downsampled part with the rest of the dataframe
+            self.__dataframe__ = pd.concat(
+                [df_part.iloc[::factor], df_rest]
+            ).reset_index()
+            self.__dataframe__["Class"] = self.__dataframe__["Class"].where(
+                ~(
+                    self.__dataframe__["Class"].ne(0)
+                    & self.__dataframe__["Class"].duplicated(keep="first")
+                ),
+                0,
+            )
+        else:
+            self.__dataframe__ = pd.concat(
+                [df_part.iloc[::factor], df_rest]
+            ).reset_index()
 
     def compute_gradient(self, column: str) -> None:
         """

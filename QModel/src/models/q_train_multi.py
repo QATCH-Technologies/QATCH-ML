@@ -350,16 +350,19 @@ if __name__ == "__main__":
                     actual_indices = pd.read_csv(poi_file, header=None).values
                     qdp = QDataPipeline(data_file)
                     time_delta = qdp.find_time_delta()
-
-                    qdp.preprocess(poi_filepath=None)
+                    if time_delta == -1:
+                        continue
                     print("[INFO] Predicting using multi-target model")
                     predictions = qmp.predict(data_file)
+                    pois = []
+                    for c in predictions:
+                        pois.append(c[0][0])
                     if PLOTTING:
                         palette = sns.color_palette("husl", 6)
                         df = pd.read_csv(data_file)
                         dissipation = normalize(df["Dissipation"])
                         print("Actual, Predicted")
-                        for actual, predicted in zip(actual_indices, predictions):
+                        for actual, predicted in zip(actual_indices, pois):
                             print(f"{actual[0]}, {predicted}")
                         plt.figure()
 
@@ -368,7 +371,7 @@ if __name__ == "__main__":
                             color="grey",
                             label="Dissipation",
                         )
-                        for i, index in enumerate(predictions):
+                        for i, index in enumerate(pois):
                             plt.axvline(
                                 x=index,
                                 color=palette[i],
