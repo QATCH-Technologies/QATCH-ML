@@ -380,8 +380,7 @@ class QPredictor:
         else:
             relative_root = os.getcwd()
         pickle_path = os.path.join(relative_root, "QModel/SavedModels/label_{}.pkl")
-        pickle_path = os.path.join(
-            relative_root, "QModel/SavedModels/label_{}.pkl")
+        pickle_path = os.path.join(relative_root, "QModel/SavedModels/label_{}.pkl")
         for i in range(3):
             with open(pickle_path.format(i), "rb") as file:
                 setattr(self, f"__label_{i}__", pickle.load(file))
@@ -446,8 +445,7 @@ class QPredictor:
 
         lq_idx = next((i for i, x in enumerate(adj) if x == 1), -1) + i
         uq_idx = next((i for i, x in reversed(list(enumerate(adj))) if x == 1), -1) + i
-        uq_idx = next((i for i, x in reversed(
-            list(enumerate(adj))) if x == 1), -1) + i
+        uq_idx = next((i for i, x in reversed(list(enumerate(adj))) if x == 1), -1) + i
         return prediction, (lq_idx, uq_idx)
 
     def find_and_sort_peaks(self, signal):
@@ -479,7 +477,7 @@ class QPredictor:
         for i in range(len(diff) - window_size + 1):
             # Calculate the slope change over the current window
             window_slope_change = np.mean(np.diff(diff[i : i + window_size]))
-            window_slope_change = np.mean(np.diff(diff[i: i + window_size]))
+            window_slope_change = np.mean(np.diff(diff[i : i + window_size]))
             slope_change.append(window_slope_change)
 
         slope_change = np.array(slope_change)
@@ -543,8 +541,7 @@ class QPredictor:
     def adjustment_poi_1(self, guess, diss_raw):
 
         zero_slope = self.find_zero_slope_regions(self.normalize(diss_raw), 0.0075, 100)
-        zero_slope = self.find_zero_slope_regions(
-            self.normalize(diss_raw), 0.0075, 100)
+        zero_slope = self.find_zero_slope_regions(self.normalize(diss_raw), 0.0075, 100)
         adjusted_guess = guess
 
         if len(zero_slope) >= 2:
@@ -714,8 +711,7 @@ class QPredictor:
 
             # Calculate distances from candidate points to the closest RF point
             distances_to_closest_rf = np.abs(candidate_points - closest_rf_point)
-            distances_to_closest_rf = np.abs(
-                candidate_points - closest_rf_point)
+            distances_to_closest_rf = np.abs(candidate_points - closest_rf_point)
 
             # Find the closest candidate point to the closest RF point
             closest_candidate_idx = np.argmin(distances_to_closest_rf)
@@ -812,8 +808,7 @@ class QPredictor:
 
             # Calculate distances from candidate points to the closest RF point
             distances_to_closest_rf = np.abs(candidate_points - closest_rf_point)
-            distances_to_closest_rf = np.abs(
-                candidate_points - closest_rf_point)
+            distances_to_closest_rf = np.abs(candidate_points - closest_rf_point)
 
             # Find the closest candidate point to the closest RF point
             closest_candidate_idx = np.argmin(distances_to_closest_rf)
@@ -950,6 +945,13 @@ class QPredictor:
 
         # Process data using QDataPipeline
         qdp = QDataPipeline(file_buffer_2)
+        t_delta = qdp.find_time_delta()
+        # if t_delta > 0:
+        #     from q_long_predictor import QLongPredictor
+
+        #     qlp = QLongPredictor()
+        #     return qlp.predict(qdp, t_delta)
+        # else:
         diss_raw = qdp.__dataframe__["Dissipation"]
         rel_time = qdp.__dataframe__["Relative_time"]
         qdp.preprocess(poi_filepath=None)
@@ -1044,8 +1046,7 @@ class QPredictor:
         )
         # poi_2 = emp_points[1]
         poi_4 = self.adjustmet_poi_4(df, candidates_4, extracted_4, act[3], bounds_4)
-        poi_4 = self.adjustmet_poi_4(
-            df, candidates_4, extracted_4, act[3], bounds_4)
+        poi_4 = self.adjustmet_poi_4(df, candidates_4, extracted_4, act[3], bounds_4)
         # Hot fix to prevent out of order poi_4 and poi_5
         if bounds_5[0] < poi_4:
             lst = list(bounds_5)
@@ -1074,7 +1075,7 @@ class QPredictor:
         def sort_and_remove_point(arr, point):
             arr = np.array(arr)
             if len(arr) > MAX_GUESSES - 1:
-                arr = arr[:MAX_GUESSES - 1]
+                arr = arr[: MAX_GUESSES - 1]
             arr.sort()
             return arr[arr != point]
 
