@@ -903,69 +903,68 @@ class QPredictor:
             target = (rf_max + diff_max) / 2
             nearest_candidate = min(candidates, key=lambda x: abs(x - rf_max))
 
-        # slopes = np.diff(dissipation)
+        # Compute the derivative (slope)
+        slopes = np.gradient(dissipation)
+        from scipy.signal import savgol_filter
 
-        # slope_changes = np.diff(slopes)
-        # threshold = 0.000001
-        # change_points = np.where(np.abs(slope_changes) > threshold)[0] + 1
-        # # Reshape change_points for clustering
-        # change_points_reshaped = change_points.reshape(-1, 1)
-        # from sklearn.cluster import DBSCAN
+        window_length = 5
+        polyorder = 2
+        threshold = 0.0000024
+        # Smooth the slopes using a Savitzky-Golay filter
+        smoothed_slopes = savgol_filter(slopes, window_length, polyorder)
 
-        # # Apply DBSCAN clustering
-        # db = DBSCAN(eps=75, min_samples=1).fit(change_points_reshaped)
-        # labels = db.labels_
+        # Identify regions with similar slopes
+        regions = []
+        start = 0
 
-        # # Find representative points for each cluster
-        # clustered_points = {}
-        # for label in np.unique(labels):
-        #     if label == -1:
-        #         continue  # Ignore noise points
-        #     cluster_points = change_points[labels == label]
-        #     # Get the most significant change point (max absolute slope change)
-        #     # Select the leftmost point in the cluster
-        #     leftmost = cluster_points[0]  # First point in sorted order
-        #     clustered_points[label] = leftmost
-        # leftmost, rightmost = cluster_bounds
-        #     (leftmost <= point1 <= rightmost, leftmost <= point2 <= rightmost)
-        # if abs(actual[5] - nearest_candidate) > 62:
-        #     plt.figure(figsize=(8, 8))
-        #     plt.plot(dissipation, label="Dissipation", color="grey")
-        #     plt.scatter(
-        #         candidates,
-        #         dissipation[candidates],
-        #         color="red",
-        #         label="Candidates",
-        #         marker="x",
-        #     )
+        for i in range(1, len(smoothed_slopes)):
+            # Check if the current slope is similar to the previous one
+            if abs(smoothed_slopes[i] - smoothed_slopes[i - 1]) > threshold:
+                # Store the region if it has more than one point
+                if i - start > 1:
+                    regions.append((start, i))
+                start = i
 
-        #     plt.plot(difference, label="Difference", color="brown")
-        #     plt.plot(rf, label="Resonance frequency", color="tan")
-        #     for point in clustered_points.values():
-        #         plt.scatter(
-        #             point,
-        #             dissipation[point],
-        #             color="green",
-        #             marker="*",
-        #             s=200,
-        #             label="Clustered Points",
-        #             zorder=6,
-        #         )
+        # Add the last region
+        if start < len(smoothed_slopes) - 1:
+            regions.append((start, len(smoothed_slopes)))
 
-        #     plt.scatter(actual, dissipation[actual], label="actual", color="blue")
-        #     plt.scatter(rf_max, dissipation[rf_max], label="rf_peaks", color="green")
-        #     plt.scatter(
-        #         diff_max, dissipation[diff_max], label="diff_peaks", color="green"
-        #     )
-        #     plt.axvline(poi_5_guess, label="poi_5", color="pink")
+        if abs(actual[5] - nearest_candidate) > 50:
+            plt.figure(figsize=(8, 8))
+            plt.plot(dissipation, label="Dissipation", color="grey")
+            plt.scatter(
+                candidates,
+                dissipation[candidates],
+                color="red",
+                label="Candidates",
+                marker="x",
+            )
 
-        #     plt.axvline(nearest_candidate, label="nearest_candidate", color="orange")
-        #     if t_delta > 0:
-        #         plt.axvline(t_delta, label="t_delta", color="black", linestyle="dotted")
-        #     plt.axvline(poi_6_guess, label="poi_6", color="purple")
-        #     plt.legend()
-        #     plt.title(average_conf)
-        #     plt.show()
+            plt.plot(difference, label="Difference", color="brown")
+            plt.plot(rf, label="Resonance frequency", color="tan")
+            for start, end in regions:
+                plt.axvspan(
+                    start,
+                    end,
+                    color="lightgreen",
+                    alpha=0.5,
+                    label="Similar Slope Region",
+                )
+
+            plt.scatter(actual, dissipation[actual], label="actual", color="blue")
+            plt.scatter(rf_max, dissipation[rf_max], label="rf_peaks", color="green")
+            plt.scatter(
+                diff_max, dissipation[diff_max], label="diff_peaks", color="green"
+            )
+            plt.axvline(poi_5_guess, label="poi_5", color="pink")
+
+            plt.axvline(nearest_candidate, label="nearest_candidate", color="orange")
+            if t_delta > 0:
+                plt.axvline(t_delta, label="t_delta", color="black", linestyle="dotted")
+            plt.axvline(poi_6_guess, label="poi_6", color="purple")
+            plt.legend()
+            plt.title(average_conf)
+            plt.show()
 
         return nearest_candidate
 
