@@ -76,9 +76,11 @@ if not QDataPipeline_found:
 class QMultiModel:
     """
     A class used to represent and manage an XGBoost model for multi-target classification tasks.
+
     This class handles the initialization, training, hyperparameter tuning, and management of an XGBoost model.
     It supports multi-target classification with specific hyperparameters and uses cross-validation to optimize
     the model's performance.
+
     Attributes:
         __params__ (dict): A dictionary of hyperparameters used for training the XGBoost model.
         __train_df__ (pd.DataFrame): Training subset of the dataset.
@@ -89,17 +91,23 @@ class QMultiModel:
         __dtest__ (xgb.DMatrix): DMatrix object for the test data.
         __watchlist__ (list): List of DMatrix objects to monitor during training, containing tuples of the form (DMatrix, "name").
         __model__ (xgb.Booster or None): The trained XGBoost model, initially set to None.
+
     Methods:
         __init__(self, dataset, predictors, target_features):
             Initializes the XGBoost model with the specified dataset, predictors, and target features.
+
         train_model(self):
             Trains the multi-target XGBoost model using the training dataset.
+
         objective(self, params):
             Evaluates the performance of the XGBoost model using cross-validation and returns the best AUC score.
+
         tune(self, evaluations=250):
             Tunes the XGBoost model's hyperparameters using Bayesian optimization with Tree-structured Parzen Estimator (TPE).
+
         save_model(self, model_name="QMultiModel"):
             Saves the trained XGBoost model to a specified file.
+
         get_model(self):
             Retrieves the trained XGBoost model.
     """
@@ -112,10 +120,12 @@ class QMultiModel:
     ) -> None:
         """
         Initializes the XGBoost model with the specified dataset, predictors, and target features.
+
         Args:
             dataset (pd.DataFrame): The complete dataset containing both predictors and target features.
             predictors (list[str]): A list of column names in `dataset` that will be used as features for model training.
             target_features (list[str]): A list of column names in `dataset` that will be used as target variables for the model.
+
         Attributes:
             __params__ (dict): A dictionary of hyperparameters used for training the XGBoost model. These include:
                 - objective (str): The learning task and objective ("multi:softprob" for multi-class classification).
@@ -133,13 +143,17 @@ class QMultiModel:
                 - sampling_method (str): Sampling method ("gradient_based").
                 - seed (int): Random seed for reproducibility (SEED).
                 - num_class (int): Number of classes (7).
+
             __train_df__ (pd.DataFrame): Training subset of the dataset.
             __valid_df__ (pd.DataFrame): Validation subset of the dataset.
             __test_df__ (pd.DataFrame): Test subset of the dataset.
+
             __dtrain__ (xgb.DMatrix): DMatrix object for the training data.
             __dvalid__ (xgb.DMatrix): DMatrix object for the validation data.
             __dtest__ (xgb.DMatrix): DMatrix object for the test data.
+
             __watchlist__ (list): List of DMatrix objects to watch during training, containing tuples of the form (DMatrix, "name").
+
             __model__ (xgb.Booster or None): The trained XGBoost model, initially set to None.
         """
         self.__params__ = {
@@ -193,13 +207,18 @@ class QMultiModel:
     def train_model(self) -> None:
         """
         Trains the multi-target XGBoost model using the training dataset.
+
         This method initializes the training process for the XGBoost model with the previously defined parameters and datasets.
         The model is trained over a number of rounds with early stopping if the performance does not improve on the validation set.
+
         During the training process, the model's performance is evaluated on both the training and validation datasets,
         and the best model based on the validation performance is saved.
+
         Prints a status message indicating the start of the training process.
+
         Attributes:
             __model__ (xgb.Booster): The trained XGBoost model after completion of the training process.
+
         Raises:
             ValueError: If any of the necessary parameters or datasets have not been initialized prior to calling this method.
         """
@@ -239,15 +258,19 @@ class QMultiModel:
     def objective(self, params: dict = None) -> None:
         """
         Evaluates the performance of the XGBoost model using cross-validation and returns the best AUC score.
+
         This method performs k-fold cross-validation on the training dataset using the provided hyperparameters.
         The method returns the best AUC score from the cross-validation process, which can be used as the objective function
         in hyperparameter optimization.
+
         Args:
             params (dict): Dictionary of hyperparameters to be used in the XGBoost model during cross-validation.
+
         Returns:
             dict: A dictionary containing the following keys:
                 - "loss" (float): The best mean AUC score on the test set obtained during cross-validation.
                 - "status" (str): The status of the evaluation, typically "ok".
+
         Raises:
             ValueError: If any of the necessary parameters or datasets have not been initialized prior to calling this method.
         """
@@ -267,19 +290,23 @@ class QMultiModel:
     def tune(self, evaluations: int = 250) -> dict:
         """
         Tunes the XGBoost model's hyperparameters using Bayesian optimization with Tree-structured Parzen Estimator (TPE).
+
         This method runs the hyperparameter tuning process for a specified number of iterations.
         It searches for the best hyperparameters within the defined search space by minimizing the loss function.
         The search is based on the performance of the model as evaluated by cross-validation.
+
         Args:
             evaluations (int, optional): The maximum number of iterations for hyperparameter optimization. Default is 250.
+
         Returns:
             dict: A dictionary of the best hyperparameters found during the tuning process.
+
         Raises:
             ValueError: If any of the necessary parameters or datasets have not been initialized prior to calling this method.
+
         Example:
             best_hyperparams = self.tune(evaluations=300)
         """
-        print(f"[STATUS] Running model tuning for {evaluations} max iterations")
         print(f"[STATUS] Running model tuning for {evaluations} max iterations")
         space = {
             "max_depth": hp.choice("max_depth", np.arange(1, 20, 1, dtype=int)),
@@ -334,12 +361,16 @@ class QMultiModel:
     def save_model(self, model_name: str = "QMultiModel") -> None:
         """
         Saves the trained XGBoost model to a specified file.
+
         This method saves the current XGBoost model in JSON format to the specified location.
         The model is saved in the "QModel/SavedModels/" directory with the provided model name.
+
         Args:
             model_name (str, optional): The name of the model file to be saved. Default is "QMultiModel".
+
         Returns:
             None
+
         Example:
             self.save_model(model_name="MyModel")
         """
@@ -350,9 +381,12 @@ class QMultiModel:
     def get_model(self) -> xgb.Booster:
         """
         Retrieves the trained XGBoost model.
+
         This method returns the trained XGBoost model, which can be used for further predictions or analysis.
+
         Returns:
             xgb.Booster: The trained XGBoost model.
+
         Example:
             model = self.get_model()
         """
@@ -379,7 +413,6 @@ class QPredictor:
             relative_root = os.path.join(Architecture.get_path(), "QATCH")
         else:
             relative_root = os.getcwd()
-        pickle_path = os.path.join(relative_root, "QModel/SavedModels/label_{}.pkl")
         pickle_path = os.path.join(relative_root, "QModel/SavedModels/label_{}.pkl")
         for i in range(3):
             with open(pickle_path.format(i), "rb") as file:
@@ -445,7 +478,6 @@ class QPredictor:
 
         lq_idx = next((i for i, x in enumerate(adj) if x == 1), -1) + i
         uq_idx = next((i for i, x in reversed(list(enumerate(adj))) if x == 1), -1) + i
-        uq_idx = next((i for i, x in reversed(list(enumerate(adj))) if x == 1), -1) + i
         return prediction, (lq_idx, uq_idx)
 
     def find_and_sort_peaks(self, signal):
@@ -476,7 +508,6 @@ class QPredictor:
         slope_change = []
         for i in range(len(diff) - window_size + 1):
             # Calculate the slope change over the current window
-            window_slope_change = np.mean(np.diff(diff[i : i + window_size]))
             window_slope_change = np.mean(np.diff(diff[i : i + window_size]))
             slope_change.append(window_slope_change)
 
@@ -540,7 +571,6 @@ class QPredictor:
 
     def adjustment_poi_1(self, guess, diss_raw):
 
-        zero_slope = self.find_zero_slope_regions(self.normalize(diss_raw), 0.0075, 100)
         zero_slope = self.find_zero_slope_regions(self.normalize(diss_raw), 0.0075, 100)
         adjusted_guess = guess
 
@@ -711,7 +741,6 @@ class QPredictor:
 
             # Calculate distances from candidate points to the closest RF point
             distances_to_closest_rf = np.abs(candidate_points - closest_rf_point)
-            distances_to_closest_rf = np.abs(candidate_points - closest_rf_point)
 
             # Find the closest candidate point to the closest RF point
             closest_candidate_idx = np.argmin(distances_to_closest_rf)
@@ -807,7 +836,6 @@ class QPredictor:
             closest_rf_point = filtered_rf_points[closest_rf_idx]
 
             # Calculate distances from candidate points to the closest RF point
-            distances_to_closest_rf = np.abs(candidate_points - closest_rf_point)
             distances_to_closest_rf = np.abs(candidate_points - closest_rf_point)
 
             # Find the closest candidate point to the closest RF point
@@ -947,7 +975,6 @@ class QPredictor:
         columns_to_drop = ["Date", "Time", "Ambient", "Temperature"]
         if not all(col in df.columns for col in columns_to_drop):
             raise ValueError(
-                f"[QModelPredict predict()]: Input data must contain the following columns: {columns_to_drop}"
                 f"[QModelPredict predict()]: Input data must contain the following columns: {columns_to_drop}"
             )
 
@@ -1117,7 +1144,6 @@ class QPredictor:
         )
         # poi_2 = emp_points[1]
         poi_4 = self.adjustmet_poi_4(df, candidates_4, extracted_4, act[3], bounds_4)
-        poi_4 = self.adjustmet_poi_4(df, candidates_4, extracted_4, act[3], bounds_4)
         # Hot fix to prevent out of order poi_4 and poi_5
         if bounds_5[0] < poi_4:
             lst = list(bounds_5)
@@ -1149,7 +1175,7 @@ class QPredictor:
         def sort_and_remove_point(arr, point):
             arr = np.array(arr)
             if len(arr) > MAX_GUESSES - 1:
-                arr = arr[: MAX_GUESSES - 1]
+                arr = arr[:MAX_GUESSES - 1]
             arr.sort()
             return arr[arr != point]
 
