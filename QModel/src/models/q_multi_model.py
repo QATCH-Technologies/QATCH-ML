@@ -839,36 +839,107 @@ class QPredictor:
         else:
             return guess
 
-    def adjustment_poi_6(self, guess, signal, diff, diss, actual, poi_5_guess):
+    def adjustment_poi_6(
+        self,
+        poi_6_guess,
+        poi_5_guess,
+        candidates,
+        actual,
+        t_delta,
+        dissipation,
+        difference,
+        rf,
+        signal,
+    ):
+        candidates = candidates[candidates > poi_5_guess]
+        rf = self.normalize(rf)
+        dissipation = self.normalize(dissipation)
+        difference = self.normalize(difference)
+        signal = self.normalize(signal)
+        rf_peaks, _ = find_peaks(rf)
+        diff_peaks, _ = find_peaks(difference)
+        diss_peaks, _ = find_peaks(difference)
+        rf_max = np.argmax(rf[poi_5_guess:]) + poi_5_guess
+        diff_max = np.argmax(difference[poi_5_guess:]) + poi_5_guess
+        average_conf = np.average(signal)
+        if t_delta > 0:
+            if rf_max > t_delta - (0.1 * t_delta) and diff_max > t_delta - (
+                0.1 * t_delta
+            ):
+                nearest_diff_peaks = min(diff_peaks, key=lambda x: abs(x - rf_max))
+                target = (rf_max + diff_max) / 2
+                nearest_candidate = min(candidates, key=lambda x: abs(x - target))
+            else:
+                nearest_candidate = poi_6_guess
+        else:
+            target = (rf_max + diff_max) / 2
+            nearest_candidate = min(candidates, key=lambda x: abs(x - rf_max))
 
-        combo = self.normalize(signal[poi_5_guess:]) + self.normalize(
-            diff[poi_5_guess:]
-        )
-        adjustment = np.argmax(combo) + poi_5_guess
+        # slopes = np.diff(dissipation)
 
-        def nearest_peak(peaks, point):
-            nearest_peak_idx = np.argmin(np.abs(peaks - point))
-            return peaks[nearest_peak_idx]
+        # slope_changes = np.diff(slopes)
+        # threshold = 0.000001
+        # change_points = np.where(np.abs(slope_changes) > threshold)[0] + 1
+        # # Reshape change_points for clustering
+        # change_points_reshaped = change_points.reshape(-1, 1)
+        # from sklearn.cluster import DBSCAN
 
-        def envelope(signal):
-            data = np.array(signal)
-            maxima_indices = argrelextrema(data, np.greater)[0]
-            upper_envelope = np.interp(
-                np.arange(len(data)), maxima_indices, data[maxima_indices]
-            )
+        # # Apply DBSCAN clustering
+        # db = DBSCAN(eps=75, min_samples=1).fit(change_points_reshaped)
+        # labels = db.labels_
 
-            return upper_envelope, maxima_indices
+        # # Find representative points for each cluster
+        # clustered_points = {}
+        # for label in np.unique(labels):
+        #     if label == -1:
+        #         continue  # Ignore noise points
+        #     cluster_points = change_points[labels == label]
+        #     # Get the most significant change point (max absolute slope change)
+        #     # Select the leftmost point in the cluster
+        #     leftmost = cluster_points[0]  # First point in sorted order
+        #     clustered_points[label] = leftmost
+        # leftmost, rightmost = cluster_bounds
+        #     (leftmost <= point1 <= rightmost, leftmost <= point2 <= rightmost)
+        # if abs(actual[5] - nearest_candidate) > 62:
+        #     plt.figure(figsize=(8, 8))
+        #     plt.plot(dissipation, label="Dissipation", color="grey")
+        #     plt.scatter(
+        #         candidates,
+        #         dissipation[candidates],
+        #         color="red",
+        #         label="Candidates",
+        #         marker="x",
+        #     )
 
-        # if abs(adjustment - actual[5]) > 300:
-        #     fig, ax = plt.subplots()
-        #     ax.plot(self.normalize(diff), label="diff", color="brown")
-        #     ax.plot(self.normalize(diss), label="diss", color="grey")
-        #     ax.plot(combo, label="combo", color="black")
-        #     ax.axvline(adjustment, label="Adjustment", color="red")
-        #     ax.axvline(actual[5], label="Actual", color="red", linestyle="--")
+        #     plt.plot(difference, label="Difference", color="brown")
+        #     plt.plot(rf, label="Resonance frequency", color="tan")
+        #     for point in clustered_points.values():
+        #         plt.scatter(
+        #             point,
+        #             dissipation[point],
+        #             color="green",
+        #             marker="*",
+        #             s=200,
+        #             label="Clustered Points",
+        #             zorder=6,
+        #         )
+
+        #     plt.scatter(actual, dissipation[actual], label="actual", color="blue")
+        #     plt.scatter(rf_max, dissipation[rf_max], label="rf_peaks", color="green")
+        #     plt.scatter(
+        #         diff_max, dissipation[diff_max], label="diff_peaks", color="green"
+        #     )
+        #     plt.axvline(poi_5_guess, label="poi_5", color="pink")
+
+        #     plt.axvline(nearest_candidate, label="nearest_candidate", color="orange")
+        #     if t_delta > 0:
+        #         plt.axvline(t_delta, label="t_delta", color="black", linestyle="dotted")
+        #     plt.axvline(poi_6_guess, label="poi_6", color="purple")
         #     plt.legend()
+        #     plt.title(average_conf)
         #     plt.show()
-        return adjustment
+
+        return nearest_candidate
 
     def predict(self, file_buffer, type=-1, start=-1, stop=-1, act=[None] * 6):
         # Load CSV data and drop unnecessary columns
@@ -1064,12 +1135,15 @@ class QPredictor:
             poi_6 = start_6
         else:
             poi_6 = self.adjustment_poi_6(
-                np.argmax(adj_6),
-                adj_6,
-                df["Difference"],
-                df["Dissipation"],
-                act[5],
-                poi_5,
+                poi_6_guess=np.argmax(adj_6),
+                poi_5_guess=poi_5,
+                candidates=candidates_6,
+                actual=act,
+                t_delta=t_delta,
+                dissipation=df["Dissipation"],
+                difference=df["Difference"],
+                rf=df["Resonance_Frequency"],
+                signal=adj_6,
             )
 
         def sort_and_remove_point(arr, point):

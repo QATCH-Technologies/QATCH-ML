@@ -435,6 +435,7 @@ def run():
                 act_poi = [int(x[0]) for x in act_poi]
                 if max(act_poi) >= max_index - 1:
                     partial_fills.append(test_file)
+                    continue
 
                 test_qdp = QDataPipeline(data_filepath=test_file)
                 if (
@@ -444,6 +445,7 @@ def run():
                     long_runs.append(test_file)
                     if max(test_df["Relative_time"]) > longest_run[0]:
                         longest_run = (max(test_df["Relative_time"]), test_file)
+                        continue
 
                 mm_results, good, bad = test_mm_on_file(test_file, act_poi)
                 good_list.append(good)
