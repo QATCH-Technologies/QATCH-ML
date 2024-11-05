@@ -686,6 +686,8 @@ class QPredictor:
         rf = self.normalize(df["Resonance_Frequency"])
         difference = self.normalize(df["Difference"])
         candidates = np.append(candidates, guess)
+
+        # Temporary variable for the adjusted point.
         adjusted_point = -1
 
         def find_zero_slope_regions(data, threshold=0.1):
@@ -712,8 +714,14 @@ class QPredictor:
             return zero_slope_regions
 
         peaks, _ = find_peaks(rf)
+
+        # Check if there is a filtering of peaks such that they appear within our predefined, bounded
+        # region.  If not, just report the guessed POI.
         filtered_peaks = [point for point in peaks if bounds[0] <= point <= bounds[1]]
+
         if len(filtered_peaks) == 0:
+            # TODO: Adjust POI if there are no Resonance frequency peaks in the bounded region.  Potentially look at something like
+            # Difference peaks or dissipation valleys and try to correlate.
             adjusted_point = guess
         else:
             # filtered_peaks = [point for point in peaks if bounds[0] <= point <= bounds[1]]
@@ -724,6 +732,8 @@ class QPredictor:
                 t[peaks], rf[peaks], kind="linear", fill_value="extrapolate"
             )
             upper_envelope = envelope_interpolator(t)
+
+            # Compute regions of approximately zero slope in the RF curve.
             zsr = find_zero_slope_regions(upper_envelope, threshold=0.00001)
             moved = False
             for region in zsr:
