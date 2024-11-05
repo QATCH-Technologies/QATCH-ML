@@ -272,7 +272,8 @@ def metrics_view(
         edgecolor="black",
     )
 
-    plt.title(f"Comparison of {test_name} Scores for {model_1_name} and {model_2_name}")
+    plt.title(
+        f"Comparison of {test_name} Scores for {model_1_name} and {model_2_name}")
     plt.xlabel("POI #")
     plt.ylabel(f"{test_name} Score")
     plt.xticks(points)  # Set x-ticks to be the point indices
@@ -444,7 +445,8 @@ def run():
                 ):
                     long_runs.append(test_file)
                     if max(test_df["Relative_time"]) > longest_run[0]:
-                        longest_run = (max(test_df["Relative_time"]), test_file)
+                        longest_run = (
+                            max(test_df["Relative_time"]), test_file)
                         continue
 
                 mm_results, good, bad = test_mm_on_file(test_file, act_poi)

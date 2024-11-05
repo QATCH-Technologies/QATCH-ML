@@ -1,6 +1,4 @@
-import sys
 import os
-import random
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -10,8 +8,8 @@ from hyperopt.early_stop import no_progress_loss
 from scipy.signal import find_peaks
 from sklearn.model_selection import train_test_split
 import pickle
-from scipy.signal import find_peaks, argrelextrema
-from scipy.interpolate import interp1d
+from scipy.signal import find_peaks
+from scipy.stats import linregress
 
 # from ModelData import ModelData
 
@@ -870,103 +868,148 @@ class QPredictor:
     def adjustment_poi_6(
         self,
         poi_6_guess,
-        poi_5_guess,
         candidates,
-        actual,
-        t_delta,
         dissipation,
         difference,
         rf,
         signal,
+        t_delta,
+        actual,
     ):
-        candidates = candidates[candidates > poi_5_guess]
+        # The following are normalized datasets collected from the raw raun data.
         rf = self.normalize(rf)
         dissipation = self.normalize(dissipation)
         difference = self.normalize(difference)
         signal = self.normalize(signal)
-        rf_peaks, _ = find_peaks(rf)
+
+        # Diff peaks are peaks in the difference curve
         diff_peaks, _ = find_peaks(difference)
-        diss_peaks, _ = find_peaks(difference)
-        rf_max = np.argmax(rf[poi_5_guess:]) + poi_5_guess
-        diff_max = np.argmax(difference[poi_5_guess:]) + poi_5_guess
-        average_conf = np.average(signal)
-        if t_delta > 0:
-            if rf_max > t_delta - (0.1 * t_delta) and diff_max > t_delta - (
-                0.1 * t_delta
-            ):
-                nearest_diff_peaks = min(diff_peaks, key=lambda x: abs(x - rf_max))
-                target = (rf_max + diff_max) / 2
-                nearest_candidate = min(candidates, key=lambda x: abs(x - target))
+        # The list of candidates appends the intial guess of POI6 to the list of potential candidates.
+        candidates = np.append(candidates, [poi_6_guess])
+
+        def classify_tail(data, a, b, tail_fraction=0.2):
+
+            # Determine tail segment
+            n_tail = max(1, int(len(data) * tail_fraction))
+            tail_data = data[-n_tail:]
+
+            # Perform linear regression on the tail
+            x = np.arange(len(tail_data))
+            slope, intercept, r_value, p_value, std_err = linregress(x, tail_data)
+            slope = data[a] - data[b]
+            if slope < 0:
+                return "increasing"
+            elif slope > 0:
+                return "decreasing"
             else:
-                nearest_candidate = poi_6_guess
+                # TODO: Implement a method for determining noise at the end of the signal.
+                return "noisy"
+
+        # Subtract the difference from dissipation curve to get segments where the normalized difference
+        # signal interesects witht the noramlized dissipation signal.
+        diff_signal = difference - dissipation
+        crossings = np.where(np.diff(np.sign(diff_signal)))[0]
+
+        # Take the last crossing in where the difference and dissipation signal instersect.
+        nearest_crossing = max(crossings)
+
+        # Next, get the peak in the difference curve that minimizes the distance between to the final
+        # interesction.  This peak indicates the the peak of interest ending the run.
+        distances = np.abs(diff_peaks - nearest_crossing)
+        nearest_peak = diff_peaks[np.argmin(distances)]
+
+        # The nearest peak and crossing can be out of order so the following ensures that these two points
+        # are in ascending order.
+        a, b = (
+            (nearest_peak, nearest_crossing)
+            if nearest_peak < nearest_crossing
+            else (nearest_crossing, nearest_peak)
+        )
+        # Get the type of tail the last 10% of the run classifies as.  10% is an artbirary
+        # fraction of the run and can be adjusted.
+        tail_class = classify_tail(difference, a, b, 0.1)
+        if tail_class == "increasing":
+            # For an increasing tail in the difference curve, currently no adjustment is provided.
+            # TODO: For an increasing tail, implelment an adjustment.
+            # I think this could be something along the lines of looking at nearest valley in both
+            # difference and dissipation and moving poi guess to that but I am not sure.
+            filtered_candidates = candidates
+            adjusted_poi_6 = poi_6_guess
+        elif tail_class == "decreasing":
+            # For decreasing tails, there are 2 cases: (1) Between the nearest peak and crossing point,
+            # there exists some candidates.  Pick the candidate closest to the base of the increase segment
+            # in the dissipation curve. (2) There are no candidates, in which case, pick the point on the
+            # dissipation curve which has the most significant change in slope over the baseline slope of
+            # that region.
+            filtered_candidates = [point for point in candidates if a <= point <= b]
+
+            if len(filtered_candidates) > 0:
+                adjusted_poi_6 = min(filtered_candidates, key=lambda x: abs(x - a))
+                # adjusted_poi_6 = max(filtered_candidates,
+                #                      key=lambda p: signal[p])
+                tail_class = tail_class + "_A"
+            else:
+                slope = np.diff(dissipation[a:b])
+                if len(slope) == 0:
+                    adjusted_poi_6 = poi_6_guess
+                else:
+                    average_slope = np.mean(slope)
+                    increasing_index = np.argmax(slope > average_slope)
+                    significant_point = increasing_index + 1
+                    adjusted_poi_6 = significant_point + a
         else:
-            target = (rf_max + diff_max) / 2
-            nearest_candidate = min(candidates, key=lambda x: abs(x - rf_max))
+            # TODO: Noise case
+            # The final case is instended to handle the case where the end of the run is noisy.
+            filtered_candidates = candidates
+            adjusted_poi_6 = poi_6_guess
 
-        # Compute the derivative (slope)
-        slopes = np.gradient(dissipation)
-        from scipy.signal import savgol_filter
+        # if abs(actual[5] - adjusted_poi_6) > 30 and tail_class == "increasing":
+        #     plt.figure(figsize=(8, 8))
+        #     plt.plot(dissipation, label="Dissipation", color="grey")
+        #     plt.scatter(
+        #         filtered_candidates,
+        #         dissipation[filtered_candidates],
+        #         color="red",
+        #         label="Candidates",
+        #         marker="x",
+        #     )
 
-        window_length = 5
-        polyorder = 2
-        threshold = 0.0000024
-        # Smooth the slopes using a Savitzky-Golay filter
-        smoothed_slopes = savgol_filter(slopes, window_length, polyorder)
+        #     plt.plot(difference, label="Difference", color="brown")
+        #     plt.plot(rf, label="Resonance frequency", color="tan")
 
-        # Identify regions with similar slopes
-        regions = []
-        start = 0
+        #     plt.scatter(actual, dissipation[actual], label="actual", color="blue")
+        #     # plt.scatter(rf_max, dissipation[rf_max], label="rf_peaks", color="green")
+        #     plt.scatter(
+        #         nearest_peak,
+        #         dissipation[nearest_peak],
+        #         label="Nearest Peak",
+        #         color="yellow",
+        #         marker="*",
+        #     )
+        #     plt.scatter(
+        #         crossings,
+        #         difference[crossings],
+        #         color="red",
+        #         label="Crossings",
+        #         zorder=5,
+        #     )
+        #     plt.scatter(
+        #         nearest_crossing,
+        #         difference[nearest_crossing],
+        #         color="yellow",
+        #         marker="*",
+        #         label="Nearest Crossing",
+        #         zorder=5,
+        #     )
 
-        for i in range(1, len(smoothed_slopes)):
-            # Check if the current slope is similar to the previous one
-            if abs(smoothed_slopes[i] - smoothed_slopes[i - 1]) > threshold:
-                # Store the region if it has more than one point
-                if i - start > 1:
-                    regions.append((start, i))
-                start = i
+        #     if t_delta > 0:
+        #         plt.axvline(t_delta, label="t_delta", color="black", linestyle="dotted")
+        #     plt.axvline(adjusted_poi_6, label="poi_6", color="purple")
+        #     plt.legend()
+        #     plt.title(tail_class)
+        #     plt.show()
 
-        # Add the last region
-        if start < len(smoothed_slopes) - 1:
-            regions.append((start, len(smoothed_slopes)))
-
-        if abs(actual[5] - nearest_candidate) > 50:
-            plt.figure(figsize=(8, 8))
-            plt.plot(dissipation, label="Dissipation", color="grey")
-            plt.scatter(
-                candidates,
-                dissipation[candidates],
-                color="red",
-                label="Candidates",
-                marker="x",
-            )
-
-            plt.plot(difference, label="Difference", color="brown")
-            plt.plot(rf, label="Resonance frequency", color="tan")
-            for start, end in regions:
-                plt.axvspan(
-                    start,
-                    end,
-                    color="lightgreen",
-                    alpha=0.5,
-                    label="Similar Slope Region",
-                )
-
-            plt.scatter(actual, dissipation[actual], label="actual", color="blue")
-            plt.scatter(rf_max, dissipation[rf_max], label="rf_peaks", color="green")
-            plt.scatter(
-                diff_max, dissipation[diff_max], label="diff_peaks", color="green"
-            )
-            plt.axvline(poi_5_guess, label="poi_5", color="pink")
-
-            plt.axvline(nearest_candidate, label="nearest_candidate", color="orange")
-            if t_delta > 0:
-                plt.axvline(t_delta, label="t_delta", color="black", linestyle="dotted")
-            plt.axvline(poi_6_guess, label="poi_6", color="purple")
-            plt.legend()
-            plt.title(average_conf)
-            plt.show()
-
-        return nearest_candidate
+        return adjusted_poi_6
 
     def predict(self, file_buffer, type=-1, start=-1, stop=-1, act=[None] * 6):
         # Load CSV data and drop unnecessary columns
@@ -1042,13 +1085,6 @@ class QPredictor:
 
         # Process data using QDataPipeline
         qdp = QDataPipeline(file_buffer_2)
-        t_delta = qdp.find_time_delta()
-        # if t_delta > 0:
-        #     from q_long_predictor import QLongPredictor
-
-        #     qlp = QLongPredictor()
-        #     return qlp.predict(qdp, t_delta)
-        # else:
         diss_raw = qdp.__dataframe__["Dissipation"]
         rel_time = qdp.__dataframe__["Relative_time"]
         qdp.preprocess(poi_filepath=None)
@@ -1094,13 +1130,29 @@ class QPredictor:
             start_6 = emp_points[5]
         adj_1 = start_1
         poi_1 = self.adjustment_poi_1(guess=start_1, diss_raw=diss_raw)
+        adj_6 = extracted_results[6]
+        candidates_6 = self.find_and_sort_peaks(adj_6)
+        if diff_raw.mean() < 0:
+            poi_6 = start_6
+        else:
+            t_delta = qdp.find_time_delta()
+            poi_6 = self.adjustment_poi_6(
+                poi_6_guess=np.argmax(adj_6),
+                candidates=candidates_6,
+                dissipation=df["Dissipation"],
+                difference=df["Difference"],
+                rf=df["Resonance_Frequency"],
+                signal=adj_6,
+                t_delta=t_delta,
+                actual=act,
+            )
         adj_2, bounds_2 = self.adjust_predictions(
             prediction=extracted_results[2],
             rel_time=rel_time,
             poi_num=2,
             type=type,
             i=poi_1,
-            j=extracted_6,
+            j=poi_6,
         )
         adj_3, bounds_3 = self.adjust_predictions(
             prediction=extracted_results[3],
@@ -1108,7 +1160,7 @@ class QPredictor:
             poi_num=3,
             type=type,
             i=poi_1,
-            j=extracted_6,
+            j=poi_6,
         )
         adj_4, bounds_4 = self.adjust_predictions(
             prediction=extracted_results[4],
@@ -1116,7 +1168,7 @@ class QPredictor:
             poi_num=4,
             type=type,
             i=poi_1,
-            j=extracted_6,
+            j=poi_6,
         )
         adj_5, bounds_5 = self.adjust_predictions(
             prediction=extracted_results[5],
@@ -1124,15 +1176,16 @@ class QPredictor:
             poi_num=5,
             type=type,
             i=poi_1,
-            j=extracted_6,
+            j=poi_6,
         )
-        adj_6 = extracted_results[6]
+
         candidates_1 = self.find_and_sort_peaks(extracted_results[1])
         candidates_2 = self.find_and_sort_peaks(adj_2)
         candidates_3 = self.find_and_sort_peaks(adj_3)
         candidates_4 = self.find_and_sort_peaks(adj_4)
         candidates_5 = self.find_and_sort_peaks(adj_5)
-        candidates_6 = self.find_and_sort_peaks(adj_6)
+
+        # skip adjustment of point 6 when inverted (drop applied to outlet)
 
         poi_2 = self.adjustment_poi_2(
             guess=start_2,
@@ -1155,26 +1208,10 @@ class QPredictor:
             poi_1 = adj_1
         poi_3 = np.argmax(adj_3)
 
-        # skip adjustment of point 6 when inverted (drop applied to outlet)
-        if diff_raw.mean() < 0:
-            poi_6 = start_6
-        else:
-            poi_6 = self.adjustment_poi_6(
-                poi_6_guess=np.argmax(adj_6),
-                poi_5_guess=poi_5,
-                candidates=candidates_6,
-                actual=act,
-                t_delta=t_delta,
-                dissipation=df["Dissipation"],
-                difference=df["Difference"],
-                rf=df["Resonance_Frequency"],
-                signal=adj_6,
-            )
-
         def sort_and_remove_point(arr, point):
             arr = np.array(arr)
             if len(arr) > MAX_GUESSES - 1:
-                arr = arr[:MAX_GUESSES - 1]
+                arr = arr[: MAX_GUESSES - 1]
             arr.sort()
             return arr[arr != point]
 
