@@ -679,13 +679,13 @@ class QPredictor:
 
         return adjustment
 
-    def adjustmet_poi_4(self, df, candidates, guess, actual, bounds):
-        diss = df["Dissipation"]
-        rf = df["Resonance_Frequency"]
-        diff = df["Difference"]
-        diss_peaks, _ = find_peaks(diss)
+    def adjustmet_poi_4(self, df, candidates, guess, actual, bounds, poi_1_guess):
+        dissipation = self.normalize(df["Dissipation"])
+        rf = self.normalize(df["Resonance_Frequency"])
+        difference = self.normalize(df["Difference"])
+        diss_peaks, _ = find_peaks(dissipation)
         rf_peaks, _ = find_peaks(rf)
-        diff_peaks, _ = find_peaks(diff)
+        diff_peaks, _ = find_peaks(difference)
         initial_guess = np.array(guess)
         candidate_points = np.array(candidates)
         rf_points = np.array(rf_peaks)
@@ -693,6 +693,7 @@ class QPredictor:
         diff_points = np.array(diff_peaks)
         x_min, x_max = bounds
         candidates = np.append(candidates, guess)
+        adjusted_point = -1
         candidate_density = len(candidates) / (x_max - x_min)
         if candidate_density < 0.02 or (guess < x_min or guess > x_max):
             # Filter RF points within the bounds
@@ -743,36 +744,93 @@ class QPredictor:
             # Find the closest candidate point to the closest RF point
             closest_candidate_idx = np.argmin(distances_to_closest_rf)
             adjusted_point = candidate_points[closest_candidate_idx]
-            # fig, ax = plt.subplots()
-            # ax.plot(diss, color="grey")
-            # ax.fill_betweenx(
-            #     [0, max(diss)], bounds[0], bounds[1], color=f"yellow", alpha=0.5
-            # )
-            # # ax.scatter(diss_peaks, diss[diss_peaks], color="red", label="diss peaks")
-            # ax.scatter(diff_peaks, diss[diff_peaks], color="green", label="diff peaks")
-            # ax.scatter(rf_points, diss[rf_points], color="blue", label="rf peaks")
-            # ax.scatter(candidates, diss[candidates], color="black", label="candidates")
-            # ax.axvline(guess, color="orange", label="guess")
-            # ax.axvline(actual, color="orange", linestyle="--", label="actual")
-            # ax.axvline(adjusted_point, color="brown", label="adjusted")
-            # plt.legend()
-            # plt.show()
-            return adjusted_point
         else:
-            # fig, ax = plt.subplots()
-            # ax.plot(diss, color="grey")
-            # ax.fill_betweenx(
-            #     [0, max(diss)], bounds[0], bounds[1], color=f"yellow", alpha=0.5
-            # )
-            # # ax.scatter(diss_peaks, diss[diss_peaks], color="red", label="diss peaks")
-            # ax.scatter(diff_peaks, diss[diff_peaks], color="green", label="diff peaks")
-            # ax.scatter(rf_peaks, diss[rf_peaks], color="blue", label="rf peaks")
-            # ax.scatter(candidates, diss[candidates], color="black", label="candidates")
-            # ax.axvline(guess, color="orange", label="guess")
-            # ax.axvline(actual, color="orange", linestyle="--", label="actual")
-            # plt.legend()
-            # plt.show()
-            return guess
+            adjusted_point = guess
+        from scipy.interpolate import interp1d
+
+        def find_zero_slope_regions(data, threshold=0.1):
+            # Calculate the slope (difference between consecutive points)
+            slopes = np.diff(data)
+
+            # Identify indices where the slope is within the threshold
+            zero_slope_indices = np.where(np.abs(slopes) < threshold)[0]
+
+            # Group indices into continuous regions
+            zero_slope_regions = []
+            if zero_slope_indices.size > 0:
+                current_region = [zero_slope_indices[0]]
+
+                for i in range(1, len(zero_slope_indices)):
+                    if zero_slope_indices[i] == zero_slope_indices[i - 1] + 1:
+                        current_region.append(zero_slope_indices[i])
+                    else:
+                        zero_slope_regions.append(current_region)
+                        current_region = [zero_slope_indices[i]]
+
+                zero_slope_regions.append(current_region)  # Append the last region
+
+            return zero_slope_regions
+
+        peaks, _ = find_peaks(rf)
+        filtered_peaks = [point for point in peaks if bounds[0] <= point <= bounds[1]]
+        if len(filtered_peaks) == 0:
+            adjusted_point = guess
+        else:
+            # filtered_peaks = [point for point in peaks if bounds[0] <= point <= bounds[1]]
+            filtered_peaks = [point for point in peaks if poi_1_guess <= point]
+            # Interpolate between peaks to create the upper envelope
+            t = np.arange(len(rf))
+            envelope_interpolator = interp1d(
+                t[peaks], rf[peaks], kind="linear", fill_value="extrapolate"
+            )
+            upper_envelope = envelope_interpolator(t)
+            zsr = find_zero_slope_regions(upper_envelope, threshold=0.00001)
+            moved = False
+            for region in zsr:
+                lb = region[0]
+                rb = region[-1]
+                if lb <= filtered_peaks[0] <= rb:
+                    adjusted_point = filtered_peaks[1]
+                    moved = True
+                    break
+            if not moved:
+                adjusted_point = filtered_peaks[0]
+        # if abs(actual[3] - adjusted_point) > 50:
+        #     fig, ax = plt.subplots()
+        #     ax.plot(dissipation, label="Dissipation", color="black")
+        #     ax.plot(difference, label="Difference", color="tan")
+        #     ax.fill_betweenx(
+        #         [0, max(dissipation)], bounds[0], bounds[1], color=f"yellow", alpha=0.1
+        #     )
+        #     ax.plot(rf, label="rf", color="grey")
+        #     ax.plot(upper_envelope, label="upper_envelope", color="brown")
+        #     ax.scatter(actual, upper_envelope[actual], color="blue", label="Actual")
+        #     ax.scatter(
+        #         candidates,
+        #         upper_envelope[candidates],
+        #         color="red",
+        #         label="Candidates",
+        #         marker="x",
+        #     )
+        #     for region in zsr:
+        #         ax.axvspan(
+        #             region[0],
+        #             region[-1],
+        #             color="red",
+        #             alpha=0.5,
+        #             label="Zero Slope Region",
+        #         )
+        #     ax.scatter(
+        #         filtered_peaks,
+        #         upper_envelope[filtered_peaks],
+        #         color="green",
+        #         label="Peaks",
+        #     )
+
+        #     ax.axvline(adjusted_point, color="orange", label="adjusted_point")
+        #     plt.legend()
+        #     plt.show()
+        return adjusted_point
 
     def adjustmet_poi_5(self, df, candidates, emp_guess, guess, actual, bounds):
         diss = df["Dissipation"]
@@ -887,15 +945,7 @@ class QPredictor:
         # The list of candidates appends the intial guess of POI6 to the list of potential candidates.
         candidates = np.append(candidates, [poi_6_guess])
 
-        def classify_tail(data, a, b, tail_fraction=0.2):
-
-            # Determine tail segment
-            n_tail = max(1, int(len(data) * tail_fraction))
-            tail_data = data[-n_tail:]
-
-            # Perform linear regression on the tail
-            x = np.arange(len(tail_data))
-            slope, intercept, r_value, p_value, std_err = linregress(x, tail_data)
+        def classify_tail(data, a, b):
             slope = data[a] - data[b]
             if slope < 0:
                 return "increasing"
@@ -927,7 +977,7 @@ class QPredictor:
         )
         # Get the type of tail the last 10% of the run classifies as.  10% is an artbirary
         # fraction of the run and can be adjusted.
-        tail_class = classify_tail(difference, a, b, 0.1)
+        tail_class = classify_tail(difference, a, b)
         if tail_class == "increasing":
             # For an increasing tail in the difference curve, currently no adjustment is provided.
             # TODO: For an increasing tail, implelment an adjustment.
@@ -1011,7 +1061,7 @@ class QPredictor:
 
         return adjusted_poi_6
 
-    def predict(self, file_buffer, type=-1, start=-1, stop=-1, act=[None] * 6):
+    def predict(self, file_buffer, run_type=-1, start=-1, stop=-1, act=[None] * 6):
         # Load CSV data and drop unnecessary columns
         df = pd.read_csv(file_buffer)
         columns_to_drop = ["Date", "Time", "Ambient", "Temperature"]
@@ -1150,7 +1200,7 @@ class QPredictor:
             prediction=extracted_results[2],
             rel_time=rel_time,
             poi_num=2,
-            type=type,
+            type=run_type,
             i=poi_1,
             j=poi_6,
         )
@@ -1158,7 +1208,7 @@ class QPredictor:
             prediction=extracted_results[3],
             rel_time=rel_time,
             poi_num=3,
-            type=type,
+            type=run_type,
             i=poi_1,
             j=poi_6,
         )
@@ -1166,7 +1216,7 @@ class QPredictor:
             prediction=extracted_results[4],
             rel_time=rel_time,
             poi_num=4,
-            type=type,
+            type=run_type,
             i=poi_1,
             j=poi_6,
         )
@@ -1174,7 +1224,7 @@ class QPredictor:
             prediction=extracted_results[5],
             rel_time=rel_time,
             poi_num=5,
-            type=type,
+            type=run_type,
             i=poi_1,
             j=poi_6,
         )
@@ -1195,7 +1245,14 @@ class QPredictor:
             poi_1_guess=poi_1,
         )
         # poi_2 = emp_points[1]
-        poi_4 = self.adjustmet_poi_4(df, candidates_4, extracted_4, act[3], bounds_4)
+        poi_4 = self.adjustmet_poi_4(
+            df=df,
+            candidates=candidates_4,
+            guess=extracted_4,
+            actual=act,
+            bounds=bounds_4,
+            poi_1_guess=poi_1,
+        )
         # Hot fix to prevent out of order poi_4 and poi_5
         if bounds_5[0] < poi_4:
             lst = list(bounds_5)

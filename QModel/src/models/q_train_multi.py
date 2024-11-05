@@ -357,7 +357,7 @@ if __name__ == "__main__":
                     if time_delta == -1:
                         continue
                     print("[INFO] Predicting using multi-target model")
-                    predictions = qmp.predict(data_file, type=0)
+                    predictions = qmp.predict(data_file, run_type=0)
                     pois = []
                     for c in predictions:
                         pois.append(c[0][0])

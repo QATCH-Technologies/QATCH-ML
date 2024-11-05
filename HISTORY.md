@@ -1,6 +1,23 @@
 # History
 ## 2.0.7 (11-04-2024)
 ### Added
+- No additions
+
+### Changed
+- Major improvements to POI4 bringing average case MAE to ~80
+- Minor improvements to ordering on tail classification for POI 6 bringing average case MAE to ~29
+
+### Fixed
+- No fixes
+
+### Deprecated
+- No deprecations
+
+### Removed
+- No removals
+
+## 2.0.7 (11-04-2024)
+### Added
 - Siginificant improvements to POI 6 predictions bringing average case MAE to ~35 for POI 6
 
 ### Changed
