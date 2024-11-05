@@ -10,6 +10,8 @@ from sklearn.model_selection import train_test_split
 import pickle
 from scipy.signal import find_peaks
 from scipy.stats import linregress
+from scipy.interpolate import interp1d
+
 
 # from ModelData import ModelData
 
@@ -683,70 +685,8 @@ class QPredictor:
         dissipation = self.normalize(df["Dissipation"])
         rf = self.normalize(df["Resonance_Frequency"])
         difference = self.normalize(df["Difference"])
-        diss_peaks, _ = find_peaks(dissipation)
-        rf_peaks, _ = find_peaks(rf)
-        diff_peaks, _ = find_peaks(difference)
-        initial_guess = np.array(guess)
-        candidate_points = np.array(candidates)
-        rf_points = np.array(rf_peaks)
-        diss_points = np.array(diss_peaks)
-        diff_points = np.array(diff_peaks)
-        x_min, x_max = bounds
         candidates = np.append(candidates, guess)
         adjusted_point = -1
-        candidate_density = len(candidates) / (x_max - x_min)
-        if candidate_density < 0.02 or (guess < x_min or guess > x_max):
-            # Filter RF points within the bounds
-            rf_points = np.concatenate((rf_points, diss_points))
-            within_bounds = (rf_points >= x_min) & (rf_points <= x_max)
-            filtered_rf_points = rf_points[within_bounds]
-
-            # If no RF points within the bounds, return None or handle accordingly
-            if filtered_rf_points.size == 0:
-
-                return guess
-
-            # Calculate proximity weight for each RF point based on diff and diss points
-            def calculate_weight(rf_point):
-                multiplier = 2
-                diff_in_proximity = np.sum(
-                    np.abs(np.array(diff_points) - rf_point) < 0.02 * len(rf)
-                )
-                weight = diff_in_proximity
-
-                # Apply multiplier if a diss point is nearby
-                if np.any(np.abs(np.array(diss_points) - rf_point) < 0.02 * len(rf)):
-                    weight *= multiplier
-                return weight
-
-            epsilon = 1e-10
-
-            # Calculate weights for filtered RF points
-            weights = np.array(
-                [calculate_weight(rf_point) for rf_point in filtered_rf_points]
-            )
-
-            # Calculate weighted distances from initial guess to each filtered RF point
-            distances_to_rf = np.abs(filtered_rf_points - initial_guess)
-
-            # Prevent division by zero by replacing zero weights with epsilon
-            weighted_distances = distances_to_rf / np.where(
-                weights == 0, epsilon, weights
-            )
-
-            # Find the closest RF point to the initial guess, considering weights
-            closest_rf_idx = np.argmin(weighted_distances)
-            closest_rf_point = filtered_rf_points[closest_rf_idx]
-
-            # Calculate distances from candidate points to the closest RF point
-            distances_to_closest_rf = np.abs(candidate_points - closest_rf_point)
-
-            # Find the closest candidate point to the closest RF point
-            closest_candidate_idx = np.argmin(distances_to_closest_rf)
-            adjusted_point = candidate_points[closest_candidate_idx]
-        else:
-            adjusted_point = guess
-        from scipy.interpolate import interp1d
 
         def find_zero_slope_regions(data, threshold=0.1):
             # Calculate the slope (difference between consecutive points)
