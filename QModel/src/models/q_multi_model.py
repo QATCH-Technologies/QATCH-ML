@@ -1213,36 +1213,34 @@ class QPredictor:
             arr.sort()
             return arr[arr != point]
 
-        candidates_1 = sort_and_remove_point(candidates_1, poi_1)
-        candidates_2 = sort_and_remove_point(candidates_2, poi_2)
-        candidates_3 = sort_and_remove_point(candidates_3, poi_3)
-        candidates_4 = sort_and_remove_point(candidates_4, poi_4)
-        candidates_5 = sort_and_remove_point(candidates_5, poi_5)
-        candidates_6 = sort_and_remove_point(candidates_6, poi_6)
-
-        candidates_1 = np.insert(candidates_1, 0, poi_1)
-        candidates_2 = np.insert(candidates_2, 0, poi_2)
-        candidates_3 = np.insert(candidates_3, 0, poi_3)
-        candidates_4 = np.insert(candidates_4, 0, poi_4)
-        candidates_5 = np.insert(candidates_5, 0, poi_5)
-        candidates_6 = np.insert(candidates_6, 0, poi_6)
-
-        confidence_1 = np.array(extracted_results[1])[candidates_1]
-        confidence_2 = np.array(adj_2)[candidates_2]
-        confidence_3 = np.array(adj_3)[candidates_3]
-        confidence_4 = np.array(adj_4)[candidates_4]
-        confidence_5 = np.array(adj_5)[candidates_5]
-        confidence_6 = np.array(adj_6)[candidates_6]
-
-        # TODO: Adjust 1st confidence to be better than 2nd guess
-
-        candidates = [
-            (candidates_1, confidence_1),
-            (candidates_2, confidence_2),
-            (candidates_3, confidence_3),
-            (candidates_4, confidence_4),
-            (candidates_5, confidence_5),
-            (candidates_6, confidence_6),
+        candidates_list = [
+            candidates_1,
+            candidates_2,
+            candidates_3,
+            candidates_4,
+            candidates_5,
+            candidates_6,
         ]
+        poi_list = [poi_1, poi_2, poi_3, poi_4, poi_5, poi_6]
+        extracted_confidences = extracted_results[1:7]
 
+        candidates = []
+
+        for i in range(6):
+            # Sort and remove point
+            candidates_i = sort_and_remove_point(candidates_list[i], poi_list[i])
+
+            # Extract and sort confidence
+            confidence_i = np.sort(np.array(extracted_confidences[i])[candidates_i])[
+                ::-1
+            ]
+
+            # Insert POI at the start, remove the last element
+            if len(candidates_i) > 1:
+                candidates_i = np.insert(candidates_i, 0, poi_list[i])[:-1]
+            else:
+                candidates_i = np.insert(candidates_i, 0, poi_list[i])
+
+            # Append to candidates list
+            candidates.append((candidates_i, confidence_i))
         return candidates
