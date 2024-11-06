@@ -66,11 +66,11 @@ def test_md_on_file(filename, act_poi):
 def test_mm_on_file(filename, act_poi):
     label = qcr.predict_label(filename)
     if label == 0:
-        candidates = M_PREDICTOR_0.predict(filename, type=label, act=act_poi)
+        candidates = M_PREDICTOR_0.predict(filename, run_type=label, act=act_poi)
     elif label == 1:
-        candidates = M_PREDICTOR_1.predict(filename, type=label, act=act_poi)
+        candidates = M_PREDICTOR_1.predict(filename, run_type=label, act=act_poi)
     elif label == 2:
-        candidates = M_PREDICTOR_2.predict(filename, type=label, act=act_poi)
+        candidates = M_PREDICTOR_2.predict(filename, run_type=label, act=act_poi)
     else:
         raise ValueError(f"Invalid predicted label was: {label}")
     good = []
@@ -435,6 +435,7 @@ def run():
                 act_poi = [int(x[0]) for x in act_poi]
                 if max(act_poi) >= max_index - 1:
                     partial_fills.append(test_file)
+                    continue
 
                 test_qdp = QDataPipeline(data_filepath=test_file)
                 if (
@@ -444,6 +445,7 @@ def run():
                     long_runs.append(test_file)
                     if max(test_df["Relative_time"]) > longest_run[0]:
                         longest_run = (max(test_df["Relative_time"]), test_file)
+                        continue
 
                 mm_results, good, bad = test_mm_on_file(test_file, act_poi)
                 good_list.append(good)

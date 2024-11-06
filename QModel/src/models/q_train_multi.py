@@ -61,7 +61,7 @@ from tqdm import tqdm
 import joblib
 from QConstants import M_TARGET, TRAINING, FEATURES, TESTING, PLOTTING
 from q_data_pipeline import QDataPipeline
-from QModel.src.models.q_multi_model import QMultiModel, QPredictor
+from q_multi_model import QMultiModel, QPredictor
 
 
 def normalize(arr: np.ndarray = None) -> np.ndarray:
@@ -276,18 +276,36 @@ def xgb_pipeline(training_content: list) -> pd.DataFrame:
     """
     print(f"[INFO] XGB Preprocessing on {len(training_content)} datasets")
     xgb_df = pd.DataFrame()
+    dataset_count = 0
     for f in tqdm(training_content, desc="<<Processing XGB>>"):
         if f.endswith(".csv") and not f.endswith("_poi.csv"):
             qdp_pipeline = QDataPipeline(f, multi_class=True)
             matched_poi_file = f.replace(".csv", "_poi.csv")
             if not os.path.exists(matched_poi_file):
                 continue
-            qdp_pipeline.preprocess(poi_filepath=matched_poi_file)
-            has_nan = qdp_pipeline.__dataframe__.isna().any().any()
-            if not has_nan:
-                xgb_df = pd.concat([xgb_df, qdp_pipeline.get_dataframe()])
+            t_delta = qdp_pipeline.find_time_delta()
+            actual = pd.read_csv(matched_poi_file, header=None).values
+
+            if (
+                t_delta > 0
+                and max(qdp_pipeline.__dataframe__["Relative_time"]) < 1800
+                and max(actual) < len(qdp_pipeline.__dataframe__) - 1
+            ):
+
+                qdp_pipeline.preprocess(poi_filepath=matched_poi_file)
+
+                indices = qdp_pipeline.__dataframe__.index[
+                    qdp_pipeline.__dataframe__["Class"] != 0
+                ].tolist()
+                # print(f"actual: {actual}")
+                qdp_pipeline.downsample(t_delta, 20)
+                has_nan = qdp_pipeline.__dataframe__.isna().any().any()
+                if not has_nan:
+                    xgb_df = pd.concat([xgb_df, qdp_pipeline.get_dataframe()])
+                    dataset_count += 1
 
     resampled_df = resample_df(xgb_df, M_TARGET, M_TARGET)
+    print(f"[INFO] Collected {dataset_count} for training.")
     return resampled_df
 
 
@@ -296,14 +314,14 @@ if __name__ == "__main__":
     vals = [0, 1, 2]
     for t in vals:
 
-        model_name = f"QMultiType_{t}"
+        model_name = f"QMultiType_long"
         print(f"[INFO] Training {model_name}")
-        TRAIN_PATH = f"../content/label_{t}/train"
+        TRAIN_PATH = r"C:\Users\QATCH\dev\QATCH-ML\content\training_data"
 
         if TRAINING:
             train_content = load_content(TRAIN_PATH)
             training_set = xgb_pipeline(train_content)
-            print("[INFO] Building multi-target model")
+            print("[STATUS] Building multi-target model")
             qmodel = QMultiModel(
                 dataset=training_set, predictors=FEATURES, target_features=M_TARGET
             )
@@ -311,10 +329,15 @@ if __name__ == "__main__":
             qmodel.train_model()
             qmodel.save_model(model_name)
         if TESTING:
-            cluster_model = joblib.load("SavedModels/cluster.joblib")
+            cluster_model = joblib.load(
+                f"C:\\Users\\QATCH\\dev\\QATCH-ML\\QModel\\SavedModels\\label_{t}.pkl"
+            )
             data_df = pd.DataFrame()
             content = []
-            qmp = QPredictor(f"SavedModels/{model_name}.json")
+            qmp = QPredictor(
+                f"C:\\Users\\QATCH\\dev\\QATCH-ML\\QModel\\SavedModels\\{model_name}.json"
+            )
+            # TEST_PATH = f"content/test_data"
             TEST_PATH = f"content/label_{t}/test"
             for root, dirs, files in os.walk(TEST_PATH):
                 for file in files:
@@ -331,16 +354,19 @@ if __name__ == "__main__":
                     actual_indices = pd.read_csv(poi_file, header=None).values
                     qdp = QDataPipeline(data_file)
                     time_delta = qdp.find_time_delta()
-
-                    qdp.preprocess(poi_filepath=None)
+                    if time_delta == -1:
+                        continue
                     print("[INFO] Predicting using multi-target model")
-                    predictions = qmp.predict(data_file)
+                    predictions = qmp.predict(data_file, run_type=0)
+                    pois = []
+                    for c in predictions:
+                        pois.append(c[0][0])
                     if PLOTTING:
                         palette = sns.color_palette("husl", 6)
                         df = pd.read_csv(data_file)
                         dissipation = normalize(df["Dissipation"])
                         print("Actual, Predicted")
-                        for actual, predicted in zip(actual_indices, predictions):
+                        for actual, predicted in zip(actual_indices, pois):
                             print(f"{actual[0]}, {predicted}")
                         plt.figure()
 
@@ -349,7 +375,7 @@ if __name__ == "__main__":
                             color="grey",
                             label="Dissipation",
                         )
-                        for i, index in enumerate(predictions):
+                        for i, index in enumerate(pois):
                             plt.axvline(
                                 x=index,
                                 color=palette[i],
@@ -362,6 +388,7 @@ if __name__ == "__main__":
                                 linestyle="dashed",
                                 label=f"Actual POI {i + 1}",
                             )
+                        plt.axvline(time_delta, color="black", label="Sampling Shift")
                         plot_name = data_file.replace(TRAIN_PATH, "")
                         plt.xlabel("POIs")
                         plt.ylabel("Dissipation")

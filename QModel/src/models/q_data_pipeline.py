@@ -96,6 +96,7 @@ import numpy as np
 from scipy.signal import savgol_filter, butter, filtfilt, detrend
 from sklearn.preprocessing import StandardScaler
 
+
 M_TARGET = "Class"
 
 
@@ -237,10 +238,6 @@ class QDataPipeline:
             ],
             inplace=True,
         )
-        t_delta = self.find_time_delta()
-        if t_delta > 0:
-            print("[INFO] Applying downsampling")
-            self.downsample(k=t_delta, factor=20)
         # STEP 1
         # Compute the difference curve of this dataframe.
         self.compute_difference()
@@ -298,6 +295,37 @@ class QDataPipeline:
         self.remove_trend("Dissipation")
         self.remove_trend("Resonance_Frequency")
         self.remove_trend("Difference")
+        # t_delta = self.find_time_delta()
+        # if t_delta > 0:
+
+        #     downsampling_factor = self.get_downsampling_factor()
+        #     print(f"[INFO] Applying downsampling with factor of {downsampling_factor}")
+        #     self.downsample(k=t_delta, factor=downsampling_factor)
+
+    def get_downsampling_factor(self) -> int:
+        # Calculate time deltas at the start and end of the dataframe
+        delta_start = (
+            self.__dataframe__["Relative_time"].iloc[2]
+            - self.__dataframe__["Relative_time"].iloc[1]
+        )
+        delta_end = (
+            self.__dataframe__["Relative_time"].iloc[-2]
+            - self.__dataframe__["Relative_time"].iloc[-3]
+        )
+
+        # Determine the larger time delta
+        larger_delta = max(delta_start, delta_end)
+
+        # Calculate how many indices fit within the larger delta at the end
+        indices_in_larger_delta = (
+            self.__dataframe__["Relative_time"].iloc[-1]
+            - self.__dataframe__["Relative_time"].iloc[0]
+        ) // larger_delta
+
+        # Return the downsampling factor, which is the number of indices fitting into the larger delta
+        downsampling_factor = len(self.__dataframe__) // indices_in_larger_delta
+        # return int(downsampling_factor)
+        return 20
 
     def find_time_delta(self) -> int:
         """
@@ -712,21 +740,41 @@ class QDataPipeline:
         """
         Downsample the dataframe up to position `k` by keeping every `factor`-th row.
 
+        If there is a value other than 0 in the "Class" column, remap it to the nearest downsampled point.
+
         Parameters:
         k (int): Position up to which downsampling is performed.
         factor (int): Downsample by this factor.
+        mode (int): Prediction mode (1) ignores class column.  Training mode (0) adds training column
+            downsampling.
         """
         if k > len(self.__dataframe__):
             raise ValueError("k is out of bounds for the dataframe length.")
 
+        original_df = self.__dataframe__
         # Select the part to downsample
-        df_downsampled = self.__dataframe__.iloc[:k].iloc[::factor]
-
+        df_part = original_df.iloc[:k]
         # Select the rest of the dataframe
-        df_rest = self.__dataframe__.iloc[k:]
+        df_rest = original_df.iloc[k:]
+        resampled_df = pd.concat([df_part.iloc[::factor], df_rest])
+        if "Class" in original_df.columns:
+            nonzero_class_rows = original_df[original_df["Class"] != 0]
+            resampled_df = pd.concat([resampled_df, nonzero_class_rows])
+            resampled_df = resampled_df.sort_values(by="Relative_time")
 
-        # Concatenate the downsampled part with the rest of the dataframe
-        self.__dataframe__ = pd.concat([df_downsampled, df_rest]).reset_index(drop=True)
+            # import matplotlib.pyplot as plt
+            # import seaborn as sns
+
+            # nonzero_locations = resampled_df[resampled_df["Class"] != 0].index[:6]
+            # palette = sns.color_palette("husl", 7)
+            # plt.figure(figsize=(8, 8))
+            # plt.plot(resampled_df["Dissipation"])
+            # for i, loc in enumerate(nonzero_locations):
+            #     plt.axvline(loc, label=f"POI {i+1}", color=palette[i])
+            # plt.plot(resampled_df["Class"])
+            # plt.legend()
+            # plt.show()
+        self.__dataframe__ = resampled_df.reset_index(drop=True)
 
     def compute_gradient(self, column: str) -> None:
         """
