@@ -14,7 +14,6 @@ from scipy.interpolate import interp1d
 
 
 # from ModelData import ModelData
-
 Architecture_found = False
 try:
     if not Architecture_found:
@@ -569,117 +568,110 @@ class QPredictor:
 
         return regions
 
-    def adjustment_poi_1(self, guess, diss_raw):
+    def adjustment_poi_1(self, initial_guess, dissipation_data):
+        """Adjusts the point of interest (POI) based on the nearest zero-slope region or peak.
 
-        zero_slope = self.find_zero_slope_regions(self.normalize(diss_raw), 0.0075, 100)
-        adjusted_guess = guess
+        This method refines the initial guess of the point of interest by finding
+        nearby regions with zero slope and selecting the most suitable peak. If no
+        valid zero-slope region is found, it adjusts the guess to the nearest peak
+        in the dissipation data.
 
-        if len(zero_slope) >= 2:
-            l = zero_slope[0][1]
-            r = zero_slope[1][0]
-            peaks_between, _ = find_peaks(diss_raw[l:r])
-            between = []
-            for p in peaks_between:
-                between.append(p + l)
-            # if emp_guess < l:
-            #     adjusted_guess = r
+        Args:
+            initial_guess (int): Initial point of interest guess, typically an index within the dataset.
+            dissipation_data (np.ndarray): 1D array of dissipation values.
 
-            if between is not None and len(between) > 0:
-                between = np.array(between)
-                distances = np.abs(between - guess)
-                if adjusted_guess >= r:
+        Returns:
+            int: Adjusted index of the point of interest, either at or near a zero-slope
+                region or closest peak.
+        """
+        zero_slope_regions = self.find_zero_slope_regions(
+            self.normalize(dissipation_data), threshold=0.0075, min_region_length=100
+        )
+        adjusted_guess = initial_guess
+
+        if len(zero_slope_regions) >= 2:
+            left_bound = zero_slope_regions[0][1]
+            right_bound = zero_slope_regions[1][0]
+
+            peaks_between, _ = find_peaks(dissipation_data[left_bound:right_bound])
+            peaks_indices = [peak + left_bound for peak in peaks_between]
+
+            if peaks_indices:
+                peaks_array = np.array(peaks_indices)
+                distances = np.abs(peaks_array - initial_guess)
+
+                if adjusted_guess >= right_bound:
                     furthest_index = np.argmax(distances)
-                    distances[furthest_index] = min(distances)
+                    distances[furthest_index] = np.min(
+                        distances
+                    )  # Ignore the furthest peak for the second furthest
                     second_furthest_index = np.argmax(distances)
-                    adjusted_guess = between[second_furthest_index]
+                    adjusted_guess = peaks_array[second_furthest_index]
                 else:
                     nearest_index = np.argmin(distances)
-                    distances[nearest_index] = np.argmin(distances)
-                    adjusted_guess = between[nearest_index]
+                    adjusted_guess = peaks_array[nearest_index]
 
         else:
-            peaks, _ = find_peaks(diss_raw)
-            distances = np.abs(peaks - adjusted_guess)
-            nearest_peak_index = peaks[np.argmin(distances)]
-            adjusted_guess = nearest_peak_index
-
-        # if abs(adjusted_guess - actual) > 5:
-        #     fig, ax = plt.subplots()
-        #     ax.plot(diss_raw, color="grey")
-        #     for l, r in zero_slope:
-        #         ax.fill_between((l, r), max(diss_raw), alpha=0.5)
-        #     ax.scatter(between, diss_raw[between])
-        #     ax.axvline(guess, color="green", linestyle="dotted", label="guess")
-
-        #     ax.axvline(adjusted_guess, color="brown", label="adjusted")
-        #     ax.axvline(actual, color="orange", linestyle="--", label="actual")
-        #     plt.legend()
-
-        #     plt.show()
+            all_peaks, _ = find_peaks(dissipation_data)
+            distances_to_peaks = np.abs(all_peaks - adjusted_guess)
+            nearest_peak = all_peaks[np.argmin(distances_to_peaks)]
+            adjusted_guess = nearest_peak
 
         return adjusted_guess
 
-    def adjustment_poi_2(self, guess, diss_raw, actual, bounds, poi_1_guess):
+    def adjustment_poi_2(self, initial_guess, dissipation_data, bounds, poi_1_estimate):
+        """Adjusts the point of interest (POI) within specified bounds, influenced by another POI.
 
-        diss_raw = self.normalize(diss_raw)
-        diss_invert = -diss_raw
-        start = bounds[0]
-        stop = bounds[1]
-        if guess < bounds[0]:
-            start = guess
+        This method refines the initial guess for a point of interest based on specified
+        bounds and a previous POI estimate. It calculates the nearest peak within the bounds,
+        weighted toward the initial guess, and returns an adjusted POI if valid.
 
-        if guess > bounds[1]:
-            stop = guess
-        if start < poi_1_guess:
-            start = poi_1_guess
+        Args:
+            initial_guess (int): Initial guess for the point of interest, typically an index.
+            dissipation_data (np.ndarray): 1D array of dissipation values to be processed.
+            bounds (tuple[int, int]): Start and stop bounds within which to adjust the POI.
+            poi_1_estimate (int): Estimate of a prior POI that affects the adjustment range.
 
-        if stop < poi_1_guess:
-            delta = stop - start
-            start = poi_1_guess
-            stop = start + delta
-        peaks, _ = find_peaks(diss_invert)
-        # peaks = peaks + bounds[0]
+        Returns:
+            int: Adjusted index of the point of interest within the specified bounds.
+        """
+        dissipation_data = self.normalize(dissipation_data)
+        dissipation_inverted = -dissipation_data
+        start_bound, stop_bound = bounds
+
+        if initial_guess < start_bound:
+            start_bound = initial_guess
+        elif initial_guess > stop_bound:
+            stop_bound = initial_guess
+
+        if start_bound < poi_1_estimate:
+            start_bound = poi_1_estimate
+        if stop_bound < poi_1_estimate:
+            range_delta = stop_bound - start_bound
+            start_bound = poi_1_estimate
+            stop_bound = start_bound + range_delta
+
+        peaks, _ = find_peaks(dissipation_inverted)
         if len(peaks) == 0:
-            return guess
-        valid_peaks = peaks[peaks < guess]
-        distances = np.abs(valid_peaks - guess)
+            return initial_guess
 
-        # Find the closest RF point to the initial guess, considering weights
-        closest_idx = np.argmin(distances)
-        adjustment = peaks[closest_idx]
-        if adjustment < poi_1_guess:
-            return guess
-        points = np.array([adjustment, guess])
-        weights = np.array([0.25, 0.75])
+        valid_peaks = peaks[peaks < initial_guess]
+        distances_to_guess = np.abs(valid_peaks - initial_guess)
+        closest_peak_idx = np.argmin(distances_to_guess)
+        adjusted_guess = valid_peaks[closest_peak_idx]
+
+        if adjusted_guess < poi_1_estimate:
+            return initial_guess
+
+        points = np.array([adjusted_guess, initial_guess])
+        weights = np.array([0.25, 0.75])  # Biases adjustment toward the initial guess
         weighted_mean = np.average(points, weights=weights)
-        adjustment = int(weighted_mean)
-        if abs(guess - adjustment) > 75:
-            adjustment = guess
-        # if abs(actual - adjustment) > 5:
-        #     fig, ax = plt.subplots()
-        #     ax.plot(diss_raw, color="grey")
-        #     ax.fill_betweenx(
-        #         [0, max(diss_raw)], bounds[0], bounds[1], color=f"yellow", alpha=0.5
-        #     )
-        #     ax.axvline(guess, color="green", linestyle="dotted", label="guess")
+        final_adjustment = int(weighted_mean)
 
-        #     ax.scatter(peaks, diss_raw[peaks])
-        #     ax.axvline(adjustment, color="brown", label="adjusted")
-        #     ax.axvline(actual[0], color="tan",
-        #                linestyle="--", label="actual 1")
-        #     ax.axvline(actual[1], color="orange",
-        #                linestyle="--", label="actual 2")
-        #     ax.scatter(
-        #         peaks[closest_idx],
-        #         diss_raw[peaks[closest_idx]],
-        #         color="red",
-        #         marker="x",
-        #     )
-        #     plt.legend()
+        if abs(initial_guess - final_adjustment) > 75:
+            final_adjustment = initial_guess
 
-        #     plt.show()
-
-        return adjustment
+        return final_adjustment
 
     def adjustmet_poi_4(self, df, candidates, guess, actual, bounds, poi_1_guess):
         dissipation = self.normalize(df["Dissipation"])
@@ -1129,7 +1121,7 @@ class QPredictor:
             start_5 = emp_points[4]
             start_6 = emp_points[5]
         adj_1 = start_1
-        poi_1 = self.adjustment_poi_1(guess=start_1, diss_raw=diss_raw)
+        poi_1 = self.adjustment_poi_1(initial_guess=start_1, dissipation_data=diss_raw)
         adj_6 = extracted_results[6]
         candidates_6 = self.find_and_sort_peaks(adj_6)
         if diff_raw.mean() < 0:
@@ -1188,11 +1180,10 @@ class QPredictor:
         # skip adjustment of point 6 when inverted (drop applied to outlet)
 
         poi_2 = self.adjustment_poi_2(
-            guess=start_2,
-            diss_raw=diss_raw,
-            actual=act[1],
+            initial_guess=start_2,
+            dissipation_data=diss_raw,
             bounds=bounds_2,
-            poi_1_guess=poi_1,
+            poi_1_estimate=poi_1,
         )
         # poi_2 = emp_points[1]
         poi_4 = self.adjustmet_poi_4(
