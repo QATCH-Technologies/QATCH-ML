@@ -10,6 +10,7 @@ from ModelData import ModelData
 from q_data_pipeline import QDataPipeline
 from tqdm import tqdm
 
+from collections import defaultdict
 
 from q_model import QModelPredict
 from q_multi_model import QPredictor
@@ -66,14 +67,11 @@ def test_md_on_file(filename, act_poi):
 def test_mm_on_file(filename, act_poi):
     label = qcr.predict_label(filename)
     if label == 0:
-        candidates = M_PREDICTOR_0.predict(
-            filename, run_type=label, act=act_poi)
+        candidates = M_PREDICTOR_0.predict(filename, run_type=label, act=act_poi)
     elif label == 1:
-        candidates = M_PREDICTOR_1.predict(
-            filename, run_type=label, act=act_poi)
+        candidates = M_PREDICTOR_1.predict(filename, run_type=label, act=act_poi)
     elif label == 2:
-        candidates = M_PREDICTOR_2.predict(
-            filename, run_type=label, act=act_poi)
+        candidates = M_PREDICTOR_2.predict(filename, run_type=label, act=act_poi)
     else:
         raise ValueError(f"Invalid predicted label was: {label}")
     good = []
@@ -83,6 +81,7 @@ def test_mm_on_file(filename, act_poi):
     pois = []
     for c in candidates:
         pois.append(c[0][0])
+
     for i, (x, y) in enumerate(zip(pois, act_poi)):
         if i < 3:
             if abs(x - y) >= initial * y:
@@ -275,8 +274,7 @@ def metrics_view(
         edgecolor="black",
     )
 
-    plt.title(
-        f"Comparison of {test_name} Scores for {model_1_name} and {model_2_name}")
+    plt.title(f"Comparison of {test_name} Scores for {model_1_name} and {model_2_name}")
     plt.xlabel("POI #")
     plt.ylabel(f"{test_name} Score")
     plt.xticks(points)  # Set x-ticks to be the point indices
@@ -423,6 +421,15 @@ def run():
     longest_run = (-1, "")
     partial_fills = []
     long_runs = []
+    out_of_order = 0
+    count = {
+        1: 0,
+        2: 0,
+        3: 0,
+        4: 0,
+        5: 0,
+        6: 0,
+    }
     for filename in tqdm(content, desc="<<Running Tests>>"):
         if (
             filename.endswith(".csv")
@@ -448,8 +455,7 @@ def run():
                 ):
                     long_runs.append(test_file)
                     if max(test_df["Relative_time"]) > longest_run[0]:
-                        longest_run = (
-                            max(test_df["Relative_time"]), test_file)
+                        longest_run = (max(test_df["Relative_time"]), test_file)
                         continue
 
                 mm_results, good, bad = test_mm_on_file(test_file, act_poi)
@@ -457,7 +463,15 @@ def run():
                 bad_list.append(bad)
                 qmp_results = test_qmp_on_file(test_file, act_poi)
                 md_results = test_md_on_file(test_file, act_poi)
+                pois = []
+                for res in mm_results:
+                    pois.append(res)
+                if pois != sorted(pois):
+                    out_of_order += 1
 
+                    for i in range(1, len(pois)):
+                        if pois[i] < pois[i - 1]:
+                            count[i] += 1
                 mm_list.append(mm_results)
                 qmp_list.append(qmp_results)
                 md_list.append(md_results)
@@ -480,6 +494,9 @@ def run():
     print(f"Cross Reference: {len(intersection)}")
     for f in intersection:
         print(f"\t-{f}")
+    input()
+    print(f"Out-of-Order Precdictions={out_of_order}")
+    print(f"OOO Prediction count={count}")
     input()
     # for bad in bad_list:
     #     print(bad)
@@ -775,6 +792,8 @@ def run():
     # accuracy_scatter_view(md_list, "ModelData")
     # delta_distribution_view(qmp_deltas, "QModel")
     # delta_distribution_view(md_deltas, "ModelData")
+
+    delta_distribution_view(mm_deltas, "QMultiModel")
 
 
 if __name__ == "__main__":
