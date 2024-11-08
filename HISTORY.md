@@ -1,4 +1,20 @@
 # History
+## 2.0.8 (11-08-2024)
+### Added
+- Improved restrictions for POI1-3 to prevent unreasonable prediction estimates.
+- Additional sorting and restrictions to the placements of POI 4-6
+
+### Changed
+- Upgraded `q_log` utility; currently not in use.
+
+### Fixed
+- No fixes
+
+### Deprecated
+- No deprecations
+
+### Removed
+- No removals
 ## 2.0.7 (11-04-2024)
 ### Added
 - No additions
