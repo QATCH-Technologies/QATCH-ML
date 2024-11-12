@@ -582,6 +582,7 @@ class QPredictor:
         Args:
             initial_guess (int): Initial point of interest guess, typically an index within the dataset.
             dissipation_data (np.ndarray): 1D array of dissipation values.
+            df (pandas.Dataframe): Dataframe containing run data.
 
         Returns:
             int: Adjusted index of the point of interest, either at or near a zero-slope
@@ -1003,123 +1004,90 @@ class QPredictor:
 
         return adjusted_poi_6
 
-    def predict(self, file_buffer, run_type=-1, start=-1, stop=-1, act=[None] * 6):
-        # Load CSV data and drop unnecessary columns
-        df = pd.read_csv(file_buffer)
-        columns_to_drop = ["Date", "Time", "Ambient", "Temperature"]
-        if not all(col in df.columns for col in columns_to_drop):
-            raise ValueError(
-                f"[QModelPredict predict()]: Input data must contain the following columns: {columns_to_drop}"
-            )
+    def _load_and_prepare_data(self, file_buffer):
+        """Loads the data, dropping unnecessary columns."""
+        return pd.read_csv(file_buffer).drop(
+            columns=["Date", "Time", "Ambient", "Temperature"], errors='raise'
+        )
 
-        df = df.drop(columns=columns_to_drop)
+    def _process_input_buffer(self, file_buffer):
+        """Processes the input buffer and resets it if necessary."""
+        if isinstance(file_buffer, str):
+            return file_buffer  # File path; no action needed
+        elif hasattr(file_buffer, "seekable") and file_buffer.seekable():
+            file_buffer.seek(0)  # Reset ByteIO buffer to beginning
+            return file_buffer
+        else:
+            raise Exception(
+                "Cannot 'seek' stream prior to passing to 'QDataPipeline'.")
 
+    def _prepare_data_for_prediction(self, file_buffer, file_buffer_2):
+        """Prepares data for prediction by selecting the appropriate columns."""
         if not isinstance(file_buffer, str):
-            if hasattr(file_buffer, "seekable") and file_buffer.seekable():
-                # reset ByteIO buffer to beginning of stream
-                file_buffer.seek(0)
+            csv_headers = next(file_buffer).decode() if isinstance(
+                next(file_buffer, ""), bytes) else next(file_buffer)
 
-            csv_headers = next(file_buffer)
-
-            if isinstance(csv_headers, bytes):
-                csv_headers = csv_headers.decode()
-
-            if "Ambient" in csv_headers:
-                csv_cols = (2, 4, 6, 7)
-            else:
-                csv_cols = (2, 3, 5, 6)
-
+            csv_cols = (2, 4, 6, 7) if "Ambient" in csv_headers else (
+                2, 3, 5, 6)
             file_data = np.loadtxt(
-                file_buffer.readlines(), delimiter=",", skiprows=0, usecols=csv_cols
+                file_buffer, delimiter=",", skiprows=0, usecols=csv_cols
             )
-            data_path = "QModel Passthrough"
-            relative_time = file_data[:, 0]
-            # temperature = file_data[:,1]
-            resonance_frequency = file_data[:, 2]
-            data = file_data[:, 3]
 
-            emp_predictions = ModelData().IdentifyPoints(
-                data_path=data_path,
-                times=relative_time,
-                freq=resonance_frequency,
-                diss=data,
+            return ModelData().IdentifyPoints(
+                data_path="QModel Passthrough",
+                times=file_data[:, 0],
+                freq=file_data[:, 2],
+                diss=file_data[:, 3]
             )
         else:
-            emp_predictions = ModelData().IdentifyPoints(file_buffer)
-        emp_points = []
-        start_bound = -1
-        if isinstance(emp_predictions, list):
-            for pt in emp_predictions:
-                if isinstance(pt, int):
-                    emp_points.append(pt)
-                elif isinstance(pt, list):
-                    max_pair = max(pt, key=lambda x: x[1])
-                    emp_points.append(max_pair[0])
-            start_bound = emp_points[0]
+            return ModelData().IdentifyPoints(file_buffer)
 
+    def _extract_emp_points(self, emp_predictions):
+        """Extracts empirical points from predictions."""
+        if isinstance(emp_predictions, list):
+            return [pt if isinstance(pt, int) else max(pt, key=lambda x: x[1])[0] for pt in emp_predictions]
+        return []
+
+    def predict(self, file_buffer, run_type=-1, start=-1, stop=-1, act=[None] * 6):
+        df = self._load_and_prepare_data(file_buffer)
+        file_buffer_2 = self._process_input_buffer(file_buffer)
+        emp_predictions = self._prepare_data_for_prediction(
+            file_buffer, file_buffer_2)
+        emp_points = self._extract_emp_points(emp_predictions)
+        start_bound = emp_points[0] if emp_points else -1
         ############################
         # MAIN PREDICTION PIPELINE #
         ############################
-
-        file_buffer_2 = file_buffer
-        if not isinstance(file_buffer_2, str):
-            if hasattr(file_buffer_2, "seekable") and file_buffer_2.seekable():
-                # reset ByteIO buffer to beginning of stream
-                file_buffer_2.seek(0)
-            else:
-                # ERROR: 'file_buffer_2' must be 'BytesIO' type here, but it's not seekable!
-                raise Exception(
-                    "Cannot 'seek' stream prior to passing to 'QDataPipeline'."
-                )
-        else:
-            # Assuming 'file_buffer_2' is a string to a file path, this will work fine as-is
-            pass
-
-        # Process data using QDataPipeline
         qdp = QDataPipeline(file_buffer_2)
         diss_raw = qdp.__dataframe__["Dissipation"]
         rel_time = qdp.__dataframe__["Relative_time"]
         qdp.preprocess(poi_filepath=None)
         diff_raw = qdp.__difference_raw__
-        df = qdp.get_dataframe()
-        f_names = self.__model__.feature_names
-        df = df[f_names]
+        df = qdp.get_dataframe()[self.__model__.feature_names]
         d_data = xgb.DMatrix(df)
 
+        # Predict, normalize, and extract results
         results = self.__model__.predict(d_data)
-        normalized_results = self.normalize(results)
-        extracted_results = self.extract_results(normalized_results)
+        extracted_results = self.extract_results(self.normalize(results))
 
-        # extracted_1 = emp_points[0]
-        extracted_1 = np.argmax(extracted_results[1])
-        extracted_2 = np.argmax(extracted_results[2])
-        extracted_3 = np.argmax(extracted_results[3])
-        extracted_4 = np.argmax(extracted_results[4])
-        extracted_5 = np.argmax(extracted_results[5])
-        extracted_6 = np.argmax(extracted_results[6])
-
-        if not isinstance(emp_predictions, list):
-            extracted_1 = np.argmax(extracted_results[1])
-
+        # Extract specific points
+        extracted_points = [np.argmax(extracted_results[i])
+                            for i in range(1, 7)]
         if start > -1:
-            extracted_1 = start
+            extracted_points[0] = start
         if stop > -1:
-            extracted_6 = stop
+            extracted_points[-1] = stop
 
-        if len(emp_points) <= 0:
-            start_1 = extracted_1
-            start_2 = extracted_2
-            start_3 = extracted_3
-            start_4 = extracted_4
-            start_5 = extracted_5
-            start_6 = extracted_6
-        else:
-            start_1 = emp_points[0]
-            start_2 = emp_points[1]
-            start_3 = emp_points[2]
-            start_4 = emp_points[3]
-            start_5 = emp_points[4]
-            start_6 = emp_points[5]
+        # Assign the first extracted point if emp_predictions is not a list
+        if not isinstance(emp_predictions, list):
+            extracted_points[0] = np.argmax(extracted_results[1])
+
+        # Set start points based on emp_points or extracted values
+        start_points = emp_points if len(emp_points) > 0 else [
+            extracted_points[0], extracted_points[1], extracted_points[2], extracted_points[3], extracted_points[4], extracted_points[5]]
+        start_1, start_2, start_3, start_4, start_5, start_6 = start_points
+
+        # Adjust points and set candidates
         adj_1 = start_1
         poi_1 = self.adjustment_poi_1(
             initial_guess=start_1, dissipation_data=diss_raw)
@@ -1139,38 +1107,23 @@ class QPredictor:
                 t_delta=t_delta,
                 actual=act,
             )
-        adj_2, bounds_2 = self.adjust_predictions(
-            prediction=extracted_results[2],
-            rel_time=rel_time,
-            poi_num=2,
-            type=run_type,
-            i=poi_1,
-            j=poi_6,
-        )
-        adj_3, bounds_3 = self.adjust_predictions(
-            prediction=extracted_results[3],
-            rel_time=rel_time,
-            poi_num=3,
-            type=run_type,
-            i=poi_1,
-            j=poi_6,
-        )
-        adj_4, bounds_4 = self.adjust_predictions(
-            prediction=extracted_results[4],
-            rel_time=rel_time,
-            poi_num=4,
-            type=run_type,
-            i=poi_1,
-            j=poi_6,
-        )
-        adj_5, bounds_5 = self.adjust_predictions(
-            prediction=extracted_results[5],
-            rel_time=rel_time,
-            poi_num=5,
-            type=run_type,
-            i=poi_1,
-            j=poi_6,
-        )
+
+        # Create a function to adjust predictions
+        def adjust_prediction(prediction, poi_num):
+            return self.adjust_predictions(
+                prediction=prediction,
+                rel_time=rel_time,
+                poi_num=poi_num,
+                type=run_type,
+                i=poi_1,
+                j=poi_6,
+            )
+
+        # Adjust predictions for 2 to 5
+        adj_2, bounds_2 = adjust_prediction(extracted_results[2], 2)
+        adj_3, bounds_3 = adjust_prediction(extracted_results[3], 3)
+        adj_4, bounds_4 = adjust_prediction(extracted_results[4], 4)
+        adj_5, bounds_5 = adjust_prediction(extracted_results[5], 5)
 
         candidates_1 = self.find_and_sort_peaks(extracted_results[1])
         candidates_2 = self.find_and_sort_peaks(adj_2)
@@ -1189,7 +1142,7 @@ class QPredictor:
         poi_4 = self.adjustmet_poi_4(
             df=df,
             candidates=candidates_4,
-            guess=extracted_4,
+            guess=extracted_points[3],
             actual=act,
             bounds=bounds_4,
             poi_1_guess=poi_1,
@@ -1197,7 +1150,7 @@ class QPredictor:
         poi_5 = self.adjustmet_poi_5(
             df=df,
             candidates=candidates_5,
-            guess=extracted_5,
+            guess=extracted_points[4],
             actual=act[4],
             bounds=bounds_5,
             poi_4_guess=poi_4,

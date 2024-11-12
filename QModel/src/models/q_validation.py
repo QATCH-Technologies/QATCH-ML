@@ -12,6 +12,7 @@ from tqdm import tqdm
 
 from collections import defaultdict
 
+from q_log import QLog
 from q_model import QModelPredict
 from q_multi_model import QPredictor
 from q_image_clusterer import QClusterer
@@ -31,8 +32,13 @@ M_PREDICTOR_1 = QPredictor("QModel/SavedModels/QMultiType_1.json")
 M_PREDICTOR_2 = QPredictor("QModel/SavedModels/QMultiType_2.json")
 qcr = QClusterer(model_path="QModel/SavedModels/cluster.joblib")
 
+logger = QLog(logging=True, log_file=None, level='DEBUG')
+
 
 def load_test_dataset(path, test_size):
+    logger.info(
+        message=f'Loading {test_size * 100}% test dataset.', source='QMODEL/q_validation')
+
     content = []
     for root, dirs, files in os.walk(path):
         for file in files:
@@ -67,11 +73,14 @@ def test_md_on_file(filename, act_poi):
 def test_mm_on_file(filename, act_poi):
     label = qcr.predict_label(filename)
     if label == 0:
-        candidates = M_PREDICTOR_0.predict(filename, run_type=label, act=act_poi)
+        candidates = M_PREDICTOR_0.predict(
+            filename, run_type=label, act=act_poi)
     elif label == 1:
-        candidates = M_PREDICTOR_1.predict(filename, run_type=label, act=act_poi)
+        candidates = M_PREDICTOR_1.predict(
+            filename, run_type=label, act=act_poi)
     elif label == 2:
-        candidates = M_PREDICTOR_2.predict(filename, run_type=label, act=act_poi)
+        candidates = M_PREDICTOR_2.predict(
+            filename, run_type=label, act=act_poi)
     else:
         raise ValueError(f"Invalid predicted label was: {label}")
     good = []
@@ -129,6 +138,8 @@ def extract_results(results):
 
 
 def accuracy_scatter_view(results, name):
+    logger.info(
+        message=f'Building accuracy scatter view for {name}.', source='QMODEL/q_validation')
     # Define colors for each index
     colormap = plt.get_cmap("viridis")
 
@@ -207,6 +218,8 @@ def accuracy_scatter_view(results, name):
 
 
 def delta_distribution_view(deltas, name):
+    logger.info(
+        message=f'Building delta distribution view for {name}.', source='QMODEL/q_validation')
     deltas_np = np.array(deltas)
     point_counts = np.zeros((len(deltas), deltas_np.shape[1]))
 
@@ -239,6 +252,8 @@ def delta_distribution_view(deltas, name):
 def metrics_view(
     model_1, model_2, model_3, test_name, model_1_name, model_2_name, model_3_name, note
 ):
+    logger.info(
+        message=f'Building metrics distribution view for {test_name}.', source='QMODEL/q_validation')
     points = np.arange(1, 7)
 
     # Width of each bar
@@ -274,7 +289,8 @@ def metrics_view(
         edgecolor="black",
     )
 
-    plt.title(f"Comparison of {test_name} Scores for {model_1_name} and {model_2_name}")
+    plt.title(
+        f"Comparison of {test_name} Scores for {model_1_name} and {model_2_name}")
     plt.xlabel("POI #")
     plt.ylabel(f"{test_name} Score")
     plt.xticks(points)  # Set x-ticks to be the point indices
@@ -412,6 +428,8 @@ def poi_k_metrics(predictions, actual, k, verbose):
 
 
 def run():
+    logger.info(message='Performing regression/validation testing.',
+                source='QMODEL/q_validation')
     VERBOSE = False
     qmp_deltas, md_deltas, mm_deltas = [], [], []
     qmp_list, md_list, mm_list = [], [], []
@@ -455,7 +473,8 @@ def run():
                 ):
                     long_runs.append(test_file)
                     if max(test_df["Relative_time"]) > longest_run[0]:
-                        longest_run = (max(test_df["Relative_time"]), test_file)
+                        longest_run = (
+                            max(test_df["Relative_time"]), test_file)
                         continue
 
                 mm_results, good, bad = test_mm_on_file(test_file, act_poi)
