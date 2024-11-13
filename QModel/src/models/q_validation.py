@@ -10,6 +10,7 @@ from ModelData import ModelData
 from q_data_pipeline import QDataPipeline
 from tqdm import tqdm
 
+from collections import defaultdict
 
 from q_model import QModelPredict
 from q_multi_model import QPredictor
@@ -80,6 +81,7 @@ def test_mm_on_file(filename, act_poi):
     pois = []
     for c in candidates:
         pois.append(c[0][0])
+
     for i, (x, y) in enumerate(zip(pois, act_poi)):
         if i < 3:
             if abs(x - y) >= initial * y:
@@ -419,6 +421,15 @@ def run():
     longest_run = (-1, "")
     partial_fills = []
     long_runs = []
+    out_of_order = 0
+    count = {
+        1: 0,
+        2: 0,
+        3: 0,
+        4: 0,
+        5: 0,
+        6: 0,
+    }
     for filename in tqdm(content, desc="<<Running Tests>>"):
         if (
             filename.endswith(".csv")
@@ -452,7 +463,15 @@ def run():
                 bad_list.append(bad)
                 qmp_results = test_qmp_on_file(test_file, act_poi)
                 md_results = test_md_on_file(test_file, act_poi)
+                pois = []
+                for res in mm_results:
+                    pois.append(res)
+                if pois != sorted(pois):
+                    out_of_order += 1
 
+                    for i in range(1, len(pois)):
+                        if pois[i] < pois[i - 1]:
+                            count[i] += 1
                 mm_list.append(mm_results)
                 qmp_list.append(qmp_results)
                 md_list.append(md_results)
@@ -475,6 +494,9 @@ def run():
     print(f"Cross Reference: {len(intersection)}")
     for f in intersection:
         print(f"\t-{f}")
+    input()
+    print(f"Out-of-Order Precdictions={out_of_order}")
+    print(f"OOO Prediction count={count}")
     input()
     # for bad in bad_list:
     #     print(bad)
@@ -770,6 +792,8 @@ def run():
     # accuracy_scatter_view(md_list, "ModelData")
     # delta_distribution_view(qmp_deltas, "QModel")
     # delta_distribution_view(md_deltas, "ModelData")
+
+    delta_distribution_view(mm_deltas, "QMultiModel")
 
 
 if __name__ == "__main__":

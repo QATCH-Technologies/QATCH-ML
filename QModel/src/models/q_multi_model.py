@@ -306,7 +306,8 @@ class QMultiModel:
         Example:
             best_hyperparams = self.tune(evaluations=300)
         """
-        print(f"[STATUS] Running model tuning for {evaluations} max iterations")
+        print(
+            f"[STATUS] Running model tuning for {evaluations} max iterations")
         space = {
             "max_depth": hp.choice("max_depth", np.arange(1, 20, 1, dtype=int)),
             "eta": hp.uniform("eta", 0, 1),
@@ -412,7 +413,8 @@ class QPredictor:
             relative_root = os.path.join(Architecture.get_path(), "QATCH")
         else:
             relative_root = os.getcwd()
-        pickle_path = os.path.join(relative_root, "QModel/SavedModels/label_{}.pkl")
+        pickle_path = os.path.join(
+            relative_root, "QModel/SavedModels/label_{}.pkl")
         for i in range(3):
             with open(pickle_path.format(i), "rb") as file:
                 setattr(self, f"__label_{i}__", pickle.load(file))
@@ -476,7 +478,8 @@ class QPredictor:
             return adj_prediction, (lq_idx, uq_idx)
 
         lq_idx = next((i for i, x in enumerate(adj) if x == 1), -1) + i
-        uq_idx = next((i for i, x in reversed(list(enumerate(adj))) if x == 1), -1) + i
+        uq_idx = next((i for i, x in reversed(
+            list(enumerate(adj))) if x == 1), -1) + i
         return prediction, (lq_idx, uq_idx)
 
     def find_and_sort_peaks(self, signal):
@@ -507,7 +510,7 @@ class QPredictor:
         slope_change = []
         for i in range(len(diff) - window_size + 1):
             # Calculate the slope change over the current window
-            window_slope_change = np.mean(np.diff(diff[i : i + window_size]))
+            window_slope_change = np.mean(np.diff(diff[i: i + window_size]))
             slope_change.append(window_slope_change)
 
         slope_change = np.array(slope_change)
@@ -593,7 +596,8 @@ class QPredictor:
             left_bound = zero_slope_regions[0][1]
             right_bound = zero_slope_regions[1][0]
 
-            peaks_between, _ = find_peaks(dissipation_data[left_bound:right_bound])
+            peaks_between, _ = find_peaks(
+                dissipation_data[left_bound:right_bound])
             peaks_indices = [peak + left_bound for peak in peaks_between]
 
             if peaks_indices:
@@ -645,11 +649,11 @@ class QPredictor:
             stop_bound = initial_guess
 
         if start_bound < poi_1_estimate:
-            start_bound = poi_1_estimate
+            start_bound = poi_1_estimate + 1
         if stop_bound < poi_1_estimate:
             range_delta = stop_bound - start_bound
             start_bound = poi_1_estimate
-            stop_bound = start_bound + range_delta
+            stop_bound = start_bound + range_delta - 1
 
         peaks, _ = find_peaks(dissipation_inverted)
         if len(peaks) == 0:
@@ -664,7 +668,8 @@ class QPredictor:
             return initial_guess
 
         points = np.array([adjusted_guess, initial_guess])
-        weights = np.array([0.25, 0.75])  # Biases adjustment toward the initial guess
+        # Biases adjustment toward the initial guess
+        weights = np.array([0.25, 0.75])
         weighted_mean = np.average(points, weights=weights)
         final_adjustment = int(weighted_mean)
 
@@ -701,7 +706,8 @@ class QPredictor:
                         zero_slope_regions.append(current_region)
                         current_region = [zero_slope_indices[i]]
 
-                zero_slope_regions.append(current_region)  # Append the last region
+                # Append the last region
+                zero_slope_regions.append(current_region)
 
             return zero_slope_regions
 
@@ -709,7 +715,8 @@ class QPredictor:
 
         # Check if there is a filtering of peaks such that they appear within our predefined, bounded
         # region.  If not, just report the guessed POI.
-        filtered_peaks = [point for point in peaks if bounds[0] <= point <= bounds[1]]
+        filtered_peaks = [
+            point for point in peaks if bounds[0] <= point <= bounds[1]]
 
         if len(filtered_peaks) == 0:
             # TODO: Adjust POI if there are no Resonance frequency peaks in the bounded region.  Potentially look at something like
@@ -774,10 +781,11 @@ class QPredictor:
         #     plt.show()
         return adjusted_point
 
-    def adjustmet_poi_5(self, df, candidates, emp_guess, guess, actual, bounds):
+    def adjustmet_poi_5(
+        self, df, candidates, guess, actual, bounds, poi_4_guess, poi_6_guess
+    ):
         diss = df["Dissipation"]
         rf = df["Resonance_Frequency"]
-
         diff = df["Difference"]
 
         diss_peaks, _ = find_peaks(diss)
@@ -791,7 +799,12 @@ class QPredictor:
         diff_points = np.array(diff_peaks)
         np.concatenate((rf_points, diff_points, diss_points))
         x_min, x_max = bounds
+        if x_min < poi_4_guess:
+            x_min = poi_4_guess + 1
+        if x_max > poi_6_guess:
+            x_max = poi_6_guess - 1
         candidate_density = len(candidates) / (x_max - x_min)
+        adjusted_point = -1
         if candidate_density < 0.01:
             zero_slope = self.find_zero_slope_regions(rf)
             # Filter RF points within the bounds
@@ -807,23 +820,8 @@ class QPredictor:
             if filtered_rf_points.size == 0:
                 return guess
 
-            # Calculate proximity weight for each RF point based on diff and diss points
-            def calculate_weight(rf_point):
-                # multiplier = 2
-                # diff_in_proximity = np.sum(
-                #     np.abs(np.array(diff_points) - rf_point) < 0.02 * len(rf)
-                # )
-                # weight = diff_in_proximity
-
-                # # Apply multiplier if a diss point is nearby
-                # if np.any(np.abs(np.array(diss_points) - rf_point) < 0.02 * len(rf)):
-                #     weight *= multiplier
-                return 1
-
             # Calculate weights for filtered RF points
-            weights = np.array(
-                [calculate_weight(rf_point) for rf_point in filtered_rf_points]
-            )
+            weights = np.array([1 for rf_point in filtered_rf_points])
 
             # Calculate weighted distances from initial guess to each filtered RF point
             distances_to_rf = np.abs(filtered_rf_points - initial_guess)
@@ -834,36 +832,36 @@ class QPredictor:
             closest_rf_point = filtered_rf_points[closest_rf_idx]
 
             # Calculate distances from candidate points to the closest RF point
-            distances_to_closest_rf = np.abs(candidate_points - closest_rf_point)
+            distances_to_closest_rf = np.abs(
+                candidate_points - closest_rf_point)
 
             # Find the closest candidate point to the closest RF point
             closest_candidate_idx = np.argmin(distances_to_closest_rf)
             adjusted_point = candidate_points[closest_candidate_idx]
-            # fig, ax = plt.subplots()
-            # ax.plot(diss, color="grey")
-            # ax.fill_betweenx(
-            #     [0, max(diss)], bounds[0], bounds[1], color=f"yellow", alpha=0.5
-            # )
-            # ax.scatter(diss_peaks, diss[diss_peaks],
-            #            color="red", label="diss peaks")
-            # ax.scatter(diff_peaks, diss[diff_peaks],
-            #            color="green", label="diff peaks")
-            # ax.scatter(rf_points, diss[rf_points],
-            #            color="blue", label="rf peaks")
-            # ax.scatter(
-            #     emp_guess, diss[emp_guess], color="pink", marker="x", label="emp guess"
-            # )
-            # ax.scatter(candidates, diss[candidates],
-            #            color="black", label="candidates")
-            # ax.axvline(guess, color="purple",
-            #            linestyle='dotted', label="guess")
-            # ax.axvline(actual, color="orange", linestyle="--", label="actual")
-            # ax.axvline(adjusted_point, color="brown", label="adjusted")
-            # plt.legend()
-            # plt.show()
-            return adjusted_point
+
         else:
-            return guess
+            adjusted_point = guess
+
+        # if abs(adjusted_point - actual) > 50:
+        #     fig, ax = plt.subplots()
+        #     ax.plot(diss, color="grey")
+        #     ax.fill_betweenx(
+        #         [0, max(diss)], bounds[0], bounds[1], color=f"yellow", alpha=0.5
+        #     )
+        #     ax.scatter(diss_peaks, diss[diss_peaks], color="red", label="diss peaks")
+        #     ax.scatter(diff_peaks, diss[diff_peaks], color="green", label="diff peaks")
+        #     ax.scatter(
+        #         emp_guess, diss[emp_guess], color="pink", marker="x", label="emp guess"
+        #     )
+        #     ax.scatter(candidates, diss[candidates], color="black", label="candidates")
+        #     ax.axvline(guess, color="purple", linestyle="dotted", label="guess")
+
+        #     ax.axvline(adjusted_point, color="brown", label="adjusted")
+        #     ax.axvline(actual, color="orange", linestyle="--", label="actual")
+        #     ax.scatter(actual, diss[actual], color="orange", marker="*")
+        #     plt.legend()
+        #     plt.show()
+        return adjusted_point
 
     def adjustment_poi_6(
         self,
@@ -933,10 +931,12 @@ class QPredictor:
             # in the dissipation curve. (2) There are no candidates, in which case, pick the point on the
             # dissipation curve which has the most significant change in slope over the baseline slope of
             # that region.
-            filtered_candidates = [point for point in candidates if a <= point <= b]
+            filtered_candidates = [
+                point for point in candidates if a <= point <= b]
 
             if len(filtered_candidates) > 0:
-                adjusted_poi_6 = min(filtered_candidates, key=lambda x: abs(x - a))
+                adjusted_poi_6 = min(filtered_candidates,
+                                     key=lambda x: abs(x - a))
                 # adjusted_poi_6 = max(filtered_candidates,
                 #                      key=lambda p: signal[p])
                 tail_class = tail_class + "_A"
@@ -1121,7 +1121,8 @@ class QPredictor:
             start_5 = emp_points[4]
             start_6 = emp_points[5]
         adj_1 = start_1
-        poi_1 = self.adjustment_poi_1(initial_guess=start_1, dissipation_data=diss_raw)
+        poi_1 = self.adjustment_poi_1(
+            initial_guess=start_1, dissipation_data=diss_raw)
         adj_6 = extracted_results[6]
         candidates_6 = self.find_and_sort_peaks(adj_6)
         if diff_raw.mean() < 0:
@@ -1185,7 +1186,6 @@ class QPredictor:
             bounds=bounds_2,
             poi_1_estimate=poi_1,
         )
-        # poi_2 = emp_points[1]
         poi_4 = self.adjustmet_poi_4(
             df=df,
             candidates=candidates_4,
@@ -1194,14 +1194,16 @@ class QPredictor:
             bounds=bounds_4,
             poi_1_guess=poi_1,
         )
-        # Hot fix to prevent out of order poi_4 and poi_5
-        if bounds_5[0] < poi_4:
-            lst = list(bounds_5)
-            lst[0] = poi_4 + 1
-            bounds_5 = tuple(lst)
         poi_5 = self.adjustmet_poi_5(
-            df, candidates_5, extracted_5, start_5, act[4], bounds_5
+            df=df,
+            candidates=candidates_5,
+            guess=extracted_5,
+            actual=act[4],
+            bounds=bounds_5,
+            poi_4_guess=poi_4,
+            poi_6_guess=poi_6,
         )
+
         if poi_1 >= poi_2:
             poi_1 = adj_1
         poi_3 = np.argmax(adj_3)
@@ -1211,6 +1213,7 @@ class QPredictor:
             if len(arr) > MAX_GUESSES - 1:
                 arr = arr[: MAX_GUESSES - 1]
             arr.sort()
+
             return arr[arr != point]
 
         candidates_list = [
@@ -1226,12 +1229,22 @@ class QPredictor:
 
         candidates = []
 
-        for i in range(6):
+        for i in range(len(poi_list)):
+
             # Sort and remove point
-            candidates_i = sort_and_remove_point(candidates_list[i], poi_list[i])
+            candidates_i = sort_and_remove_point(
+                candidates_list[i], poi_list[i])
+            filtered_points = candidates_i
+            if i < 3:
+                mean = np.mean(candidates_i)
+                std_dev = np.std(candidates_i)
+                threshold = 2
+                # Filter points within the specified threshold
+                filtered_points = [point for point in candidates_i if abs(
+                    point - mean) <= threshold * std_dev]
 
             # Extract and sort confidence
-            confidence_i = np.sort(np.array(extracted_confidences[i])[candidates_i])[
+            confidence_i = np.sort(np.array(extracted_confidences[i])[filtered_points])[
                 ::-1
             ]
 
