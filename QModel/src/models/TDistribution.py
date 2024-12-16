@@ -44,8 +44,10 @@ def pipeline(train_content):
             qdp.preprocess(poi_filepath=poi_file)
             has_nan = qdp.__dataframe__.isna().any().any()
             if not has_nan:
-                i = int(qdp.__dataframe__.index[qdp.__dataframe__["Class"] == 1][0]) - 1
-                j = int(qdp.__dataframe__.index[qdp.__dataframe__["Class"] == 6][0]) + 1
+                i = int(
+                    qdp.__dataframe__.index[qdp.__dataframe__["Class"] == 1][0]) - 1
+                j = int(
+                    qdp.__dataframe__.index[qdp.__dataframe__["Class"] == 6][0]) + 1
                 qdp.__dataframe__ = qdp.__dataframe__[i:j]
                 qdp.__dataframe__["Relative_time"] = normalize(
                     qdp.__dataframe__["Relative_time"]
@@ -76,7 +78,8 @@ def get_band_gap(dataset, bandgap_percentage=0.95):
             }
             continue
 
-        counts, bin_edges = np.histogram(class_df["Relative_time"], bins="auto")
+        counts, bin_edges = np.histogram(
+            class_df["Relative_time"], bins="auto")
 
         # plt.hist(
         #     class_df["Relative_time"],
