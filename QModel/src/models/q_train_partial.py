@@ -9,6 +9,9 @@ from sklearn.model_selection import train_test_split
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from sklearn.metrics import confusion_matrix, classification_report, silhouette_score
+import seaborn as sns
+import matplotlib.pyplot as plt
 
 
 def extract_features(image_paths, model):
@@ -76,6 +79,56 @@ def map_clusters_to_categories(train_paths, train_labels, categories):
         cluster_to_category[cluster] = most_common_category
 
     return cluster_to_category
+
+
+def evaluate_predictions(test_paths, test_labels, cluster_to_category, categories):
+    """
+    Evaluate the quality of predictions by comparing them to ground truth labels.
+    Args:
+        test_paths (list): Paths to testing images.
+        test_labels (np.ndarray): Cluster labels for testing images.
+        cluster_to_category (dict): Mapping of cluster labels to category names.
+        categories (list): List of category names.
+
+    Returns:
+        None
+    """
+    # Extract ground truth categories
+    true_labels = []
+    for path in test_paths:
+        for category in categories:
+            if category in path:
+                true_labels.append(category)
+                break
+
+    # Map cluster labels to categories
+    predicted_categories = [cluster_to_category[label]
+                            for label in test_labels]
+
+    # Confusion Matrix
+    cm = confusion_matrix(true_labels, predicted_categories, labels=categories)
+    plt.figure(figsize=(8, 6))
+    sns.heatmap(cm, annot=True, fmt='d',
+                xticklabels=categories, yticklabels=categories)
+    plt.title("Confusion Matrix")
+    plt.xlabel("Predicted Category")
+    plt.ylabel("True Category")
+    plt.show()
+
+    # Classification Report
+    print("Classification Report:")
+    print(classification_report(true_labels,
+          predicted_categories, target_names=categories))
+    print("Raw Counts of Correct and Incorrect Predictions:")
+    for idx, category in enumerate(categories):
+        correct = cm[idx, idx]
+        incorrect = sum(cm[idx, :]) - correct
+        print(
+            f"Category '{category}': Correct = {correct}, Incorrect = {incorrect}")
+
+    # Silhouette Score
+    silhouette = silhouette_score(test_features, test_labels)
+    print(f"Silhouette Score: {silhouette:.3f}")
 
 
 def predict_and_map(image_paths, model, kmeans, cluster_to_category):
@@ -146,18 +199,23 @@ if __name__ == "__main__":
     cluster_to_category = map_clusters_to_categories(
         train_paths, train_labels, categories)
     print(f"Cluster to Category Mapping: {cluster_to_category}")
+    # Predict cluster labels for test data
+    test_labels = kmeans.predict(test_features)
 
+    # Evaluate predictions
+    evaluate_predictions(test_paths, test_labels,
+                         cluster_to_category, categories)
     # Predict and map categories for test data
-    test_results = predict_and_map(
-        test_paths, feature_extractor, kmeans, cluster_to_category)
-    print(test_results)
+    # test_results = predict_and_map(
+    #     test_paths, feature_extractor, kmeans, cluster_to_category)
+    # print(test_results)
 
-    # Save results
-    test_results.to_csv(
-        "test_clustering_results_with_categories.csv", index=False)
+    # # Save results
+    # test_results.to_csv(
+    #     "test_clustering_results_with_categories.csv", index=False)
 
-    # Example prediction for a new image
-    new_image_path = test_paths[0]
-    new_image_results = predict_and_map(
-        [new_image_path], feature_extractor, kmeans, cluster_to_category)
-    print(new_image_results)
+    # # Example prediction for a new image
+    # new_image_path = test_paths[0]
+    # new_image_results = predict_and_map(
+    #     [new_image_path], feature_extractor, kmeans, cluster_to_category)
+    # print(new_image_results)
