@@ -12,6 +12,7 @@ import pandas as pd
 from sklearn.metrics import confusion_matrix, classification_report, silhouette_score
 import seaborn as sns
 import matplotlib.pyplot as plt
+from q_data_pipeline import QDataPipeline
 
 
 def extract_features(image_paths, model):
@@ -155,6 +156,75 @@ def predict_and_map(image_paths, model, kmeans, cluster_to_category):
     return results
 
 
+def prepare_images(output_dirs, image_dir):
+    """
+    Normalize data, generate graphs, and save them as images in the specified directory.
+    Args:
+        output_dirs (dict): A dictionary containing the paths to output directories.
+        image_dir (str): The directory to save generated images.
+    """
+    os.makedirs(image_dir, exist_ok=True)
+
+    for label, (category, output_dir) in enumerate(output_dirs.items()):
+        category_dir = os.path.join(image_dir, category)
+        os.makedirs(category_dir, exist_ok=True)
+
+        for root, _, files in os.walk(output_dir):
+            for file in files:
+                if file.endswith(".csv") and not file.endswith("_poi.csv"):
+                    data_path = os.path.join(root, file)
+                    qdp = QDataPipeline(data_filepath=data_path)
+                    t_delta = qdp.find_time_delta()
+                    if t_delta > 0:
+
+                        downsampling_factor = qdp.get_downsampling_factor()
+                        print(
+                            f"[INFO] Applying downsampling with factor of {downsampling_factor}")
+                        qdp.downsample(k=t_delta, factor=downsampling_factor)
+                    data_df = qdp.get_dataframe()
+
+                    if "Dissipation" in data_df.columns:
+                        # Normalize and generate graph
+                        data_df["normalized_dissipation"] = normalize_data(
+                            data_df)
+                        graph_path = os.path.join(
+                            category_dir, f"{os.path.splitext(file)[0]}.jpg")
+                        generate_graph(data_df, graph_path)
+
+
+def normalize_data(data):
+    """
+    Normalize the dissipation column in the dataset.
+    Args:
+        data (pd.DataFrame): The dataset containing a dissipation column.
+
+    Returns:
+        pd.Series: The normalized dissipation column.
+    """
+    dissipation = data["Dissipation"]
+    normalized = (dissipation - dissipation.min()) / \
+        (dissipation.max() - dissipation.min())
+    return normalized
+
+
+def generate_graph(data_df, save_path):
+    """
+    Generate a graph from the dissipation column and save as an image.
+    The graph contains only the line with no legends, titles, or annotations.
+
+    Args:
+        data_df (pd.DataFrame): The dataset containing a dissipation column.
+        save_path (str): The path to save the graph image.
+    """
+    plt.figure(figsize=(6, 4))
+    plt.plot(data_df["normalized_dissipation"], color="blue",
+             linewidth=2)  # Line plot with custom styling
+    plt.axis("off")  # Turn off axes
+    # Save without extra white space
+    plt.savefig(save_path, bbox_inches='tight', pad_inches=0)
+    plt.close()
+
+
 if __name__ == "__main__":
     # Paths to the output directories
     output_dirs = {
@@ -167,7 +237,7 @@ if __name__ == "__main__":
     image_dir = "./image_data"
 
     # Step 1: Prepare image data (if not already prepared)
-    # prepare_images(output_dirs, image_dir)
+    prepare_images(output_dirs, image_dir)
 
     # Step 2: Load images and split into training and testing datasets
     image_paths = []
