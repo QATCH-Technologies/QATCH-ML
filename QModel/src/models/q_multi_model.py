@@ -782,7 +782,7 @@ class QPredictor:
         return adjusted_point
 
     def adjustmet_poi_5(
-        self, df, candidates, guess, actual, bounds, poi_4_guess, poi_6_guess
+        self, df, candidates, guess, actual, bounds, poi_1_guess, poi_4_guess, poi_6_guess
     ):
         diss = df["Dissipation"]
         rf = df["Resonance_Frequency"]
@@ -794,15 +794,24 @@ class QPredictor:
         initial_guess = np.array(guess)
         candidate_points = np.array(candidates)
         rf_points = np.array(rf_peaks)
-
+        r_time_1 = df.at[poi_1_guess, 'Relative_time']
+        r_time_4 = df.at[poi_4_guess, 'Relative_time']
+        initial_fill = r_time_4 - r_time_1
+        channel_2_fill_rtime = r_time_1 + (initial_fill * 4)
+        channel_3_fill_rtime = r_time_1 + (initial_fill * 9)
+        channel_2_fill_idx = (df['Relative_time'] -
+                              channel_2_fill_rtime).abs().idxmin()
+        channel_3_fill_idx = (df['Relative_time'] -
+                              channel_3_fill_rtime).abs().idxmin()
         diss_points = np.array(diss_peaks)
         diff_points = np.array(diff_peaks)
         np.concatenate((rf_points, diff_points, diss_points))
+
         x_min, x_max = bounds
         if x_min < poi_4_guess:
-            x_min = poi_4_guess + 1
+            x_min = channel_2_fill_idx
         if x_max > poi_6_guess:
-            x_max = poi_6_guess - 1
+            x_max = channel_3_fill_idx
         candidate_density = len(candidates) / (x_max - x_min)
         adjusted_point = -1
         if candidate_density < 0.01:
@@ -845,16 +854,24 @@ class QPredictor:
         # if abs(adjusted_point - actual) > 50:
         #     fig, ax = plt.subplots()
         #     ax.plot(diss, color="grey")
+
         #     ax.fill_betweenx(
-        #         [0, max(diss)], bounds[0], bounds[1], color=f"yellow", alpha=0.5
+        #         [0, max(diss)], poi_1_guess, channel_2_fill_idx, color=f"orange", alpha=0.5
         #     )
-        #     ax.scatter(diss_peaks, diss[diss_peaks], color="red", label="diss peaks")
-        #     ax.scatter(diff_peaks, diss[diff_peaks], color="green", label="diff peaks")
-        #     ax.scatter(
-        #         emp_guess, diss[emp_guess], color="pink", marker="x", label="emp guess"
+        #     ax.fill_betweenx(
+        #         [0, max(diss)], poi_1_guess, channel_3_fill_idx, color=f"yellow", alpha=0.5
         #     )
-        #     ax.scatter(candidates, diss[candidates], color="black", label="candidates")
-        #     ax.axvline(guess, color="purple", linestyle="dotted", label="guess")
+        #     ax.fill_betweenx(
+        #         [0, max(diss)], poi_1_guess, poi_4_guess, color=f"red", alpha=0.5
+        #     )
+        #     ax.scatter(diss_peaks, diss[diss_peaks],
+        #                color="red", label="diss peaks")
+        #     ax.scatter(diff_peaks, diss[diff_peaks],
+        #                color="green", label="diff peaks")
+        #     ax.scatter(candidates, diss[candidates],
+        #                color="black", label="candidates")
+        #     ax.axvline(guess, color="purple",
+        #                linestyle="dotted", label="guess")
 
         #     ax.axvline(adjusted_point, color="brown", label="adjusted")
         #     ax.axvline(actual, color="orange", linestyle="--", label="actual")
@@ -1197,9 +1214,10 @@ class QPredictor:
         poi_5 = self.adjustmet_poi_5(
             df=df,
             candidates=candidates_5,
-            guess=extracted_5,
+            guess=start_5,
             actual=act[4],
             bounds=bounds_5,
+            poi_1_guess=poi_1,
             poi_4_guess=poi_4,
             poi_6_guess=poi_6,
         )
