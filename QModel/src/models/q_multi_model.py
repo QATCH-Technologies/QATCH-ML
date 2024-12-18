@@ -282,6 +282,7 @@ class QMultiModel:
             early_stopping_rounds=20,
             metrics=["auc"],
             verbose_eval=VERBOSE_EVAL,
+            seed=SEED,
         )
         best_score = results["test-auc-mean"].max()
         return {"loss": best_score, "status": STATUS_OK}

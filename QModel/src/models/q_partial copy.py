@@ -1,29 +1,27 @@
+from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras.optimizers import Adam, RMSprop, SGD
+from tensorflow.keras.layers import Reshape, LSTM, Dense, Dropout, BatchNormalization, Bidirectional
 import pandas as pd
 import numpy as np
 import os
-import xgboost as xgb
-from hyperopt import hp, fmin, tpe, Trials, STATUS_OK
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, Dropout, LSTM, Reshape, BatchNormalization, Bidirectional
+from tensorflow.keras.optimizers import Adam
+
+from tensorflow.keras.utils import to_categorical
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.metrics import accuracy_score, classification_report, precision_score, f1_score
+from sklearn.metrics import classification_report, accuracy_score, precision_score, f1_score
+from hyperopt import fmin, tpe, hp, Trials, STATUS_OK
+import seaborn as sns
+import matplotlib.pyplot as plt
 import joblib
 from tqdm import tqdm
-import matplotlib.pyplot as plt
-from hyperopt.early_stop import no_progress_loss
-from QConstants import NUM_THREADS, SEED, NUMBER_KFOLDS, MAX_ROUNDS, VERBOSE_EVAL
+from scipy.stats import entropy, linregress
+
 
 # Step 1: Feature Extraction Function
-
-import pandas as pd
-from scipy.stats import entropy, linregress
-
-
-import pandas as pd
-from scipy.stats import entropy, linregress
-
-
-import pandas as pd
-from scipy.stats import entropy, linregress
 
 
 def extract_features(file_path):
@@ -34,8 +32,8 @@ def extract_features(file_path):
         "Ambient",
         "Temperature",
         "Peak Magnitude (RAW)",
-    ],
-        inplace=True,)
+    ], inplace=True)
+
     features = {}
 
     # Basic statistics
@@ -149,8 +147,6 @@ def extract_features(file_path):
 
     return features
 
-# Step 2: Load Datasets and Create Training Data
-
 
 def load_and_prepare_data(dataset_paths):
     X = []
@@ -175,128 +171,162 @@ def load_and_prepare_data(dataset_paths):
 
     return X_df, y_encoded
 
-# Step 3: Hyperparameter Tuning with Hyperopt
+
+def build_model(input_dim, num_classes, dense_units, dropout_rate, learning_rate, optimizer_name):
+    # Select optimizer
+    if optimizer_name == 'adam':
+        optimizer = Adam(learning_rate=learning_rate)
+    elif optimizer_name == 'rmsprop':
+        optimizer = RMSprop(learning_rate=learning_rate)
+    elif optimizer_name == 'sgd':
+        optimizer = SGD(learning_rate=learning_rate, momentum=0.9)
+
+    # Build model
+    model = Sequential([
+        Dense(dense_units, activation='relu', input_shape=(input_dim,)),
+        BatchNormalization(),
+        Dropout(dropout_rate),
+        Dense(dense_units, activation='tanh'),
+        BatchNormalization(),
+        Dropout(dropout_rate),
+        Dense(int(dense_units / 2), activation='elu'),
+        BatchNormalization(),
+        Dense(num_classes, activation='softmax')
+    ])
+
+    model.compile(optimizer=optimizer,
+                  loss='categorical_crossentropy',
+                  metrics=['accuracy'])
+    return model
+
+# Updated hyperparameter tuning function without LSTM parameters
 
 
-def train_model(X, y):
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42)
-    scaler = StandardScaler()
-    X_train = scaler.fit_transform(X_train)
-    X_test = scaler.transform(X_test)
-
-    joblib.dump(scaler, "csv_scaler.pkl")
-
-    dtrain = xgb.DMatrix(X_train, label=y_train)
-    dtest = xgb.DMatrix(X_test, label=y_test)
-
-    best_loss = float("inf")
-    early_stop_count = 0
-    max_early_stops = 10
-
+def optimize_hyperparameters(X_train, y_train_cat, X_test, y_test_cat, input_dim, num_classes):
     def objective(params):
-        nonlocal best_loss, early_stop_count
-        cv_results = xgb.cv(
-            params,
-            dtrain,
-            num_boost_round=MAX_ROUNDS,
-            nfold=NUMBER_KFOLDS,
-            stratified=True,
-            early_stopping_rounds=10,
-            metrics=['mlogloss'],
-            seed=SEED,
-            verbose_eval=VERBOSE_EVAL,
+        model = build_model(
+            input_dim=input_dim,
+            num_classes=num_classes,
+            dense_units=int(params['dense_units']),
+            dropout_rate=params['dropout_rate'],
+            learning_rate=params['learning_rate'],
+            optimizer_name=params['optimizer']
         )
 
-        current_loss = cv_results['test-mlogloss-mean'].min()
-        if current_loss < best_loss:
-            best_loss = current_loss
-            early_stop_count = 0
-        else:
-            early_stop_count += 1
+        # Early stopping to prevent overfitting
+        early_stopping = EarlyStopping(
+            monitor='val_loss', patience=5, restore_best_weights=True)
 
-        if early_stop_count >= max_early_stops:
-            return {'loss': best_loss, 'status': STATUS_OK, 'early_stop': True}
+        model.fit(X_train, y_train_cat,
+                  validation_data=(X_test, y_test_cat),
+                  epochs=50,
+                  batch_size=32,
+                  callbacks=[early_stopping],
+                  verbose=0)
 
-        return {'loss': current_loss, 'status': STATUS_OK}
+        # Evaluate model
+        loss, accuracy = model.evaluate(X_test, y_test_cat, verbose=0)
+        return {'loss': -accuracy, 'status': STATUS_OK}
 
+    # Hyperparameter search space
     space = {
-        "max_depth": hp.choice("max_depth", np.arange(1, 20, 1, dtype=int)),
-        "eta": hp.uniform("eta", 0, 1),
-        "gamma": hp.uniform("gamma", 0, 10e1),
-        "reg_alpha": hp.uniform("reg_alpha", 10e-7, 10),
-        "reg_lambda": hp.uniform("reg_lambda", 0, 1),
-        "colsample_bytree": hp.uniform("colsample_bytree", 0.5, 1),
-        "colsample_bynode": hp.uniform("colsample_bynode", 0.5, 1),
-        "colsample_bylevel": hp.uniform("colsample_bylevel", 0.5, 1),
-        "min_child_weight": hp.choice(
-            "min_child_weight", np.arange(1, 10, 1, dtype="int")
-        ),
-        "max_delta_step": hp.choice(
-            "max_delta_step", np.arange(1, 10, 1, dtype="int")
-        ),
-        "subsample": hp.uniform("subsample", 0.5, 1),
-        "eval_metric": "mlogloss",
-        "objective": "multi:softprob",
-        "nthread": NUM_THREADS,
-        "booster": "gbtree",
-        "device": "cuda",
-        "tree_method": "auto",
-        "sampling_method": "gradient_based",
-        "seed": SEED,
-        'num_class': len(np.unique(y)),
+        'dense_units': hp.quniform('dense_units', 32, 128, 1),
+        'dropout_rate': hp.uniform('dropout_rate', 0.1, 0.5),
+        'learning_rate': hp.loguniform('learning_rate', -4, -2),
+        'optimizer': hp.choice('optimizer', ['adam', 'rmsprop', 'sgd'])
     }
 
+    # Run hyperparameter optimization
     trials = Trials()
     best_params = fmin(
         fn=objective,
         space=space,
         algo=tpe.suggest,
-        max_evals=250,
-        trials=trials,
-        return_argmin=False,
-        early_stop_fn=no_progress_loss(10),
+        max_evals=20,
+        trials=trials
     )
 
-    model = xgb.train(
-        best_params,
-        dtrain,
-        num_boost_round=100,
-        evals=[(dtrain, 'train'), (dtest, 'test')],
-        early_stopping_rounds=10
+    # Return best hyperparameters
+    return {
+        'dense_units': int(best_params['dense_units']),
+        'dropout_rate': best_params['dropout_rate'],
+        'learning_rate': best_params['learning_rate'],
+        'optimizer': ['adam', 'rmsprop', 'sgd'][best_params['optimizer']]
+    }
+
+
+# Updated train_model function
+def train_model(X, y):
+    # Split the data
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42)
+
+    # Standardize the features
+    scaler = StandardScaler()
+    X_train = scaler.fit_transform(X_train)
+    X_test = scaler.transform(X_test)
+    joblib.dump(scaler, "csv_scaler.pkl")
+
+    # Convert target to categorical
+    y_train_cat = to_categorical(y_train)
+    y_test_cat = to_categorical(y_test)
+
+    # Optimize hyperparameters
+    best_params = optimize_hyperparameters(
+        X_train, y_train_cat, X_test, y_test_cat,
+        input_dim=X_train.shape[1], num_classes=y_train_cat.shape[1]
     )
 
-    model.save_model("csv_classifier_model.json")
+    # Build the model with the best hyperparameters
+    model = build_model(
+        input_dim=X_train.shape[1],
+        num_classes=y_train_cat.shape[1],
+        dense_units=best_params['dense_units'],
+        dropout_rate=best_params['dropout_rate'],
+        learning_rate=best_params['learning_rate'],
+        optimizer_name=best_params['optimizer']
+    )
 
-    # Evaluate
-    y_pred_prob = model.predict(dtest)
+    # Train the model
+    model.fit(X_train, y_train_cat,
+              validation_data=(X_test, y_test_cat),
+              epochs=50,
+              batch_size=32,
+              verbose=1)
+
+    # Save the model
+    model.save("csv_classifier_model.h5")
+
+    # Evaluate the model
+    y_pred_prob = model.predict(X_test)
     y_pred = np.argmax(y_pred_prob, axis=1)
 
     print("Accuracy:", accuracy_score(y_test, y_pred))
     print("Precision:", precision_score(y_test, y_pred, average='macro'))
     print("F1 Score:", f1_score(y_test, y_pred, average='macro'))
     print(classification_report(y_test, y_pred))
-
-    # Feature importance
-    feature_importance = model.get_score(importance_type='weight')
-    sorted_importance = sorted(
-        feature_importance.items(), key=lambda x: x[1], reverse=True)
-    feature_names = X.columns
-    plt.figure(figsize=(10, 8))
-    plt.barh([feature_names[int(k[1:])]
-             for k, v in sorted_importance], [v for k, v in sorted_importance])
-    plt.xlabel("Feature Importance")
-    plt.ylabel("Features")
-    plt.title("Feature Importance in XGBoost Model")
-    plt.gca().invert_yaxis()
-    plt.show()
-
 # Step 4: Predict Dataset Type
 
 
+def plot_feature_target_correlation(X, y):
+    # Create a DataFrame with features and target
+    X_with_target = X.copy()
+    X_with_target['Target'] = y
+
+    # Calculate correlation
+    correlation_matrix = X_with_target.corr()['Target'].drop('Target')
+
+    # Plot correlation with target
+    plt.figure(figsize=(10, 8))
+    correlation_matrix.sort_values().plot(kind='barh')
+    plt.title("Feature Correlation with Target")
+    plt.xlabel("Correlation")
+    plt.ylabel("Features")
+    plt.show()
+
+
 def predict_dataset_type(file_path):
-    model = xgb.Booster()
-    model.load_model("csv_classifier_model.json")
+    model = tf.keras.models.load_model("csv_classifier_model.h5")
     scaler = joblib.load("csv_scaler.pkl")
     le = joblib.load("label_encoder.pkl")
 
@@ -305,23 +335,23 @@ def predict_dataset_type(file_path):
     features_df.fillna(0, inplace=True)
     features_scaled = scaler.transform(features_df)
 
-    dtest = xgb.DMatrix(features_scaled)
-    prediction = model.predict(dtest)
+    prediction = model.predict(features_scaled)
+    return prediction
     predicted_label = le.inverse_transform([np.argmax(prediction)])
     return predicted_label[0]
 
 
 if __name__ == "__main__":
-    dataset_paths = {
-        "full_fill": "content/dropbox_dump",
-        "no_fill": "content/no_fill",
-        "channel_1_partial": "content/channel_1",
-        "channel_2_partial": "content/channel_2",
-    }
+    # dataset_paths = {
+    #     "full_fill": "content/dropbox_dump",
+    #     "no_fill": "content/no_fill",
+    #     "channel_1_partial": "content/channel_1",
+    #     "channel_2_partial": "content/channel_2",
+    # }
 
-    X, y = load_and_prepare_data(dataset_paths)
-    train_model(X, y)
+    # X, y = load_and_prepare_data(dataset_paths)
+    # train_model(X, y)
 
-    test_file = r"C:\\Users\\QATCH\\dev\\QATCH-ML\\content\\channel_2\\00096\\DD230321_2B_49.5CP_1_3rd.csv"
+    test_file = r"content/dropbox_dump/00001/DD240125W1_C5_OLDBSA367_3rd.csv"
     predicted_class = predict_dataset_type(test_file)
     print(f"Predicted dataset type: {predicted_class}")
