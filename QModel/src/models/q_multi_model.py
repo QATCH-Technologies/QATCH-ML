@@ -782,74 +782,77 @@ class QPredictor:
         return adjusted_point
 
     def adjustmet_poi_5(
-        self, df, candidates, guess, actual, bounds, poi_1_guess, poi_4_guess, poi_6_guess
+        self, df, candidates, emp_guess, mm_guess, actual, bounds, poi_1_guess, poi_4_guess, poi_6_guess
     ):
-        diss = df["Dissipation"]
-        rf = df["Resonance_Frequency"]
-        diff = df["Difference"]
+        if emp_guess >= poi_6_guess or emp_guess <= poi_4_guess:
+            diss = df["Dissipation"]
+            rf = df["Resonance_Frequency"]
+            diff = df["Difference"]
 
-        diss_peaks, _ = find_peaks(diss)
-        rf_peaks, _ = find_peaks(rf)
-        diff_peaks, _ = find_peaks(diff)
-        initial_guess = np.array(guess)
-        candidate_points = np.array(candidates)
-        rf_points = np.array(rf_peaks)
-        r_time_1 = df.at[poi_1_guess, 'Relative_time']
-        r_time_4 = df.at[poi_4_guess, 'Relative_time']
-        initial_fill = r_time_4 - r_time_1
-        channel_2_fill_rtime = r_time_1 + (initial_fill * 4)
-        channel_3_fill_rtime = r_time_1 + (initial_fill * 9)
-        channel_2_fill_idx = (df['Relative_time'] -
-                              channel_2_fill_rtime).abs().idxmin()
-        channel_3_fill_idx = (df['Relative_time'] -
-                              channel_3_fill_rtime).abs().idxmin()
-        diss_points = np.array(diss_peaks)
-        diff_points = np.array(diff_peaks)
-        np.concatenate((rf_points, diff_points, diss_points))
+            diss_peaks, _ = find_peaks(diss)
+            rf_peaks, _ = find_peaks(rf)
+            diff_peaks, _ = find_peaks(diff)
+            initial_guess = np.array(mm_guess)
+            candidate_points = np.array(candidates)
+            rf_points = np.array(rf_peaks)
+            r_time_1 = df.at[poi_1_guess, 'Relative_time']
+            r_time_4 = df.at[poi_4_guess, 'Relative_time']
+            initial_fill = r_time_4 - r_time_1
+            channel_2_fill_rtime = r_time_1 + (initial_fill * 2.8)
+            channel_3_fill_rtime = r_time_1 + (initial_fill * 9)
+            channel_2_fill_idx = (df['Relative_time'] -
+                                  channel_2_fill_rtime).abs().idxmin()
+            channel_3_fill_idx = (df['Relative_time'] -
+                                  channel_3_fill_rtime).abs().idxmin()
+            diss_points = np.array(diss_peaks)
+            diff_points = np.array(diff_peaks)
+            np.concatenate((rf_points, diff_points, diss_points))
 
-        x_min, x_max = bounds
-        if x_min < poi_4_guess:
-            x_min = channel_2_fill_idx
-        if x_max > poi_6_guess:
-            x_max = channel_3_fill_idx
-        candidate_density = len(candidates) / (x_max - x_min)
-        adjusted_point = -1
-        if candidate_density < 0.01:
-            zero_slope = self.find_zero_slope_regions(rf)
-            # Filter RF points within the bounds
-            # rf_points = np.concatenate((rf_points, diss_points))
-            candidates = np.append(candidates, guess)
-            within_bounds = (rf_points >= x_min) & (rf_points <= x_max)
-            filtered_rf_points = rf_points[within_bounds]
+            x_min, x_max = bounds
+            if x_min < poi_4_guess:
+                x_min = channel_2_fill_idx
+            if x_max > poi_6_guess:
+                x_max = channel_3_fill_idx
+            candidate_density = len(candidates) / (x_max - x_min)
+            adjusted_point = -1
+            if candidate_density < 0.01:
+                zero_slope = self.find_zero_slope_regions(rf)
+                # Filter RF points within the bounds
+                # rf_points = np.concatenate((rf_points, diss_points))
+                candidates = np.append(candidates, mm_guess)
+                within_bounds = (rf_points >= x_min) & (rf_points <= x_max)
+                filtered_rf_points = rf_points[within_bounds]
 
-            for l, r in zero_slope:
-                np.append(rf_points, l)
-                np.append(rf_points, r)
-            # If no RF points within the bounds, return None or handle accordingly
-            if filtered_rf_points.size == 0:
-                return guess
+                for l, r in zero_slope:
+                    np.append(rf_points, l)
+                    np.append(rf_points, r)
+                # If no RF points within the bounds, return None or handle accordingly
+                if filtered_rf_points.size == 0:
+                    return mm_guess
 
-            # Calculate weights for filtered RF points
-            weights = np.array([1 for rf_point in filtered_rf_points])
+                # Calculate weights for filtered RF points
+                weights = np.array([1 for rf_point in filtered_rf_points])
 
-            # Calculate weighted distances from initial guess to each filtered RF point
-            distances_to_rf = np.abs(filtered_rf_points - initial_guess)
-            weighted_distances = distances_to_rf / weights  # Adjust distance by weight
+                # Calculate weighted distances from initial guess to each filtered RF point
+                distances_to_rf = np.abs(filtered_rf_points - initial_guess)
+                weighted_distances = distances_to_rf / weights  # Adjust distance by weight
 
-            # Find the closest RF point to the initial guess, considering weights
-            closest_rf_idx = np.argmin(weighted_distances)
-            closest_rf_point = filtered_rf_points[closest_rf_idx]
+                # Find the closest RF point to the initial guess, considering weights
+                closest_rf_idx = np.argmin(weighted_distances)
+                closest_rf_point = filtered_rf_points[closest_rf_idx]
 
-            # Calculate distances from candidate points to the closest RF point
-            distances_to_closest_rf = np.abs(
-                candidate_points - closest_rf_point)
+                # Calculate distances from candidate points to the closest RF point
+                distances_to_closest_rf = np.abs(
+                    candidate_points - closest_rf_point)
 
-            # Find the closest candidate point to the closest RF point
-            closest_candidate_idx = np.argmin(distances_to_closest_rf)
-            adjusted_point = candidate_points[closest_candidate_idx]
+                # Find the closest candidate point to the closest RF point
+                closest_candidate_idx = np.argmin(distances_to_closest_rf)
+                adjusted_point = candidate_points[closest_candidate_idx]
 
+            else:
+                adjusted_point = mm_guess
         else:
-            adjusted_point = guess
+            adjusted_point = emp_guess
 
         # if abs(adjusted_point - actual) > 50:
         #     fig, ax = plt.subplots()
@@ -1214,7 +1217,8 @@ class QPredictor:
         poi_5 = self.adjustmet_poi_5(
             df=df,
             candidates=candidates_5,
-            guess=start_5,
+            emp_guess=start_5,
+            mm_guess=extracted_5,
             actual=act[4],
             bounds=bounds_5,
             poi_1_guess=poi_1,
