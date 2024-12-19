@@ -1,24 +1,31 @@
-from tensorflow.keras.callbacks import EarlyStopping
-from tensorflow.keras.optimizers import Adam, RMSprop, SGD
-from tensorflow.keras.layers import Reshape, LSTM, Dense, Dropout, BatchNormalization, Bidirectional
+from keras.callbacks import EarlyStopping
+from keras.optimizers import Adam, RMSprop, SGD
+from keras.callbacks import EarlyStopping, ReduceLROnPlateau
 import pandas as pd
 import numpy as np
 import os
 import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Dropout, LSTM, Reshape, BatchNormalization, Bidirectional
-from tensorflow.keras.optimizers import Adam
-
-from tensorflow.keras.utils import to_categorical
+from keras.models import Sequential
+from keras.models import Model
+from keras.losses import CategoricalCrossentropy
+from keras.layers import Dense, Dropout, LSTM, Reshape, BatchNormalization, Concatenate, GaussianNoise, Input, Add, LayerNormalization, Multiply
+from keras.optimizers import Adam
+from sklearn.utils.class_weight import compute_class_weight
+from sklearn.utils import class_weight
+from keras.utils import to_categorical
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.metrics import classification_report, accuracy_score, precision_score, f1_score
+from sklearn.metrics import classification_report, accuracy_score, precision_score, f1_score, confusion_matrix
 from hyperopt import fmin, tpe, hp, Trials, STATUS_OK
+from keras.regularizers import l2
+from keras import backend as K
 import seaborn as sns
 import matplotlib.pyplot as plt
 import joblib
 from tqdm import tqdm
 from scipy.stats import entropy, linregress
+import shap
+from concurrent.futures import ThreadPoolExecutor
 
 
 # Step 1: Feature Extraction Function
@@ -152,15 +159,27 @@ def load_and_prepare_data(dataset_paths):
     X = []
     y = []
 
-    for label, path in dataset_paths.items():
-        for root, _, files in tqdm(os.walk(path), desc=f"Loading {label}"):
+    def process_path(label, path):
+        local_X = []
+        local_y = []
+        for root, _, files in os.walk(path):
             files = [f for f in files if f.endswith(
                 ".csv") and not f.endswith('_poi.csv')]
             for file in files:
                 file_path = os.path.join(root, file)
                 features = extract_features(file_path)
-                X.append(features)
-                y.append(label)
+                local_X.append(features)
+                local_y.append(label)
+        return local_X, local_y
+
+    results = []
+    with ThreadPoolExecutor() as executor:
+        futures = [executor.submit(process_path, label, path)
+                   for label, path in dataset_paths.items()]
+        for future in tqdm(futures, desc="Processing datasets"):
+            result_X, result_y = future.result()
+            X.extend(result_X)
+            y.extend(result_y)
 
     X_df = pd.DataFrame(X)
     X_df.fillna(0, inplace=True)
@@ -172,8 +191,10 @@ def load_and_prepare_data(dataset_paths):
     return X_df, y_encoded
 
 
-def build_model(input_dim, num_classes, dense_units, dropout_rate, learning_rate, optimizer_name):
-    # Select optimizer
+def build_advanced_model(input_dim, num_classes, dense_units, dropout_rate, learning_rate, optimizer_name, use_feature_gating=True):
+    """Build an improved wide-and-deep model for tabular data."""
+
+    # Optimizer selection
     if optimizer_name == 'adam':
         optimizer = Adam(learning_rate=learning_rate)
     elif optimizer_name == 'rmsprop':
@@ -181,30 +202,52 @@ def build_model(input_dim, num_classes, dense_units, dropout_rate, learning_rate
     elif optimizer_name == 'sgd':
         optimizer = SGD(learning_rate=learning_rate, momentum=0.9)
 
-    # Build model
-    model = Sequential([
-        Dense(dense_units, activation='relu', input_shape=(input_dim,)),
-        BatchNormalization(),
-        Dropout(dropout_rate),
-        Dense(dense_units, activation='tanh'),
-        BatchNormalization(),
-        Dropout(dropout_rate),
-        Dense(int(dense_units / 2), activation='elu'),
-        BatchNormalization(),
-        Dense(num_classes, activation='softmax')
-    ])
+    # Input layer
+    inputs = Input(shape=(input_dim,))
 
-    model.compile(optimizer=optimizer,
-                  loss='categorical_crossentropy',
-                  metrics=['accuracy'])
+    # Wide component
+    wide = Dense(num_classes, activation='linear',
+                 kernel_regularizer=l2(0.01))(inputs)
+
+    # Deep component
+    x = Dense(dense_units, activation='relu',
+              kernel_regularizer=l2(0.01))(inputs)
+    x = LayerNormalization()(x)
+    x = Dropout(dropout_rate)(x)
+
+    # Residual block with gating
+    for _ in range(2):  # Add two residual blocks
+        residual = x
+        x = Dense(dense_units, activation='relu',
+                  kernel_regularizer=l2(0.01))(x)
+        x = LayerNormalization()(x)
+        if use_feature_gating:
+            gate = Dense(dense_units, activation='sigmoid')(inputs)
+            x = Multiply()([x, gate])
+        x = Add()([x, residual])
+        x = Dropout(dropout_rate)(x)
+
+    # Final dense layers
+    x = Dense(dense_units // 2, activation='elu',
+              kernel_regularizer=l2(0.01))(x)
+    x = LayerNormalization()(x)
+
+    # Concatenate wide and deep outputs
+    combined = Concatenate()([wide, x])
+    outputs = Dense(num_classes, activation='softmax')(combined)
+
+    # Model compilation
+    model = Model(inputs=inputs, outputs=outputs)
+    model.compile(optimizer=optimizer, loss=CategoricalCrossentropy(
+        label_smoothing=0.1), metrics=['accuracy'])
     return model
-
-# Updated hyperparameter tuning function without LSTM parameters
 
 
 def optimize_hyperparameters(X_train, y_train_cat, X_test, y_test_cat, input_dim, num_classes):
+    """Optimize model hyperparameters using Hyperopt."""
+
     def objective(params):
-        model = build_model(
+        model = build_advanced_model(
             input_dim=input_dim,
             num_classes=num_classes,
             dense_units=int(params['dense_units']),
@@ -213,40 +256,39 @@ def optimize_hyperparameters(X_train, y_train_cat, X_test, y_test_cat, input_dim
             optimizer_name=params['optimizer']
         )
 
-        # Early stopping to prevent overfitting
         early_stopping = EarlyStopping(
-            monitor='val_loss', patience=5, restore_best_weights=True)
+            monitor='val_loss', patience=10, restore_best_weights=True)
+
+        lr_scheduler = ReduceLROnPlateau(
+            monitor='val_loss', factor=0.5, patience=5, min_lr=1e-6)
 
         model.fit(X_train, y_train_cat,
                   validation_data=(X_test, y_test_cat),
                   epochs=50,
                   batch_size=32,
-                  callbacks=[early_stopping],
+                  callbacks=[early_stopping, lr_scheduler],
                   verbose=0)
 
-        # Evaluate model
         loss, accuracy = model.evaluate(X_test, y_test_cat, verbose=0)
         return {'loss': -accuracy, 'status': STATUS_OK}
 
     # Hyperparameter search space
     space = {
-        'dense_units': hp.quniform('dense_units', 32, 128, 1),
+        'dense_units': hp.quniform('dense_units', 64, 256, 1),
         'dropout_rate': hp.uniform('dropout_rate', 0.1, 0.5),
         'learning_rate': hp.loguniform('learning_rate', -4, -2),
         'optimizer': hp.choice('optimizer', ['adam', 'rmsprop', 'sgd'])
     }
 
-    # Run hyperparameter optimization
     trials = Trials()
     best_params = fmin(
         fn=objective,
         space=space,
         algo=tpe.suggest,
-        max_evals=20,
+        max_evals=50,
         trials=trials
     )
 
-    # Return best hyperparameters
     return {
         'dense_units': int(best_params['dense_units']),
         'dropout_rate': best_params['dropout_rate'],
@@ -255,30 +297,42 @@ def optimize_hyperparameters(X_train, y_train_cat, X_test, y_test_cat, input_dim
     }
 
 
-# Updated train_model function
-def train_model(X, y):
-    # Split the data
+def plot_confusion_matrix(cm, class_names):
+    """Plot confusion matrix."""
+    plt.figure(figsize=(8, 6))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                xticklabels=class_names, yticklabels=class_names)
+    plt.xlabel('Predicted')
+    plt.ylabel('Actual')
+    plt.title('Confusion Matrix')
+    plt.show()
+
+
+def train_advanced_model(X, y, feature_names=""):
+    """Train the model with optimized hyperparameters."""
+    # Train-test split
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42)
 
-    # Standardize the features
+    # Scale features
     scaler = StandardScaler()
     X_train = scaler.fit_transform(X_train)
     X_test = scaler.transform(X_test)
     joblib.dump(scaler, "csv_scaler.pkl")
 
-    # Convert target to categorical
+    # One-hot encode labels
     y_train_cat = to_categorical(y_train)
     y_test_cat = to_categorical(y_test)
 
     # Optimize hyperparameters
     best_params = optimize_hyperparameters(
         X_train, y_train_cat, X_test, y_test_cat,
-        input_dim=X_train.shape[1], num_classes=y_train_cat.shape[1]
+        input_dim=X_train.shape[1],
+        num_classes=y_train_cat.shape[1]
     )
 
-    # Build the model with the best hyperparameters
-    model = build_model(
+    # Build model with optimized parameters
+    model = build_advanced_model(
         input_dim=X_train.shape[1],
         num_classes=y_train_cat.shape[1],
         dense_units=best_params['dense_units'],
@@ -287,25 +341,47 @@ def train_model(X, y):
         optimizer_name=best_params['optimizer']
     )
 
-    # Train the model
-    model.fit(X_train, y_train_cat,
-              validation_data=(X_test, y_test_cat),
-              epochs=50,
-              batch_size=32,
-              verbose=1)
+    # Compute class weights
+    class_weights = compute_class_weight(
+        class_weight='balanced', classes=np.unique(y_train), y=y_train)
+    class_weights = dict(enumerate(class_weights))
 
-    # Save the model
-    model.save("csv_classifier_model.h5")
+    # Callbacks
+    early_stopping = EarlyStopping(
+        monitor='val_loss', patience=10, restore_best_weights=True)
+    lr_scheduler = ReduceLROnPlateau(
+        monitor='val_loss', factor=0.5, patience=5, min_lr=1e-6)
 
-    # Evaluate the model
+    # Train model
+    model.fit(
+        X_train, y_train_cat,
+        validation_data=(X_test, y_test_cat),
+        epochs=50,
+        batch_size=32,
+        class_weight=class_weights,
+        callbacks=[early_stopping, lr_scheduler],
+        verbose=1
+    )
+
+    # Save model
+    model.save("csv_advanced_classifier_model.h5")
+
+    # Evaluate model
     y_pred_prob = model.predict(X_test)
     y_pred = np.argmax(y_pred_prob, axis=1)
-
     print("Accuracy:", accuracy_score(y_test, y_pred))
     print("Precision:", precision_score(y_test, y_pred, average='macro'))
     print("F1 Score:", f1_score(y_test, y_pred, average='macro'))
+
+    # Confusion matrix and classification report
+    cm = confusion_matrix(y_test, y_pred)
+    class_names = [str(i) for i in range(len(np.unique(y)))]
+    plot_confusion_matrix(cm, class_names)
+    plot_feature_target_correlation(X, y)
+    print("Classification Report:\n")
     print(classification_report(y_test, y_pred))
-# Step 4: Predict Dataset Type
+
+    return model
 
 
 def plot_feature_target_correlation(X, y):
@@ -336,21 +412,20 @@ def predict_dataset_type(file_path):
     features_scaled = scaler.transform(features_df)
 
     prediction = model.predict(features_scaled)
-    return prediction
     predicted_label = le.inverse_transform([np.argmax(prediction)])
     return predicted_label[0]
 
 
 if __name__ == "__main__":
-    # dataset_paths = {
-    #     "full_fill": "content/dropbox_dump",
-    #     "no_fill": "content/no_fill",
-    #     "channel_1_partial": "content/channel_1",
-    #     "channel_2_partial": "content/channel_2",
-    # }
+    dataset_paths = {
+        "full_fill": "content/dropbox_dump",
+        "no_fill": "content/no_fill",
+        "channel_1_partial": "content/channel_1",
+        "channel_2_partial": "content/channel_2",
+    }
 
-    # X, y = load_and_prepare_data(dataset_paths)
-    # train_model(X, y)
+    X, y = load_and_prepare_data(dataset_paths)
+    train_advanced_model(X, y)
 
     test_file = r"content/dropbox_dump/00001/DD240125W1_C5_OLDBSA367_3rd.csv"
     predicted_class = predict_dataset_type(test_file)
