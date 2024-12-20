@@ -26,9 +26,33 @@ from tqdm import tqdm
 from scipy.stats import entropy, linregress
 import shap
 from concurrent.futures import ThreadPoolExecutor
+from keras.callbacks import Callback
 
 
-# Step 1: Feature Extraction Function
+class HybridBatchSizeCallback(Callback):
+    def __init__(self, model, initial_batch_size, final_batch_size, switch_epoch):
+        """
+        Callback to change batch size during training.
+
+        Parameters:
+        - model: The Keras model being trained.
+        - initial_batch_size: Batch size for the initial training phase.
+        - final_batch_size: Batch size for the later training phase.
+        - switch_epoch: Epoch at which to switch to the larger batch size.
+        """
+        super().__init__()
+        self.model = model
+        self.initial_batch_size = initial_batch_size
+        self.final_batch_size = final_batch_size
+        self.switch_epoch = switch_epoch
+
+    def on_epoch_begin(self, epoch, logs=None):
+        # Switch batch size at the defined epoch
+        if epoch == self.switch_epoch:
+            self.params['batch_size'] = self.final_batch_size
+            print(f"Switching to batch size: {self.final_batch_size}")
+        elif epoch == 0:
+            print(f"Using initial batch size: {self.initial_batch_size}")
 
 
 def extract_features(file_path):
@@ -39,118 +63,79 @@ def extract_features(file_path):
         "Ambient",
         "Temperature",
         "Peak Magnitude (RAW)",
-    ], inplace=True)
+    ],
+        inplace=True, errors='ignore')
 
     features = {}
 
-    # Basic statistics
-    features['num_rows'] = df.shape[0]
-    features['num_cols'] = df.shape[1]
-    features['missing_values'] = df.isnull().sum().sum()
-    features['mean'] = df.mean(numeric_only=True).mean()
-    features['std'] = df.std(numeric_only=True).mean()
-    features['min'] = df.min(numeric_only=True).min()
-    features['max'] = df.max(numeric_only=True).max()
+    # Columns to analyze
+    target_columns = ["Relative_time", "Resonance_Frequency", "Dissipation"]
+    for col in target_columns:
+        if col in df.columns:
+            column_features = {}
+            column_data = df[col].dropna()
 
-    # Fill types
-    features['num_zeros'] = (df == 0).sum().sum()
-    features['num_unique_cols'] = df.nunique().mean()
+            # Basic statistics
+            column_features[f'{col}_mean'] = column_data.mean()
+            column_features[f'{col}_std'] = column_data.std()
+            column_features[f'{col}_min'] = column_data.min()
+            column_features[f'{col}_max'] = column_data.max()
 
-    if not df.empty:
-        # Advanced statistics
-        features['median'] = df.median(numeric_only=True).mean()
-        features['skew'] = df.skew(numeric_only=True).mean()
-        features['kurtosis'] = df.kurtosis(numeric_only=True).mean()
-        features['range'] = df.max(
-            numeric_only=True).max() - df.min(numeric_only=True).min()
-        features['total_sum'] = df.sum(numeric_only=True).sum()
-        features['total_variance'] = df.var(numeric_only=True).sum()
-        features['unique_values_ratio'] = df.nunique().mean() / \
-            features['num_rows']
-        features['correlation_mean'] = df.corr(
-            numeric_only=True).abs().mean().mean()
+            # Advanced statistics
+            column_features[f'{col}_median'] = column_data.median()
+            column_features[f'{col}_skew'] = column_data.skew()
+            column_features[f'{col}_kurtosis'] = column_data.kurtosis()
+            column_features[f'{col}_range'] = column_data.max() - \
+                column_data.min()
 
-        # Quantile statistics
-        Q1 = df.quantile(0.25, numeric_only=True)
-        Q3 = df.quantile(0.75, numeric_only=True)
-        Q1, Q3 = Q1.align(Q3, axis=0)  # Align indices
-        IQR = Q3 - Q1
-        df_aligned, IQR_aligned = df.align(
-            IQR, axis=1, copy=False)  # Align DataFrame with IQR
-        outliers = ((df_aligned < (Q1 - 1.5 * IQR_aligned)) |
-                    (df_aligned > (Q3 + 1.5 * IQR_aligned))).sum().sum()
-        features['num_outliers'] = outliers
+            # Quantile statistics
+            Q1 = column_data.quantile(0.25)
+            Q3 = column_data.quantile(0.75)
+            IQR = Q3 - Q1
+            outliers = ((column_data < (Q1 - 1.5 * IQR)) |
+                        (column_data > (Q3 + 1.5 * IQR))).sum()
+            column_features[f'{col}_num_outliers'] = outliers
 
-        # Entropy
-        entropy_values = df.select_dtypes(include=['number']).apply(
-            lambda col: entropy(col.value_counts(
-                normalize=True)) if col.nunique() > 1 else 0
-        )
-        features['entropy_mean'] = entropy_values.mean()
+            # Entropy
+            column_features[f'{col}_entropy'] = entropy(column_data.value_counts(
+                normalize=True)) if column_data.nunique() > 1 else 0
 
-        # Signal-to-noise ratio
-        features['signal_to_noise'] = (
-            df.mean(numeric_only=True) / df.std(numeric_only=True)).mean()
+            # Signal-to-noise ratio
+            column_features[f'{col}_signal_to_noise'] = column_data.mean(
+            ) / column_data.std() if column_data.std() != 0 else 0
 
-        # Time-series inspired features (if data is sequential)
-        # Select only numeric columns
-        numeric_df = df.select_dtypes(include=['number'])
-        rolling = numeric_df.rolling(window=50, min_periods=1).mean()
-        features['rolling_mean'] = rolling.mean().mean()
-        rolling_std = numeric_df.rolling(window=50, min_periods=1).std()
-        features['rolling_std'] = rolling_std.mean().mean()
+            # Rolling statistics (time-series inspired)
+            rolling_mean = column_data.rolling(
+                window=50, min_periods=1).mean().mean()
+            column_features[f'{col}_rolling_mean'] = rolling_mean
 
-        lag_diff = numeric_df.diff().abs().mean().mean()
-        features['lag_diff_mean'] = lag_diff
+            rolling_std = column_data.rolling(
+                window=50, min_periods=1).std().mean()
+            column_features[f'{col}_rolling_std'] = rolling_std
 
-        trends = [
-            linregress(range(len(numeric_df)),
-                       numeric_df[col].dropna().values).slope
-            for col in numeric_df.columns
-        ]
-        features['avg_trend'] = sum(trends) / len(trends) if trends else 0
+            # Lag difference
+            lag_diff = column_data.diff().abs().mean()
+            column_features[f'{col}_lag_diff_mean'] = lag_diff
 
-        # Pairwise correlation analysis
-        corr_matrix = numeric_df.corr().abs()
-        strong_corr = (corr_matrix > 0.8).sum().sum() - len(numeric_df.columns)
-        features['strong_correlation_pairs'] = strong_corr
+            # Trend analysis
+            if len(column_data) > 1:
+                trend = linregress(range(len(column_data)),
+                                   column_data.values).slope
+            else:
+                trend = 0
+            column_features[f'{col}_trend'] = trend
 
-        # Polynomial features
-        poly_sum = (numeric_df ** 2).sum().mean()
-        features['poly_sum_mean'] = poly_sum
+            # End-focused statistics
+            tail_mean = column_data.tail(100).mean()
+            head_mean = column_data.head(100).mean()
+            column_features[f'{col}_mean_diff'] = tail_mean - head_mean
 
-        # Missing data patterns
-        missing_percentage = (df.isnull().sum() / len(df)).mean()
-        features['missing_data_percentage'] = missing_percentage
+            tail_std = column_data.tail(100).std()
+            head_std = column_data.head(100).std()
+            column_features[f'{col}_std_diff'] = tail_std - head_std
 
-        # Missing data patterns
-        missing_streaks = df.isnull().astype(int).apply(
-            lambda col: col.groupby(
-                (col != col.shift()).cumsum()).cumsum().max()
-        )
-        features['max_missing_streak'] = missing_streaks.max()
-
-        # End-focused statistics
-        tail_mean = numeric_df.tail(100).mean()
-        head_mean = numeric_df.head(100).mean()
-        tail_mean, head_mean = tail_mean.align(
-            head_mean, axis=0)  # Align indices
-        features['mean_diff'] = tail_mean.mean() - head_mean.mean()
-
-        tail_std = numeric_df.tail(100).std()
-        head_std = numeric_df.head(100).std()
-        tail_std, head_std = tail_std.align(head_std, axis=0)  # Align indices
-        features['std_diff'] = tail_std.mean() - head_std.mean()
-    else:
-        features.update({key: 0 for key in [
-            'median', 'skew', 'kurtosis', 'range', 'total_sum',
-            'total_variance', 'unique_values_ratio', 'correlation_mean',
-            'q25', 'q75', 'iqr', 'num_outliers', 'entropy_mean',
-            'signal_to_noise', 'rolling_mean', 'rolling_std',
-            'lag_diff_mean', 'avg_trend', 'strong_correlation_pairs',
-            'poly_sum_mean', 'missing_data_percentage', 'max_missing_streak',
-            'end_mean', 'end_std', 'end_min', 'end_max', 'mean_diff', 'std_diff'
-        ]})
+            # Add column features to the overall feature dictionary
+            features.update(column_features)
 
     return features
 
@@ -191,9 +176,8 @@ def load_and_prepare_data(dataset_paths):
     return X_df, y_encoded
 
 
-def build_advanced_model(input_dim, num_classes, dense_units, dropout_rate, learning_rate, optimizer_name, use_feature_gating=True):
-    """Build an improved wide-and-deep model for tabular data."""
-
+def build_advanced_model(input_dim, num_classes, dense_units, dropout_rate, learning_rate, optimizer_name, num_layers=2, activation='swish', weight_initializer='he_uniform', use_feature_gating=True):
+    """Improved advanced model with attention and SE blocks."""
     # Optimizer selection
     if optimizer_name == 'adam':
         optimizer = Adam(learning_rate=learning_rate)
@@ -209,17 +193,20 @@ def build_advanced_model(input_dim, num_classes, dense_units, dropout_rate, lear
     wide = Dense(num_classes, activation='linear',
                  kernel_regularizer=l2(0.01))(inputs)
 
-    # Deep component
-    x = Dense(dense_units, activation='relu',
-              kernel_regularizer=l2(0.01))(inputs)
+    # Deep component with SE block
+    x = Dense(dense_units, activation=activation,
+              kernel_initializer=weight_initializer, kernel_regularizer=l2(0.01))(inputs)
     x = LayerNormalization()(x)
     x = Dropout(dropout_rate)(x)
+    squeeze = Dense(dense_units // 16, activation='relu')(x)
+    excite = Dense(dense_units, activation='sigmoid')(squeeze)
+    x = Multiply()([x, excite])
 
-    # Residual block with gating
-    for _ in range(2):  # Add two residual blocks
+    # Add attention and residual blocks
+    for _ in range(int(num_layers)):
         residual = x
-        x = Dense(dense_units, activation='relu',
-                  kernel_regularizer=l2(0.01))(x)
+        x = Dense(dense_units, activation=activation,
+                  kernel_initializer=weight_initializer, kernel_regularizer=l2(0.01))(x)
         x = LayerNormalization()(x)
         if use_feature_gating:
             gate = Dense(dense_units, activation='sigmoid')(inputs)
@@ -227,9 +214,14 @@ def build_advanced_model(input_dim, num_classes, dense_units, dropout_rate, lear
         x = Add()([x, residual])
         x = Dropout(dropout_rate)(x)
 
+    # Attention mechanism
+    attention = Dense(dense_units, activation='tanh')(x)
+    attention = Dense(1, activation='softmax')(attention)
+    x = Multiply()([x, attention])
+
     # Final dense layers
-    x = Dense(dense_units // 2, activation='elu',
-              kernel_regularizer=l2(0.01))(x)
+    x = Dense(dense_units // 2, activation='swish',
+              kernel_initializer=weight_initializer, kernel_regularizer=l2(0.01))(x)
     x = LayerNormalization()(x)
 
     # Concatenate wide and deep outputs
@@ -243,8 +235,37 @@ def build_advanced_model(input_dim, num_classes, dense_units, dropout_rate, lear
     return model
 
 
+class OptimizationMonitor:
+    def __init__(self):
+        self.losses = []
+        self.best_loss = float('inf')
+        self.fig, self.ax = plt.subplots(figsize=(8, 6))
+        plt.ion()
+
+    def update(self, trial_number, current_loss):
+        self.losses.append(current_loss)
+        self.best_loss = min(self.best_loss, current_loss)
+
+        self.ax.clear()
+        self.ax.plot(self.losses, label='Loss per Trial', marker='o')
+        self.ax.axhline(self.best_loss, color='red', linestyle='--',
+                        label=f'Best Loss: {self.best_loss:.4f}')
+        self.ax.set_title('Hyperparameter Optimization Progress')
+        self.ax.set_xlabel('Trial Number')
+        self.ax.set_ylabel('Loss')
+        self.ax.legend()
+
+        plt.pause(0.01)
+
+    def finalize(self):
+        plt.ioff()
+        plt.show()
+
+
 def optimize_hyperparameters(X_train, y_train_cat, X_test, y_test_cat, input_dim, num_classes):
     """Optimize model hyperparameters using Hyperopt."""
+
+    monitor = OptimizationMonitor()
 
     def objective(params):
         model = build_advanced_model(
@@ -253,31 +274,51 @@ def optimize_hyperparameters(X_train, y_train_cat, X_test, y_test_cat, input_dim
             dense_units=int(params['dense_units']),
             dropout_rate=params['dropout_rate'],
             learning_rate=params['learning_rate'],
-            optimizer_name=params['optimizer']
+            optimizer_name=params['optimizer'],
+            num_layers=int(params['num_layers']),
+            activation=params['activation'],
+            weight_initializer=params['weight_initializer']
         )
 
         early_stopping = EarlyStopping(
             monitor='val_loss', patience=10, restore_best_weights=True)
-
         lr_scheduler = ReduceLROnPlateau(
             monitor='val_loss', factor=0.5, patience=5, min_lr=1e-6)
+        initial_batch_size = 32
+        final_batch_size = 128
+        switch_epoch = 50
 
-        model.fit(X_train, y_train_cat,
-                  validation_data=(X_test, y_test_cat),
-                  epochs=50,
-                  batch_size=32,
-                  callbacks=[early_stopping, lr_scheduler],
-                  verbose=0)
+        hybrid_batch_size = HybridBatchSizeCallback(
+            model=model,
+            initial_batch_size=initial_batch_size,
+            final_batch_size=final_batch_size,
+            switch_epoch=switch_epoch
+        )
 
-        loss, accuracy = model.evaluate(X_test, y_test_cat, verbose=0)
-        return {'loss': -accuracy, 'status': STATUS_OK}
+        # Train model
+        model.fit(
+            X_train, y_train_cat,
+            validation_data=(X_test, y_test_cat),
+            epochs=50,
+            batch_size=initial_batch_size,
+            callbacks=[early_stopping, lr_scheduler, hybrid_batch_size],
+            verbose=0
+        )
 
-    # Hyperparameter search space
+        loss, _ = model.evaluate(X_test, y_test_cat, verbose=0)
+        trial_number = len(monitor.losses) + 1
+        monitor.update(trial_number, loss)
+        return {'loss': loss, 'status': STATUS_OK}
+
+    # Expanded Hyperparameter search space
     space = {
-        'dense_units': hp.quniform('dense_units', 64, 256, 1),
-        'dropout_rate': hp.uniform('dropout_rate', 0.1, 0.5),
-        'learning_rate': hp.loguniform('learning_rate', -4, -2),
-        'optimizer': hp.choice('optimizer', ['adam', 'rmsprop', 'sgd'])
+        'dense_units': hp.quniform('dense_units', 32, 1024, 16),
+        'dropout_rate': hp.uniform('dropout_rate', 0.0, 0.7),
+        'learning_rate': hp.loguniform('learning_rate', -6, -2),
+        'optimizer': hp.choice('optimizer', ['adam', 'rmsprop', 'sgd']),
+        'num_layers': hp.quniform('num_layers', 1, 5, 1),
+        'activation': hp.choice('activation', ['relu', 'tanh', 'selu', 'elu', 'leaky_relu']),
+        'weight_initializer': hp.choice('weight_initializer', ['glorot_uniform', 'he_uniform', 'lecun_uniform', 'random_normal']),
     }
 
     trials = Trials()
@@ -285,27 +326,21 @@ def optimize_hyperparameters(X_train, y_train_cat, X_test, y_test_cat, input_dim
         fn=objective,
         space=space,
         algo=tpe.suggest,
-        max_evals=50,
+        max_evals=25,
         trials=trials
     )
+
+    monitor.finalize()
 
     return {
         'dense_units': int(best_params['dense_units']),
         'dropout_rate': best_params['dropout_rate'],
         'learning_rate': best_params['learning_rate'],
-        'optimizer': ['adam', 'rmsprop', 'sgd'][best_params['optimizer']]
+        'optimizer': ['adam', 'rmsprop', 'sgd'][best_params['optimizer']],
+        'num_layers': int(best_params['num_layers']),
+        'activation': ['relu', 'tanh', 'selu', 'elu', 'leaky_relu'][best_params['activation']],
+        'weight_initializer': ['glorot_uniform', 'he_uniform', 'lecun_uniform', 'random_normal'][best_params['weight_initializer']],
     }
-
-
-def plot_confusion_matrix(cm, class_names):
-    """Plot confusion matrix."""
-    plt.figure(figsize=(8, 6))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
-                xticklabels=class_names, yticklabels=class_names)
-    plt.xlabel('Predicted')
-    plt.ylabel('Actual')
-    plt.title('Confusion Matrix')
-    plt.show()
 
 
 def train_advanced_model(X, y, feature_names=""):
@@ -351,15 +386,23 @@ def train_advanced_model(X, y, feature_names=""):
         monitor='val_loss', patience=10, restore_best_weights=True)
     lr_scheduler = ReduceLROnPlateau(
         monitor='val_loss', factor=0.5, patience=5, min_lr=1e-6)
-
+    initial_batch_size = 32
+    final_batch_size = 128
+    switch_epoch = 50
+    hybrid_batch_size = HybridBatchSizeCallback(
+        model=model,
+        initial_batch_size=initial_batch_size,
+        final_batch_size=final_batch_size,
+        switch_epoch=switch_epoch
+    )
     # Train model
     model.fit(
         X_train, y_train_cat,
         validation_data=(X_test, y_test_cat),
-        epochs=50,
-        batch_size=32,
+        epochs=200,
+        batch_size=initial_batch_size,
         class_weight=class_weights,
-        callbacks=[early_stopping, lr_scheduler],
+        callbacks=[early_stopping, lr_scheduler, hybrid_batch_size],
         verbose=1
     )
 
@@ -377,43 +420,114 @@ def train_advanced_model(X, y, feature_names=""):
     cm = confusion_matrix(y_test, y_pred)
     class_names = [str(i) for i in range(len(np.unique(y)))]
     plot_confusion_matrix(cm, class_names)
-    plot_feature_target_correlation(X, y)
+    plot_feature_target_correlation(X, y, 10)
     print("Classification Report:\n")
     print(classification_report(y_test, y_pred))
 
     return model
 
 
-def plot_feature_target_correlation(X, y):
-    # Create a DataFrame with features and target
-    X_with_target = X.copy()
-    X_with_target['Target'] = y
-
-    # Calculate correlation
-    correlation_matrix = X_with_target.corr()['Target'].drop('Target')
-
-    # Plot correlation with target
-    plt.figure(figsize=(10, 8))
-    correlation_matrix.sort_values().plot(kind='barh')
-    plt.title("Feature Correlation with Target")
-    plt.xlabel("Correlation")
-    plt.ylabel("Features")
+def plot_confusion_matrix(cm, class_names):
+    """Plot confusion matrix."""
+    plt.figure(figsize=(8, 6))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                xticklabels=class_names, yticklabels=class_names)
+    plt.xlabel('Predicted')
+    plt.ylabel('Actual')
+    plt.title('Confusion Matrix')
     plt.show()
 
 
-def predict_dataset_type(file_path):
-    model = tf.keras.models.load_model("csv_classifier_model.h5")
-    scaler = joblib.load("csv_scaler.pkl")
-    le = joblib.load("label_encoder.pkl")
+def plot_feature_target_correlation(X, y, top_n=10):
+    """
+    Plots and prints the correlation of features with the target variable.
 
-    features = extract_features(file_path)
-    features_df = pd.DataFrame([features])
-    features_df.fillna(0, inplace=True)
-    features_scaled = scaler.transform(features_df)
+    Parameters:
+    - X: pd.DataFrame
+        DataFrame containing the feature data.
+    - y: pd.Series or pd.DataFrame
+        Series or single-column DataFrame containing the target variable.
+    - top_n: int, optional
+        The number of most correlative features to print. If None, print all.
 
-    prediction = model.predict(features_scaled)
-    predicted_label = le.inverse_transform([np.argmax(prediction)])
-    return predicted_label[0]
+    Returns:
+    - None
+    """
+    # Create a DataFrame by appending the target column to features
+    X_with_target = X.copy()
+    X_with_target['Target'] = y
+
+    # Calculate the correlation matrix and extract correlation with the target
+    correlation_matrix = X_with_target.corr()['Target'].drop('Target')
+
+    # Sort correlations by absolute value (strongest first)
+    sorted_correlation = correlation_matrix.abs().sort_values(ascending=False)
+
+    # Print the most correlative features
+    print("\nMost Correlative Features:\n")
+    if top_n:
+        print(sorted_correlation.head(top_n))
+    else:
+        print(sorted_correlation)
+
+    # Plot the correlations
+    plt.figure(figsize=(10, 8))
+    sorted_correlation.plot(kind='barh', color='skyblue')
+    plt.title("Feature Correlation with Target")
+    plt.xlabel("Correlation")
+    plt.ylabel("Features")
+    plt.tight_layout()
+    plt.show()
+
+
+def predict(input_file_path, model_path="csv_advanced_classifier_model.h5", scaler_path="csv_scaler.pkl", label_encoder_path="label_encoder.pkl"):
+    """
+    Predict the class of a given input CSV file using the trained model.
+
+    Parameters:
+    - input_file_path: str, path to the input CSV file.
+    - model_path: str, path to the trained model file.
+    - scaler_path: str, path to the saved scaler file.
+    - label_encoder_path: str, path to the saved label encoder file.
+
+    Returns:
+    - predicted_label: str, the predicted class label.
+    - probabilities: dict, class probabilities for the input.
+    """
+
+    # Load the trained model
+    model = tf.keras.models.load_model(model_path)
+
+    # Load the scaler and label encoder
+    scaler = joblib.load(scaler_path)
+    label_encoder = joblib.load(label_encoder_path)
+
+    # Extract features from the input file
+    features = extract_features(input_file_path)
+
+    # Ensure all required features are present in the correct order
+    feature_df = pd.DataFrame([features])
+    feature_df.fillna(0, inplace=True)  # Fill missing values with 0
+
+    # Scale features
+    scaled_features = scaler.transform(feature_df)
+
+    # Make predictions
+    # Single input, get first output
+    probabilities = model.predict(scaled_features)[0]
+    predicted_class_index = np.argmax(probabilities)
+
+    # Decode the predicted class label
+    predicted_label = label_encoder.inverse_transform(
+        [predicted_class_index])[0]
+
+    # Map probabilities to class labels
+    class_probabilities = {
+        label_encoder.inverse_transform([i])[0]: prob
+        for i, prob in enumerate(probabilities)
+    }
+
+    return predicted_label, class_probabilities
 
 
 if __name__ == "__main__":
@@ -428,5 +542,5 @@ if __name__ == "__main__":
     train_advanced_model(X, y)
 
     test_file = r"content/dropbox_dump/00001/DD240125W1_C5_OLDBSA367_3rd.csv"
-    predicted_class = predict_dataset_type(test_file)
+    predicted_class = predict(test_file)
     print(f"Predicted dataset type: {predicted_class}")

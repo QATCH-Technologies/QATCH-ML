@@ -149,8 +149,6 @@ def extract_features(file_path):
 
     return features
 
-# Step 2: Load Datasets and Create Training Data
-
 
 def load_and_prepare_data(dataset_paths):
     X = []
@@ -174,8 +172,6 @@ def load_and_prepare_data(dataset_paths):
     joblib.dump(le, "label_encoder.pkl")
 
     return X_df, y_encoded
-
-# Step 3: Hyperparameter Tuning with Hyperopt
 
 
 def train_model(X, y):
