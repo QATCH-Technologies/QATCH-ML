@@ -1229,6 +1229,8 @@ class QPredictor:
         if poi_1 >= poi_2:
             poi_1 = adj_1
         poi_3 = np.argmax(adj_3)
+        if poi_3 <= poi_2:
+            poi_3 = poi_2 + 20
 
         def sort_and_remove_point(arr, point):
             arr = np.array(arr)
