@@ -27,6 +27,7 @@ from scipy.stats import entropy, linregress
 import shap
 from concurrent.futures import ThreadPoolExecutor
 from keras.callbacks import Callback
+import matplotlib.ticker as ticker
 
 
 class HybridBatchSizeCallback(Callback):
@@ -176,7 +177,16 @@ def load_and_prepare_data(dataset_paths):
     return X_df, y_encoded
 
 
-def build_advanced_model(input_dim, num_classes, dense_units, dropout_rate, learning_rate, optimizer_name, num_layers=2, activation='swish', weight_initializer='he_uniform', use_feature_gating=True):
+def build_advanced_model(input_dim,
+                         num_classes,
+                         dense_units,
+                         dropout_rate,
+                         learning_rate,
+                         optimizer_name,
+                         num_layers=2,
+                         activation='swish',
+                         weight_initializer='he_uniform',
+                         use_feature_gating=True):
     """Improved advanced model with attention and SE blocks."""
     # Optimizer selection
     if optimizer_name == 'adam':
@@ -238,31 +248,70 @@ def build_advanced_model(input_dim, num_classes, dense_units, dropout_rate, lear
 class OptimizationMonitor:
     def __init__(self):
         self.losses = []
+        self.accuracies = []
         self.best_loss = float('inf')
-        self.fig, self.ax = plt.subplots(figsize=(8, 6))
-        plt.ion()
+        self.best_accuracy = 0.0
 
-    def update(self, trial_number, current_loss):
+        # Set up the figure and subplots
+        self.fig, self.ax = plt.subplots(2, 1, figsize=(10, 12))
+        self.fig.suptitle('Hyperparameter Optimization Monitor',
+                          fontsize=16, fontweight='bold')
+
+        # Configure styles
+        # print(plt.style.available)
+
+        plt.style.use("seaborn-v0_8-darkgrid")
+        plt.ion()  # Enable interactive mode
+
+    def update(self, trial_number, current_loss, current_accuracy):
+        # Update loss and accuracy lists
         self.losses.append(current_loss)
+        self.accuracies.append(current_accuracy)
         self.best_loss = min(self.best_loss, current_loss)
+        self.best_accuracy = max(self.best_accuracy, current_accuracy)
 
-        self.ax.clear()
-        self.ax.plot(self.losses, label='Loss per Trial', marker='o')
-        self.ax.axhline(self.best_loss, color='red', linestyle='--',
-                        label=f'Best Loss: {self.best_loss:.4f}')
-        self.ax.set_title('Hyperparameter Optimization Progress')
-        self.ax.set_xlabel('Trial Number')
-        self.ax.set_ylabel('Loss')
-        self.ax.legend()
+        # Update Loss Plot
+        self.ax[0].clear()
+        self.ax[0].plot(self.losses, label='Loss', marker='o',
+                        color='orange', linewidth=2)
+        self.ax[0].axhline(self.best_loss, color='red', linestyle='--', linewidth=1.5,
+                           label=f'Best Loss: {self.best_loss:.4f}')
+        self.ax[0].set_title('Loss Progress', fontsize=14, fontweight='bold')
+        self.ax[0].set_xlabel('Trial Number', fontsize=12)
+        self.ax[0].set_ylabel('Loss', fontsize=12)
+        self.ax[0].legend(fontsize=10)
+        self.ax[0].xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+        self.ax[0].grid(True, which='both', linestyle='--', linewidth=0.5)
 
+        # Update Accuracy Plot
+        self.ax[1].clear()
+        self.ax[1].plot(self.accuracies, label='Accuracy',
+                        marker='s', color='green', linewidth=2)
+        self.ax[1].axhline(self.best_accuracy, color='blue', linestyle='--', linewidth=1.5,
+                           label=f'Best Accuracy: {self.best_accuracy:.4f}')
+        self.ax[1].set_title('Accuracy Progress',
+                             fontsize=14, fontweight='bold')
+        self.ax[1].set_xlabel('Trial Number', fontsize=12)
+        self.ax[1].set_ylabel('Accuracy', fontsize=12)
+        self.ax[1].legend(fontsize=10)
+        self.ax[1].xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+        self.ax[1].grid(True, which='both', linestyle='--', linewidth=0.5)
+
+        # Adjust layout and refresh
+        plt.tight_layout(rect=[0, 0, 1, 0.96])  # Leave space for the title
         plt.pause(0.01)
 
     def finalize(self):
-        plt.ioff()
+        plt.ioff()  # Disable interactive mode
         plt.show()
 
 
-def optimize_hyperparameters(X_train, y_train_cat, X_test, y_test_cat, input_dim, num_classes):
+def optimize_hyperparameters(X_train,
+                             y_train_cat,
+                             X_test,
+                             y_test_cat,
+                             input_dim,
+                             num_classes):
     """Optimize model hyperparameters using Hyperopt."""
 
     monitor = OptimizationMonitor()
@@ -305,9 +354,9 @@ def optimize_hyperparameters(X_train, y_train_cat, X_test, y_test_cat, input_dim
             verbose=0
         )
 
-        loss, _ = model.evaluate(X_test, y_test_cat, verbose=0)
+        loss, accuracy = model.evaluate(X_test, y_test_cat, verbose=0)
         trial_number = len(monitor.losses) + 1
-        monitor.update(trial_number, loss)
+        monitor.update(trial_number, loss, accuracy)
         return {'loss': loss, 'status': STATUS_OK}
 
     # Expanded Hyperparameter search space
@@ -326,7 +375,7 @@ def optimize_hyperparameters(X_train, y_train_cat, X_test, y_test_cat, input_dim
         fn=objective,
         space=space,
         algo=tpe.suggest,
-        max_evals=25,
+        max_evals=100,
         trials=trials
     )
 

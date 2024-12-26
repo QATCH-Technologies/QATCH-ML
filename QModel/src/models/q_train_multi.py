@@ -175,7 +175,8 @@ def pca_view(x: np.ndarray, y: np.ndarray) -> None:
     pca = PCA(n_components=2)
     x_pca = pca.fit_transform(x)
     plt.figure(figsize=(8, 6))
-    scatter = plt.scatter(x_pca[:, 0], x_pca[:, 1], c=y, cmap="viridis", edgecolor="k")
+    scatter = plt.scatter(x_pca[:, 0], x_pca[:, 1],
+                          c=y, cmap="viridis", edgecolor="k")
     plt.title("PCA")
     plt.xlabel("Principal Component 1")
     plt.ylabel("Principal Component 2")
@@ -220,7 +221,8 @@ def resample_df(data: pd.DataFrame, target: str, droppable: list) -> pd.DataFram
 
     x, y = pipeline.fit_resample(x, y)
 
-    resampled_df = pd.DataFrame(x, columns=data.drop(columns=droppable).columns)
+    resampled_df = pd.DataFrame(
+        x, columns=data.drop(columns=droppable).columns)
     resampled_df[target] = y
     return resampled_df
 
@@ -314,9 +316,9 @@ if __name__ == "__main__":
     vals = [0, 1, 2]
     for t in vals:
 
-        model_name = f"QMultiType_long"
+        model_name = f"QMulti_Channel_2"
         print(f"[INFO] Training {model_name}")
-        TRAIN_PATH = r"C:\Users\QATCH\dev\QATCH-ML\content\training_data"
+        TRAIN_PATH = r"C:\Users\paulm\dev\QATCH\QATCH-ML\content\channel_2"
 
         if TRAINING:
             train_content = load_content(TRAIN_PATH)
@@ -388,11 +390,13 @@ if __name__ == "__main__":
                                 linestyle="dashed",
                                 label=f"Actual POI {i + 1}",
                             )
-                        plt.axvline(time_delta, color="black", label="Sampling Shift")
+                        plt.axvline(time_delta, color="black",
+                                    label="Sampling Shift")
                         plot_name = data_file.replace(TRAIN_PATH, "")
                         plt.xlabel("POIs")
                         plt.ylabel("Dissipation")
-                        plt.title(f"Predicted/Actual POIs on Data: {plot_name}")
+                        plt.title(
+                            f"Predicted/Actual POIs on Data: {plot_name}")
 
                         plt.legend()
                         plt.grid(True)

@@ -171,7 +171,7 @@ class QMultiModel:
             "sampling_method": "gradient_based",
             "seed": SEED,
             # "multi_strategy": "multi_output_tree",
-            "num_class": 7,
+            "num_class": 6,
         }
         self.__train_df__, self.__test_df__ = train_test_split(
             dataset, test_size=TEST_SIZE, random_state=SEED, shuffle=True
@@ -334,7 +334,7 @@ class QMultiModel:
             "sampling_method": "gradient_based",
             "seed": SEED,
             # "multi_strategy": "multi_output_tree",
-            "num_class": 7,
+            "num_class": 6,
         }
         trials = Trials()
         best_hyperparams = fmin(
