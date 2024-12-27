@@ -1,17 +1,17 @@
+
+# from ModelData import ModelData
 import os
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import xgboost as xgb
-from hyperopt import STATUS_OK, Trials, fmin, hp, tpe
-from hyperopt.early_stop import no_progress_loss
 from scipy.signal import find_peaks
-from sklearn.model_selection import train_test_split
 import pickle
 from scipy.interpolate import interp1d
-
-
-# from ModelData import ModelData
+import joblib
+import tensorflow as tf
+from q_data_pipeline import QPartialDataPipeline
+from q_image_clusterer import QClusterer
 Architecture_found = False
 try:
     if not Architecture_found:
@@ -70,329 +70,90 @@ if not QDataPipeline_found:
     raise ImportError("Cannot find 'QDataPipeline' in any expected location.")
 
 
-class QMultiModel:
-    """
-    A class used to represent and manage an XGBoost model for multi-target classification tasks.
-
-    This class handles the initialization, training, hyperparameter tuning, and management of an XGBoost model.
-    It supports multi-target classification with specific hyperparameters and uses cross-validation to optimize
-    the model's performance.
-
-    Attributes:
-        __params__ (dict): A dictionary of hyperparameters used for training the XGBoost model.
-        __train_df__ (pd.DataFrame): Training subset of the dataset.
-        __valid_df__ (pd.DataFrame): Validation subset of the dataset.
-        __test_df__ (pd.DataFrame): Test subset of the dataset.
-        __dtrain__ (xgb.DMatrix): DMatrix object for the training data.
-        __dvalid__ (xgb.DMatrix): DMatrix object for the validation data.
-        __dtest__ (xgb.DMatrix): DMatrix object for the test data.
-        __watchlist__ (list): List of DMatrix objects to monitor during training, containing tuples of the form (DMatrix, "name").
-        __model__ (xgb.Booster or None): The trained XGBoost model, initially set to None.
-
-    Methods:
-        __init__(self, dataset, predictors, target_features):
-            Initializes the XGBoost model with the specified dataset, predictors, and target features.
-
-        train_model(self):
-            Trains the multi-target XGBoost model using the training dataset.
-
-        objective(self, params):
-            Evaluates the performance of the XGBoost model using cross-validation and returns the best AUC score.
-
-        tune(self, evaluations=250):
-            Tunes the XGBoost model's hyperparameters using Bayesian optimization with Tree-structured Parzen Estimator (TPE).
-
-        save_model(self, model_name="QMultiModel"):
-            Saves the trained XGBoost model to a specified file.
-
-        get_model(self):
-            Retrieves the trained XGBoost model.
-    """
-
-    def __init__(
-        self,
-        dataset: pd.DataFrame = None,
-        predictors: list = None,
-        target_features: str = "Class",
-    ) -> None:
-        """
-        Initializes the XGBoost model with the specified dataset, predictors, and target features.
-
-        Args:
-            dataset (pd.DataFrame): The complete dataset containing both predictors and target features.
-            predictors (list[str]): A list of column names in `dataset` that will be used as features for model training.
-            target_features (list[str]): A list of column names in `dataset` that will be used as target variables for the model.
-
-        Attributes:
-            __params__ (dict): A dictionary of hyperparameters used for training the XGBoost model. These include:
-                - objective (str): The learning task and objective ("multi:softprob" for multi-class classification).
-                - eval_metric (str): Evaluation metric ("auc" for Area Under the Curve).
-                - eta (float): Step size shrinkage used in updates to prevent overfitting (0.175).
-                - max_depth (int): Maximum depth of a tree (5).
-                - min_child_weight (float): Minimum sum of instance weight (hessian) needed in a child (4.0).
-                - subsample (float): Subsample ratio of the training instances (0.6).
-                - colsample_bytree (float): Subsample ratio of columns when constructing each tree (0.75).
-                - gamma (float): Minimum loss reduction required to make a further partition on a leaf node (0.8).
-                - nthread (int): Number of threads used for training (NUM_THREADS).
-                - booster (str): Type of booster to use ("gbtree").
-                - device (str): Device to run on ("cuda").
-                - tree_method (str): Tree construction algorithm ("auto").
-                - sampling_method (str): Sampling method ("gradient_based").
-                - seed (int): Random seed for reproducibility (SEED).
-                - num_class (int): Number of classes (7).
-
-            __train_df__ (pd.DataFrame): Training subset of the dataset.
-            __valid_df__ (pd.DataFrame): Validation subset of the dataset.
-            __test_df__ (pd.DataFrame): Test subset of the dataset.
-
-            __dtrain__ (xgb.DMatrix): DMatrix object for the training data.
-            __dvalid__ (xgb.DMatrix): DMatrix object for the validation data.
-            __dtest__ (xgb.DMatrix): DMatrix object for the test data.
-
-            __watchlist__ (list): List of DMatrix objects to watch during training, containing tuples of the form (DMatrix, "name").
-
-            __model__ (xgb.Booster or None): The trained XGBoost model, initially set to None.
-        """
-        self.__params__ = {
-            "objective": "multi:softprob",
-            "eval_metric": "auc",
-            "eta": 0.175,
-            "max_depth": 5,
-            "min_child_weight": 4.0,
-            "subsample": 0.6,
-            "colsample_bytree": 0.75,
-            "gamma": 0.8,
-            "nthread": NUM_THREADS,
-            "booster": "gbtree",
-            "device": "cuda",
-            "tree_method": "auto",
-            "sampling_method": "gradient_based",
-            "seed": SEED,
-            # "multi_strategy": "multi_output_tree",
-            "num_class": 6,
-        }
-        self.__train_df__, self.__test_df__ = train_test_split(
-            dataset, test_size=TEST_SIZE, random_state=SEED, shuffle=True
-        )
-        self.__train_df__, self.__valid_df__ = train_test_split(
-            self.__train_df__,
-            test_size=VALID_SIZE,
-            random_state=SEED,
-            shuffle=True,
-        )
-
-        self.__dtrain__ = xgb.DMatrix(
-            data=self.__train_df__[predictors],
-            label=self.__train_df__[target_features].values,
-        )
-        self.__dvalid__ = xgb.DMatrix(
-            data=self.__valid_df__[predictors],
-            label=self.__valid_df__[target_features].values,
-        )
-        self.__dtest__ = xgb.DMatrix(
-            data=self.__test_df__[predictors],
-            label=self.__test_df__[target_features].values,
-        )
-
-        self.__watchlist__ = [
-            (self.__dtrain__, "train"),
-            (self.__dvalid__, "valid"),
-        ]
-
-        self.__model__ = None
-
-    def train_model(self) -> None:
-        """
-        Trains the multi-target XGBoost model using the training dataset.
-
-        This method initializes the training process for the XGBoost model with the previously defined parameters and datasets.
-        The model is trained over a number of rounds with early stopping if the performance does not improve on the validation set.
-
-        During the training process, the model's performance is evaluated on both the training and validation datasets,
-        and the best model based on the validation performance is saved.
-
-        Prints a status message indicating the start of the training process.
-
-        Attributes:
-            __model__ (xgb.Booster): The trained XGBoost model after completion of the training process.
-
-        Raises:
-            ValueError: If any of the necessary parameters or datasets have not been initialized prior to calling this method.
-        """
-        print(f"[STATUS] Training multi-target model")
-        self.__model__ = xgb.train(
-            self.__params__,
-            self.__dtrain__,
-            MAX_ROUNDS,
-            evals=self.__watchlist__,
-            early_stopping_rounds=EARLY_STOP,
-            maximize=True,
-            verbose_eval=VERBOSE_EVAL,
-        )
-
-    def update_model(
-        self,
-        new_df: pd.DataFrame = None,
-        predictors: list = None,
-        target_features: str = "Class",
-    ) -> None:
-        print(f"[STATUS] Updating multi-target model")
-        d_new = xgb.DMatrix(
-            new_df[predictors],
-            new_df[target_features].values,
-        )
-        self.__model__ = xgb.train(
-            self.__params__,
-            d_new,
-            MAX_ROUNDS,
-            evals=self.__watchlist__,
-            early_stopping_rounds=EARLY_STOP,
-            maximize=True,
-            verbose_eval=VERBOSE_EVAL,
-            xgb_model=self.__model__,
-        )
-
-    def objective(self, params: dict = None) -> None:
-        """
-        Evaluates the performance of the XGBoost model using cross-validation and returns the best AUC score.
-
-        This method performs k-fold cross-validation on the training dataset using the provided hyperparameters.
-        The method returns the best AUC score from the cross-validation process, which can be used as the objective function
-        in hyperparameter optimization.
-
-        Args:
-            params (dict): Dictionary of hyperparameters to be used in the XGBoost model during cross-validation.
-
-        Returns:
-            dict: A dictionary containing the following keys:
-                - "loss" (float): The best mean AUC score on the test set obtained during cross-validation.
-                - "status" (str): The status of the evaluation, typically "ok".
-
-        Raises:
-            ValueError: If any of the necessary parameters or datasets have not been initialized prior to calling this method.
-        """
-        results = xgb.cv(
-            params,
-            self.__dtrain__,
-            MAX_ROUNDS,
-            nfold=NUMBER_KFOLDS,
-            stratified=True,
-            early_stopping_rounds=20,
-            metrics=["auc"],
-            verbose_eval=VERBOSE_EVAL,
-            seed=SEED,
-        )
-        best_score = results["test-auc-mean"].max()
-        return {"loss": best_score, "status": STATUS_OK}
-
-    def tune(self, evaluations: int = 250) -> dict:
-        """
-        Tunes the XGBoost model's hyperparameters using Bayesian optimization with Tree-structured Parzen Estimator (TPE).
-
-        This method runs the hyperparameter tuning process for a specified number of iterations.
-        It searches for the best hyperparameters within the defined search space by minimizing the loss function.
-        The search is based on the performance of the model as evaluated by cross-validation.
-
-        Args:
-            evaluations (int, optional): The maximum number of iterations for hyperparameter optimization. Default is 250.
-
-        Returns:
-            dict: A dictionary of the best hyperparameters found during the tuning process.
-
-        Raises:
-            ValueError: If any of the necessary parameters or datasets have not been initialized prior to calling this method.
-
-        Example:
-            best_hyperparams = self.tune(evaluations=300)
-        """
-        print(
-            f"[STATUS] Running model tuning for {evaluations} max iterations")
-        space = {
-            "max_depth": hp.choice("max_depth", np.arange(1, 20, 1, dtype=int)),
-            "eta": hp.uniform("eta", 0, 1),
-            "gamma": hp.uniform("gamma", 0, 10e1),
-            "reg_alpha": hp.uniform("reg_alpha", 10e-7, 10),
-            "reg_lambda": hp.uniform("reg_lambda", 0, 1),
-            "colsample_bytree": hp.uniform("colsample_bytree", 0.5, 1),
-            "colsample_bynode": hp.uniform("colsample_bynode", 0.5, 1),
-            "colsample_bylevel": hp.uniform("colsample_bylevel", 0.5, 1),
-            "min_child_weight": hp.choice(
-                "min_child_weight", np.arange(1, 10, 1, dtype="int")
-            ),
-            "max_delta_step": hp.choice(
-                "max_delta_step", np.arange(1, 10, 1, dtype="int")
-            ),
-            "subsample": hp.uniform("subsample", 0.5, 1),
-            "eval_metric": "auc",
-            "objective": "multi:softprob",
-            "nthread": NUM_THREADS,
-            "booster": "gbtree",
-            "device": "cuda",
-            "tree_method": "auto",
-            "sampling_method": "gradient_based",
-            "seed": SEED,
-            # "multi_strategy": "multi_output_tree",
-            "num_class": 6,
-        }
-        trials = Trials()
-        best_hyperparams = fmin(
-            fn=self.objective,
-            space=space,
-            algo=tpe.suggest,
-            max_evals=evaluations,
-            trials=trials,
-            return_argmin=False,
-            early_stop_fn=no_progress_loss(10),
-        )
-
-        self.__params__ = best_hyperparams.copy()
-        if "eval_metric" in self.__params__:
-            self.__params__ = {
-                key: self.__params__[key]
-                for key in self.__params__
-                if key != "eval_metric"
-            }
-
-        print(f"-- best parameters, \n\t{best_hyperparams}")
-
-        return best_hyperparams
-
-    def save_model(self, model_name: str = "QMultiModel") -> None:
-        """
-        Saves the trained XGBoost model to a specified file.
-
-        This method saves the current XGBoost model in JSON format to the specified location.
-        The model is saved in the "QModel/SavedModels/" directory with the provided model name.
-
-        Args:
-            model_name (str, optional): The name of the model file to be saved. Default is "QMultiModel".
-
-        Returns:
-            None
-
-        Example:
-            self.save_model(model_name="MyModel")
-        """
-        filename = f"QModel/SavedModels/{model_name}.json"
-        print(f"[INFO] Saving model {model_name}")
-        self.__model__.save_model(filename)
-
-    def get_model(self) -> xgb.Booster:
-        """
-        Retrieves the trained XGBoost model.
-
-        This method returns the trained XGBoost model, which can be used for further predictions or analysis.
-
-        Returns:
-            xgb.Booster: The trained XGBoost model.
-
-        Example:
-            model = self.get_model()
-        """
-        return self.__model__
-
-
 class QPredictor:
+    def __init__(self, model_path: str = None, scaler_path: str = None, label_encoder_path: str = None):
+        self._partial_model = tf.keras.models.load_model(model_path)
+        self._partial_scaler = joblib.load(scaler_path)
+        self._partial_label_encoder = joblib.load(label_encoder_path)
+
+    def predict(self, input_filepath: str = None):
+        # Extract features from the input file
+        qpd = QPartialDataPipeline(input_filepath)
+        self._qdp = QDataPipeline(input_filepath, multi_class=True)
+        qpd.preprocess()
+        features = qpd.get_features()
+
+        # Ensure all required features are present in the correct order
+        feature_df = pd.DataFrame([features])
+        feature_df.fillna(0, inplace=True)  # Fill missing values with 0
+
+        # Scale features
+        scaled_features = self._partial_scaler.transform(feature_df)
+
+        # Make predictions
+        # Single input, get first output
+        probabilities = self._partial_model.predict(scaled_features)[0]
+        predicted_class_index = np.argmax(probabilities)
+
+        # Decode the predicted class label
+        predicted_num_channels = self._partial_label_encoder.inverse_transform(
+            [predicted_class_index])[0]
+
+        # Map probabilities to class labels
+        class_probabilities = {
+            self._partial_label_encoder.inverse_transform([i])[0]: prob
+            for i, prob in enumerate(probabilities)
+        }
+        if predicted_num_channels == "no_fill":
+            return [len(self._qdp.get_dataframe())] * 6
+        elif predicted_num_channels == "channel_1_partial":
+            QChannel1Predictor()
+        elif predicted_num_channels == "channel_2_partial":
+            QChannel2Predictor()
+        elif predicted_num_channels == "full_fill":
+            qcr = QClusterer(model_path="QModel/SavedModels/cluster.joblib")
+            full_fill_type = qcr.predict_label(input_filepath)
+            if full_fill_type == 0:
+                qfp = QFullPredictor("QModel/SavedModels/QMultiType_0.json")
+                return qfp.predict(
+                    input_filepath, run_type=full_fill_type)
+            elif full_fill_type == 1:
+                qfp = QFullPredictor("QModel/SavedModels/QMultiType_1.json")
+                return qfp.predict(
+                    input_filepath, run_type=full_fill_type)
+            elif full_fill_type == 2:
+                qfp = QFullPredictor("QModel/SavedModels/QMultiType_2.json")
+                return qfp.predict(
+                    input_filepath, run_type=full_fill_type)
+            else:
+                raise ValueError(
+                    f"Invalid predicted full-fill type was: {full_fill_type}")
+        else:
+            raise ValueError(
+                f"Invalid predicted channel type was: {predicted_num_channels} with probabilty: {class_probabilities} ")
+
+
+class QChannel1Predictor:
+    def __init__(self):
+        pass
+
+
+class QChannel2Predictor:
+    def __init__(self, model_path: str = None):
+        if model_path is None:
+            raise ValueError("[QModelPredict __init__()] No model path given")
+
+        if Architecture_found:
+            relative_root = os.path.join(Architecture.get_path(), "QATCH")
+        else:
+            relative_root = os.getcwd()
+
+        # Load the pre-trained models from the specified paths
+        self._model = xgb.Booster()
+        self._model.load_model(model_path)
+
+
+class QFullPredictor:
     def __init__(self, model_path=None):
         if model_path is None:
             raise ValueError("[QModelPredict __init__()] No model path given")
@@ -401,13 +162,6 @@ class QPredictor:
         self.__model__ = xgb.Booster()
 
         self.__model__.load_model(model_path)
-        # with open("QModel/SavedModels/label_0.pkl", "rb") as file:
-        #     self.__label_0__ = pickle.load(file)
-        # with open("QModel/SavedModels/label_1.pkl", "rb") as file:
-        #     self.__label_1__ = pickle.load(file)
-        # with open("QModel/SavedModels/label_2.pkl", "rb") as file:
-        #     self.__label_2__ = pickle.load(file)
-        # Find the pickle files dynamically, using Architecture path (if available)
         if Architecture_found:
             relative_root = os.path.join(Architecture.get_path(), "QATCH")
         else:

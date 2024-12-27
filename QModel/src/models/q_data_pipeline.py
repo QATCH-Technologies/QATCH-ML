@@ -1,8 +1,8 @@
 """
 QDataPipeline
 
-A class for processing and analyzing time-series data stored in CSV files. 
-This class provides methods to preprocess the data, compute various features, 
+A class for processing and analyzing time-series data stored in CSV files.
+This class provides methods to preprocess the data, compute various features,
 and perform filtering, interpolation, and normalization.
 
 Modules:
@@ -14,16 +14,16 @@ Modules:
     - sklearn.preprocessing: For data scaling and normalization.
 
 Classes:
-    - QDataPipeline: A class to handle data preprocessing, feature extraction, 
+    - QDataPipeline: A class to handle data preprocessing, feature extraction,
     and filtering for time-series data.
 
 Methods:
     - __init__(self, data_filepath: str = None, multi_class: bool = False) -> None:
-        Initializes the QDataPipeline object with the path to a CSV file and an 
+        Initializes the QDataPipeline object with the path to a CSV file and an
         optional flag for multi-class classification.
 
     - preprocess(self, poi_filepath: str = None) -> None:
-        Performs data preprocessing including column removal, difference computation, 
+        Performs data preprocessing including column removal, difference computation,
         smoothing, gradient computation, noise filtering, and detrending.
 
     - find_time_delta(self) -> int:
@@ -33,14 +33,14 @@ Methods:
         Returns the DataFrame containing the loaded data.
 
     - super_gradient(self, column: str) -> None:
-        Computes the smoothed first derivative (gradient) of the specified column 
+        Computes the smoothed first derivative (gradient) of the specified column
         and stores it in a new column with the suffix '_super'.
 
     - standardize(self, column):
         Standardizes the specified column using a StandardScaler.
 
     - remove_trend(self, column: str) -> None:
-        Removes the linear trend from the specified column and stores 
+        Removes the linear trend from the specified column and stores
         the detrended data in a new column with the suffix '_detrend'.
 
     - interpolate(self, num_rows: int = 20) -> None:
@@ -51,15 +51,15 @@ Methods:
         Applies a Butterworth low-pass filter to remove noise from the specified column.
 
     - save_dataframe(self, new_filepath: str = None) -> None:
-        Saves the DataFrame to a CSV file. If no new file path is provided, 
+        Saves the DataFrame to a CSV file. If no new file path is provided,
         it saves to the original file path.
 
     - compute_smooth(self, column, winsize=5, polyorder=1):
-        Computes a smoothed version of the specified column using 
+        Computes a smoothed version of the specified column using
         the Savitzky-Golay filter.
 
     - compute_difference(self):
-        Computes the difference between the 'Dissipation' and 'Resonance_Frequency' 
+        Computes the difference between the 'Dissipation' and 'Resonance_Frequency'
         columns and updates the DataFrame with the new 'Difference' column.
 
     - normalize_df(self):
@@ -72,11 +72,11 @@ Methods:
         Replaces infinite and NaN values in the DataFrame with 0.
 
     - compute_gradient(self, column):
-        Computes the gradient of the specified column and stores it 
+        Computes the gradient of the specified column and stores it
         in a new column with the suffix '_gradient'.
 
     - add_class(self, poi_filepath=None):
-        Adds class labels to the DataFrame based on the provided POI reference file. 
+        Adds class labels to the DataFrame based on the provided POI reference file.
         Raises a ValueError if the POI file path is not provided.
 
 equirements:
@@ -95,6 +95,7 @@ import pandas as pd
 import numpy as np
 from scipy.signal import savgol_filter, butter, filtfilt, detrend
 from sklearn.preprocessing import StandardScaler
+from scipy.stats import entropy, linregress
 
 
 M_TARGET = "Class"
@@ -869,3 +870,112 @@ class QDataPipeline:
             raise ValueError(
                 f"[QDataPipeline.add_class] POI reference file does not exist at {poi_filepath}."
             )
+
+
+class QPartialDataPipeline:
+    def __init__(self, data_filepath: str = None):
+        self._data_filepath = data_filepath
+        self._dataframe = pd.read_csv(self._get_datafilepath())
+        self._features = {}
+
+    def preprocess(self):
+        df = self._get_dataframe()
+        self._drop_unnecessary_columns(df)
+        self._process_target_columns(df)
+
+    def get_features(self):
+        return self._features
+
+    def _get_datafilepath(self):
+        return self._data_filepath
+
+    def _get_dataframe(self):
+        return self._dataframe
+
+    def _drop_unnecessary_columns(self, df):
+        columns_to_drop = [
+            "Date",
+            "Time",
+            "Ambient",
+            "Temperature",
+            "Peak Magnitude (RAW)",
+        ]
+        df.drop(columns=columns_to_drop, inplace=True, errors='ignore')
+
+    def _process_target_columns(self, df):
+        target_columns = ["Relative_time",
+                          "Resonance_Frequency", "Dissipation"]
+        for col in target_columns:
+            if col in df.columns:
+                column_features = self._analyze_column(df[col].dropna(), col)
+                self._features.update(column_features)
+
+    def _analyze_column(self, column_data, col_name):
+        column_features = {}
+        column_features.update(self._basic_statistics(column_data, col_name))
+        column_features.update(
+            self._advanced_statistics(column_data, col_name))
+        column_features.update(
+            self._quantile_statistics(column_data, col_name))
+        column_features.update(self._rolling_statistics(column_data, col_name))
+        column_features.update(
+            self._lag_and_trend_statistics(column_data, col_name))
+        column_features.update(
+            self._end_focused_statistics(column_data, col_name))
+        return column_features
+
+    def _basic_statistics(self, column_data, col_name):
+        return {
+            f'{col_name}_mean': column_data.mean(),
+            f'{col_name}_std': column_data.std(),
+            f'{col_name}_min': column_data.min(),
+            f'{col_name}_max': column_data.max(),
+        }
+
+    def _advanced_statistics(self, column_data, col_name):
+        return {
+            f'{col_name}_median': column_data.median(),
+            f'{col_name}_skew': column_data.skew(),
+            f'{col_name}_kurtosis': column_data.kurtosis(),
+            f'{col_name}_range': column_data.max() - column_data.min(),
+        }
+
+    def _quantile_statistics(self, column_data, col_name):
+        Q1 = column_data.quantile(0.25)
+        Q3 = column_data.quantile(0.75)
+        IQR = Q3 - Q1
+        outliers = ((column_data < (Q1 - 1.5 * IQR)) |
+                    (column_data > (Q3 + 1.5 * IQR))).sum()
+        return {
+            f'{col_name}_num_outliers': outliers,
+            f'{col_name}_entropy': entropy(column_data.value_counts(normalize=True)) if column_data.nunique() > 1 else 0
+        }
+
+    def _rolling_statistics(self, column_data, col_name):
+        rolling_mean = column_data.rolling(
+            window=50, min_periods=1).mean().mean()
+        rolling_std = column_data.rolling(
+            window=50, min_periods=1).std().mean()
+        return {
+            f'{col_name}_rolling_mean': rolling_mean,
+            f'{col_name}_rolling_std': rolling_std
+        }
+
+    def _lag_and_trend_statistics(self, column_data, col_name):
+        lag_diff = column_data.diff().abs().mean()
+        trend = linregress(range(len(column_data)), column_data.values).slope if len(
+            column_data) > 1 else 0
+        return {
+            f'{col_name}_lag_diff_mean': lag_diff,
+            f'{col_name}_trend': trend
+        }
+
+    def _end_focused_statistics(self, column_data, col_name):
+        tail_mean = column_data.tail(100).mean()
+        head_mean = column_data.head(100).mean()
+        tail_std = column_data.tail(100).std()
+        head_std = column_data.head(100).std()
+        return {
+            f'{col_name}_mean_diff': tail_mean - head_mean,
+            f'{col_name}_std_diff': tail_std - head_std
+        }
