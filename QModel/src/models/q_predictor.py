@@ -70,118 +70,405 @@ if not QDataPipeline_found:
     raise ImportError("Cannot find 'QDataPipeline' in any expected location.")
 
 
-class QBasePredictor:
-    def __init__(self, model_path=None):
+class QPredictor:
+    def __init__(self, model_path: str = None, scaler_path: str = None, label_encoder_path: str = None):
+        self._partial_model = tf.keras.models.load_model(model_path)
+        self._partial_scaler = joblib.load(scaler_path)
+        self._partial_label_encoder = joblib.load(label_encoder_path)
+
+    def predict(self, input_filepath: str = None):
+        # Extract features from the input file
+        qpd = QPartialDataPipeline(input_filepath)
+        self._qdp = QDataPipeline(input_filepath, multi_class=True)
+        qpd.preprocess()
+        features = qpd.get_features()
+
+        # Ensure all required features are present in the correct order
+        feature_df = pd.DataFrame([features])
+        feature_df.fillna(0, inplace=True)  # Fill missing values with 0
+
+        # Scale features
+        scaled_features = self._partial_scaler.transform(feature_df)
+
+        # Make predictions
+        # Single input, get first output
+        probabilities = self._partial_model.predict(scaled_features)[0]
+        predicted_class_index = np.argmax(probabilities)
+
+        # Decode the predicted class label
+        predicted_num_channels = self._partial_label_encoder.inverse_transform(
+            [predicted_class_index])[0]
+
+        # Map probabilities to class labels
+        class_probabilities = {
+            self._partial_label_encoder.inverse_transform([i])[0]: prob
+            for i, prob in enumerate(probabilities)
+        }
+        if predicted_num_channels == "no_fill":
+            return [len(self._qdp.get_dataframe())] * 6
+        elif predicted_num_channels == "channel_1_partial":
+            q1p = QChannel1Predictor(
+                model_path="QModel\SavedModels\QMulti_Channel_1.json")
+            return q1p.predict(input_filepath)
+        elif predicted_num_channels == "channel_2_partial":
+            q2p = QChannel2Predictor(
+                model_path="QModel\SavedModels\QMulti_Channel_2.json")
+            return q2p.predict(input_filepath)
+        elif predicted_num_channels == "full_fill":
+            qcr = QClusterer(model_path="QModel/SavedModels/cluster.joblib")
+            full_fill_type = qcr.predict_label(input_filepath)
+            if full_fill_type == 0:
+                qfp = QFullPredictor("QModel/SavedModels/QMultiType_0.json")
+                return qfp.predict(
+                    input_filepath, run_type=full_fill_type)
+            elif full_fill_type == 1:
+                qfp = QFullPredictor("QModel/SavedModels/QMultiType_1.json")
+                return qfp.predict(
+                    input_filepath, run_type=full_fill_type)
+            elif full_fill_type == 2:
+                qfp = QFullPredictor("QModel/SavedModels/QMultiType_2.json")
+                return qfp.predict(
+                    input_filepath, run_type=full_fill_type)
+            else:
+                raise ValueError(
+                    f"Invalid predicted full-fill type was: {full_fill_type}")
+        else:
+            raise ValueError(
+                f"Invalid predicted channel type was: {predicted_num_channels} with probabilty: {class_probabilities} ")
+
+
+class QChannel1Predictor:
+    def __init__(self, model_path: str = None):
         if model_path is None:
-            raise ValueError("Model path must be provided.")
+            raise ValueError("[QModelPredict __init__()] No model path given")
 
-        self._model_path = model_path
-        self._model = None
+        if Architecture_found:
+            relative_root = os.path.join(Architecture.get_path(), "QATCH")
+        else:
+            relative_root = os.getcwd()
 
-    def load_xgboost_model(self):
+        # Load the pre-trained models from the specified paths
         self._model = xgb.Booster()
-        self._model.load_model(self._model_path)
+        self._model.load_model(model_path)
 
     def normalize(self, data):
         return (data - np.min(data)) / (np.max(data) - np.min(data))
 
+    def extract_results(self, results):
+
+        num_indices = len(results[0])
+        extracted = [[] for _ in range(num_indices)]
+
+        for sublist in results:
+            for idx in range(num_indices):
+                extracted[idx].append(sublist[idx])
+
+        return extracted
+
     def find_and_sort_peaks(self, signal):
-        peaks, _ = find_peaks(signal)
-        sorted_peaks = sorted(peaks, key=lambda x: signal[x], reverse=True)
+        # Find peaks
+        peaks, properties = find_peaks(signal)
+        # Get the peak heights
+        peak_heights = []
+        for p in peaks:
+            peak_heights.append(signal[p])
+
+        # Sort peaks by height in descending order
+        sorted_indices = np.argsort(peak_heights)[::-1]
+        sorted_peaks = peaks[sorted_indices]
         return sorted_peaks
 
-    def compute_bounds(self, indices):
-        bounds = []
-        start = indices[0]
-        end = indices[0]
-
-        for i in range(1, len(indices)):
-            if indices[i] == indices[i - 1] + 1:
-                end = indices[i]
-            else:
-                bounds.append((start, end))
-                start = indices[i]
-                end = indices[i]
-
-        bounds.append((start, end))
-        return bounds
-
-
-class QPredictor(QBasePredictor):
-    def __init__(self, model_path, scaler_path, label_encoder_path):
-        super().__init__(model_path)
-        self._partial_model = tf.keras.models.load_model(model_path)
-        self._scaler = joblib.load(scaler_path)
-        self._label_encoder = joblib.load(label_encoder_path)
-
-    def preprocess_features(self, features):
-        feature_df = pd.DataFrame([features])
-        feature_df.fillna(0, inplace=True)
-        return self._scaler.transform(feature_df)
-
-    def predict(self, input_filepath):
-        qpd = QPartialDataPipeline(input_filepath)
-        qpd.preprocess()
-        features = qpd.get_features()
-
-        scaled_features = self.preprocess_features(features)
-        probabilities = self._partial_model.predict(scaled_features)[0]
-        predicted_class_index = np.argmax(probabilities)
-
-        predicted_label = self._label_encoder.inverse_transform(
-            [predicted_class_index])[0]
-        class_probabilities = {
-            self._label_encoder.inverse_transform([i])[0]: prob
-            for i, prob in enumerate(probabilities)
-        }
-
-        # Handle specific predictions
-        return self.handle_prediction(predicted_label, input_filepath, class_probabilities)
-
-    def handle_prediction(self, predicted_label, input_filepath, class_probabilities):
-        if predicted_label == "no_fill":
-            return [len(QDataPipeline(input_filepath).get_dataframe())] * 6
-        elif predicted_label == "channel_1_partial":
-            return QChannel1Predictor("QModel/SavedModels/QMulti_Channel_1.json").predict(input_filepath)
-        elif predicted_label == "channel_2_partial":
-            return QChannel2Predictor("QModel/SavedModels/QMulti_Channel_2.json").predict(input_filepath)
-        elif predicted_label == "full_fill":
-            qcr = QClusterer("QModel/SavedModels/cluster.joblib")
-            full_fill_type = qcr.predict_label(input_filepath)
-            return QFullPredictor(f"QModel/SavedModels/QMultiType_{full_fill_type}.json").predict(input_filepath, full_fill_type)
-        else:
+    def predict(self, file_buffer):
+        df = pd.read_csv(file_buffer)
+        columns_to_drop = ["Date", "Time", "Ambient", "Temperature"]
+        if not all(col in df.columns for col in columns_to_drop):
             raise ValueError(
-                f"Invalid predicted channel type: {predicted_label}")
+                f"[QModelPredict predict()]: Input data must contain the following columns: {columns_to_drop}"
+            )
+
+        df = df.drop(columns=columns_to_drop)
+
+        if not isinstance(file_buffer, str):
+            if hasattr(file_buffer, "seekable") and file_buffer.seekable():
+                # reset ByteIO buffer to beginning of stream
+                file_buffer.seek(0)
+
+            csv_headers = next(file_buffer)
+
+            if isinstance(csv_headers, bytes):
+                csv_headers = csv_headers.decode()
+
+            if "Ambient" in csv_headers:
+                csv_cols = (2, 4, 6, 7)
+            else:
+                csv_cols = (2, 3, 5, 6)
+
+            file_data = np.loadtxt(
+                file_buffer.readlines(), delimiter=",", skiprows=0, usecols=csv_cols
+            )
+            data_path = "QModel Passthrough"
+            relative_time = file_data[:, 0]
+            # temperature = file_data[:,1]
+            resonance_frequency = file_data[:, 2]
+            data = file_data[:, 3]
+            file_buffer_2 = file_buffer
+        if not isinstance(file_buffer_2, str):
+            if hasattr(file_buffer_2, "seekable") and file_buffer_2.seekable():
+                # reset ByteIO buffer to beginning of stream
+                file_buffer_2.seek(0)
+            else:
+                # ERROR: 'file_buffer_2' must be 'BytesIO' type here, but it's not seekable!
+                raise Exception(
+                    "Cannot 'seek' stream prior to passing to 'QDataPipeline'."
+                )
+        else:
+            # Assuming 'file_buffer_2' is a string to a file path, this will work fine as-is
+            pass
+
+        # Process data using QDataPipeline
+        qdp = QDataPipeline(file_buffer_2)
+        qdp.preprocess(poi_filepath=None)
+        df = qdp.get_dataframe()
+        f_names = self._model.feature_names
+        df = df[f_names]
+        d_data = xgb.DMatrix(df)
+
+        results = self._model.predict(d_data)
+        normalized_results = self.normalize(results)
+        extracted_results = self.extract_results(normalized_results)
+
+        poi_1 = np.argmax(extracted_results[1])
+        poi_2 = np.argmax(extracted_results[2])
+        poi_3 = np.argmax(extracted_results[3])
+        candidates_1 = self.find_and_sort_peaks(extracted_results[1])
+        candidates_2 = self.find_and_sort_peaks(extracted_results[2])
+        candidates_3 = self.find_and_sort_peaks(extracted_results[3])
+
+        def sort_and_remove_point(arr, point):
+            arr = np.array(arr)
+            if len(arr) > MAX_GUESSES - 1:
+                arr = arr[: MAX_GUESSES - 1]
+            arr.sort()
+
+            return arr[arr != point]
+
+        candidates_list = [
+            candidates_1,
+            candidates_2,
+            candidates_3,
+        ]
+        poi_list = [poi_1, poi_2, poi_3]
+        extracted_confidences = extracted_results[1:len(poi_list) + 1]
+
+        candidates = []
+
+        for i in range(len(poi_list)):
+
+            # Sort and remove point
+            candidates_i = sort_and_remove_point(
+                candidates_list[i], poi_list[i])
+            filtered_points = candidates_i
+            if i < 3:
+                mean = np.mean(candidates_i)
+                std_dev = np.std(candidates_i)
+                threshold = 2
+                # Filter points within the specified threshold
+                filtered_points = [point for point in candidates_i if abs(
+                    point - mean) <= threshold * std_dev]
+
+            # Extract and sort confidence
+            confidence_i = np.sort(np.array(extracted_confidences[i])[filtered_points])[
+                ::-1
+            ]
+
+            # Insert POI at the start, remove the last element
+            if len(candidates_i) > 1:
+                candidates_i = np.insert(candidates_i, 0, poi_list[i])[:-1]
+            else:
+                candidates_i = np.insert(candidates_i, 0, poi_list[i])
+
+            # Append to candidates list
+            candidates.append((candidates_i, confidence_i))
+        return candidates
 
 
-class QChannelPredictor(QBasePredictor):
-    def __init__(self, model_path):
-        super().__init__(model_path)
-        self.load_xgboost_model()
+class QChannel2Predictor:
+    def __init__(self, model_path: str = None):
+        if model_path is None:
+            raise ValueError("[QModelPredict __init__()] No model path given")
+
+        if Architecture_found:
+            relative_root = os.path.join(Architecture.get_path(), "QATCH")
+        else:
+            relative_root = os.getcwd()
+
+        # Load the pre-trained models from the specified paths
+        self._model = xgb.Booster()
+        self._model.load_model(model_path)
+
+    def normalize(self, data):
+        return (data - np.min(data)) / (np.max(data) - np.min(data))
+
+    def extract_results(self, results):
+
+        num_indices = len(results[0])
+        extracted = [[] for _ in range(num_indices)]
+
+        for sublist in results:
+            for idx in range(num_indices):
+                extracted[idx].append(sublist[idx])
+
+        return extracted
+
+    def find_and_sort_peaks(self, signal):
+        # Find peaks
+        peaks, properties = find_peaks(signal)
+        # Get the peak heights
+        peak_heights = []
+        for p in peaks:
+            peak_heights.append(signal[p])
+
+        # Sort peaks by height in descending order
+        sorted_indices = np.argsort(peak_heights)[::-1]
+        sorted_peaks = peaks[sorted_indices]
+        return sorted_peaks
 
     def predict(self, file_buffer):
-        # Implement specific prediction logic here
-        pass
+        df = pd.read_csv(file_buffer)
+        columns_to_drop = ["Date", "Time", "Ambient", "Temperature"]
+        if not all(col in df.columns for col in columns_to_drop):
+            raise ValueError(
+                f"[QModelPredict predict()]: Input data must contain the following columns: {columns_to_drop}"
+            )
+
+        df = df.drop(columns=columns_to_drop)
+
+        if not isinstance(file_buffer, str):
+            if hasattr(file_buffer, "seekable") and file_buffer.seekable():
+                # reset ByteIO buffer to beginning of stream
+                file_buffer.seek(0)
+
+            csv_headers = next(file_buffer)
+
+            if isinstance(csv_headers, bytes):
+                csv_headers = csv_headers.decode()
+
+            if "Ambient" in csv_headers:
+                csv_cols = (2, 4, 6, 7)
+            else:
+                csv_cols = (2, 3, 5, 6)
+
+            file_data = np.loadtxt(
+                file_buffer.readlines(), delimiter=",", skiprows=0, usecols=csv_cols
+            )
+            data_path = "QModel Passthrough"
+            relative_time = file_data[:, 0]
+            # temperature = file_data[:,1]
+            resonance_frequency = file_data[:, 2]
+            data = file_data[:, 3]
+            file_buffer_2 = file_buffer
+        if not isinstance(file_buffer_2, str):
+            if hasattr(file_buffer_2, "seekable") and file_buffer_2.seekable():
+                # reset ByteIO buffer to beginning of stream
+                file_buffer_2.seek(0)
+            else:
+                # ERROR: 'file_buffer_2' must be 'BytesIO' type here, but it's not seekable!
+                raise Exception(
+                    "Cannot 'seek' stream prior to passing to 'QDataPipeline'."
+                )
+        else:
+            # Assuming 'file_buffer_2' is a string to a file path, this will work fine as-is
+            pass
+
+        # Process data using QDataPipeline
+        qdp = QDataPipeline(file_buffer_2)
+        qdp.preprocess(poi_filepath=None)
+        df = qdp.get_dataframe()
+        f_names = self._model.feature_names
+        df = df[f_names]
+        d_data = xgb.DMatrix(df)
+
+        results = self._model.predict(d_data)
+        normalized_results = self.normalize(results)
+        extracted_results = self.extract_results(normalized_results)
+
+        poi_1 = np.argmax(extracted_results[1])
+        poi_2 = np.argmax(extracted_results[2])
+        poi_3 = np.argmax(extracted_results[3])
+        poi_4 = np.argmax(extracted_results[4])
+        poi_5 = np.argmax(extracted_results[5])
+        candidates_1 = self.find_and_sort_peaks(extracted_results[1])
+        candidates_2 = self.find_and_sort_peaks(extracted_results[2])
+        candidates_3 = self.find_and_sort_peaks(extracted_results[3])
+        candidates_4 = self.find_and_sort_peaks(extracted_results[4])
+        candidates_5 = self.find_and_sort_peaks(extracted_results[5])
+
+        def sort_and_remove_point(arr, point):
+            arr = np.array(arr)
+            if len(arr) > MAX_GUESSES - 1:
+                arr = arr[: MAX_GUESSES - 1]
+            arr.sort()
+
+            return arr[arr != point]
+
+        candidates_list = [
+            candidates_1,
+            candidates_2,
+            candidates_3,
+        ]
+        poi_list = [poi_1, poi_2, poi_3, poi_4, poi_5]
+        extracted_confidences = extracted_results[1:len(poi_list) + 1]
+
+        candidates = []
+
+        for i in range(len(poi_list)):
+
+            # Sort and remove point
+            candidates_i = sort_and_remove_point(
+                candidates_list[i], poi_list[i])
+            filtered_points = candidates_i
+            if i < 3:
+                mean = np.mean(candidates_i)
+                std_dev = np.std(candidates_i)
+                threshold = 2
+                # Filter points within the specified threshold
+                filtered_points = [point for point in candidates_i if abs(
+                    point - mean) <= threshold * std_dev]
+
+            # Extract and sort confidence
+            confidence_i = np.sort(np.array(extracted_confidences[i])[filtered_points])[
+                ::-1
+            ]
+
+            # Insert POI at the start, remove the last element
+            if len(candidates_i) > 1:
+                candidates_i = np.insert(candidates_i, 0, poi_list[i])[:-1]
+            else:
+                candidates_i = np.insert(candidates_i, 0, poi_list[i])
+
+            # Append to candidates list
+            candidates.append((candidates_i, confidence_i))
+        return candidates
 
 
-class QChannel1Predictor(QChannelPredictor):
-    pass
+class QFullPredictor:
+    def __init__(self, model_path=None):
+        if model_path is None:
+            raise ValueError("[QModelPredict __init__()] No model path given")
 
+        # Load the pre-trained models from the specified paths
+        self.__model__ = xgb.Booster()
 
-class QChannel2Predictor(QChannelPredictor):
-    pass
-
-
-class QFullPredictor(QBasePredictor):
-    def __init__(self, model_path):
-        super().__init__(model_path)
-        self.load_xgboost_model()
-        self._labels = [self.load_label(i) for i in range(3)]
-
-    def load_label(self, index):
-        relative_root = Architecture.get_path() if Architecture_found else os.getcwd()
-        with open(os.path.join(relative_root, f"QModel/SavedModels/label_{index}.pkl"), "rb") as file:
-            return pickle.load(file)
+        self.__model__.load_model(model_path)
+        if Architecture_found:
+            relative_root = os.path.join(Architecture.get_path(), "QATCH")
+        else:
+            relative_root = os.getcwd()
+        pickle_path = os.path.join(
+            relative_root, "QModel/SavedModels/label_{}.pkl")
+        for i in range(3):
+            with open(pickle_path.format(i), "rb") as file:
+                setattr(self, f"__label_{i}__", pickle.load(file))
 
     def normalize(self, data):
         return (data - np.min(data)) / (np.max(data) - np.min(data))
