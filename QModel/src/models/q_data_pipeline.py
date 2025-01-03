@@ -96,7 +96,7 @@ import numpy as np
 from scipy.signal import savgol_filter, butter, filtfilt, detrend
 from sklearn.preprocessing import StandardScaler
 from scipy.stats import entropy, linregress
-
+from typing import Union
 
 M_TARGET = "Class"
 
@@ -180,7 +180,7 @@ class QDataPipeline:
             Adds class labels to the DataFrame based on the provided POI reference file.
     """
 
-    def __init__(self, data_filepath: str = "", multi_class: bool = False) -> None:
+    def __init__(self, data_filepath: Union[str, pd.DataFrame] = None, multi_class: bool = False) -> None:
         """
         Initializes the QDataPipeline object.
 
@@ -192,16 +192,16 @@ class QDataPipeline:
         Raises:
         - ValueError: If `data_filepath` is not provided.
         """
-        if not data_filepath == "":
-            self.__data_filepath__ = data_filepath
-            self.__dataframe__ = pd.read_csv(
-                self.__data_filepath__
-            )  # Load the CSV into a DataFrame
-            self.multi_class = multi_class  # Set the multi_class flag
+        self.__data_filepath__ = data_filepath
+        if isinstance(data_filepath, pd.DataFrame):
+            self.__dataframe__ = data_filepath.copy()
+        elif isinstance(data_filepath, str):
+            self._datafr__dataframe__ame = pd.read_csv(data_filepath)
         else:
             raise ValueError(
                 f"[QDataPipeline.__init__] Filepath required, found {data_filepath}."
             )
+        self.multi_class = multi_class  # Set the multi_class flag
         self.__difference_raw__ = None
 
     def preprocess(self, poi_filepath: str = None) -> None:
@@ -229,16 +229,21 @@ class QDataPipeline:
         """
         # STEP 0
         # Drop unecessary columns.
-        self.__dataframe__.drop(
-            columns=[
-                "Date",
-                "Time",
-                "Ambient",
-                "Temperature",
-                "Peak Magnitude (RAW)",
-            ],
-            inplace=True,
-        )
+        columns_to_drop = [
+            "Date",
+            "Time",
+            "Ambient",
+            "Temperature",
+            "Peak Magnitude (RAW)",
+        ]
+
+        # Check for columns that exist in the dataframe
+        existing_columns = [
+            col for col in columns_to_drop if col in self.__dataframe__.columns]
+
+        # Drop only the existing columns
+        if existing_columns:
+            self.__dataframe__.drop(columns=existing_columns, inplace=True)
         # STEP 1
         # Compute the difference curve of this dataframe.
         self.compute_difference()
@@ -873,9 +878,12 @@ class QDataPipeline:
 
 
 class QPartialDataPipeline:
-    def __init__(self, data_filepath: str = None):
+    def __init__(self, data_filepath: Union[str, pd.DataFrame] = None):
         self._data_filepath = data_filepath
-        self._dataframe = pd.read_csv(self._get_datafilepath())
+        if isinstance(data_filepath, pd.DataFrame):
+            self._dataframe = data_filepath.copy()
+        elif isinstance(data_filepath, str):
+            self._dataframe = pd.read_csv(self._get_datafilepath())
         self._features = {}
 
     def preprocess(self):
@@ -917,11 +925,14 @@ class QPartialDataPipeline:
             self._advanced_statistics(column_data, col_name))
         column_features.update(
             self._quantile_statistics(column_data, col_name))
+        column_features.update(
+            self._signal_to_noise(column_data, col_name))
         column_features.update(self._rolling_statistics(column_data, col_name))
         column_features.update(
             self._lag_and_trend_statistics(column_data, col_name))
         column_features.update(
             self._end_focused_statistics(column_data, col_name))
+
         return column_features
 
     def _basic_statistics(self, column_data, col_name):
@@ -979,3 +990,8 @@ class QPartialDataPipeline:
             f'{col_name}_mean_diff': tail_mean - head_mean,
             f'{col_name}_std_diff': tail_std - head_std
         }
+
+    def _signal_to_noise(self, column_data, col_name):
+        column_mean = column_data.mean()
+        column_std = column_data.std() if column_data.std() != 0 else 0
+        return {f"{col_name}_signal_to_noise": column_mean / column_std}

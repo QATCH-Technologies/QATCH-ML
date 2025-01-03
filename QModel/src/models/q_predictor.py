@@ -105,29 +105,29 @@ class QPredictor:
             for i, prob in enumerate(probabilities)
         }
         if predicted_num_channels == "no_fill":
-            return [len(self._qdp.get_dataframe())] * 6
+            return predicted_num_channels, None
         elif predicted_num_channels == "channel_1_partial":
             q1p = QChannel1Predictor(
                 model_path="QModel\SavedModels\QMulti_Channel_1.json")
-            return q1p.predict(input_filepath)
+            return predicted_num_channels, q1p.predict(input_filepath)
         elif predicted_num_channels == "channel_2_partial":
             q2p = QChannel2Predictor(
                 model_path="QModel\SavedModels\QMulti_Channel_2.json")
-            return q2p.predict(input_filepath)
+            return predicted_num_channels, q2p.predict(input_filepath)
         elif predicted_num_channels == "full_fill":
             qcr = QClusterer(model_path="QModel/SavedModels/cluster.joblib")
             full_fill_type = qcr.predict_label(input_filepath)
             if full_fill_type == 0:
                 qfp = QFullPredictor("QModel/SavedModels/QMultiType_0.json")
-                return qfp.predict(
+                return predicted_num_channels, qfp.predict(
                     input_filepath, run_type=full_fill_type)
             elif full_fill_type == 1:
                 qfp = QFullPredictor("QModel/SavedModels/QMultiType_1.json")
-                return qfp.predict(
+                return predicted_num_channels, qfp.predict(
                     input_filepath, run_type=full_fill_type)
             elif full_fill_type == 2:
                 qfp = QFullPredictor("QModel/SavedModels/QMultiType_2.json")
-                return qfp.predict(
+                return predicted_num_channels, qfp.predict(
                     input_filepath, run_type=full_fill_type)
             else:
                 raise ValueError(
@@ -179,16 +179,19 @@ class QChannel1Predictor:
         return sorted_peaks
 
     def predict(self, file_buffer):
-        df = pd.read_csv(file_buffer)
-        columns_to_drop = ["Date", "Time", "Ambient", "Temperature"]
-        if not all(col in df.columns for col in columns_to_drop):
-            raise ValueError(
-                f"[QModelPredict predict()]: Input data must contain the following columns: {columns_to_drop}"
-            )
+        if isinstance(file_buffer, str):
+            df = pd.read_csv(file_buffer)
+        elif isinstance(file_buffer, pd.DataFrame):
+            df = file_buffer
+        # columns_to_drop = ["Date", "Time", "Ambient", "Temperature"]
+        # if not all(col in df.columns for col in columns_to_drop):
+        #     raise ValueError(
+        #         f"[QModelPredict predict()]: Input data must contain the following columns: {columns_to_drop}"
+        #     )
 
-        df = df.drop(columns=columns_to_drop)
+        # df = df.drop(columns=columns_to_drop)
 
-        if not isinstance(file_buffer, str):
+        if not isinstance(file_buffer, str) and not isinstance(file_buffer, pd.DataFrame):
             if hasattr(file_buffer, "seekable") and file_buffer.seekable():
                 # reset ByteIO buffer to beginning of stream
                 file_buffer.seek(0)
@@ -211,8 +214,8 @@ class QChannel1Predictor:
             # temperature = file_data[:,1]
             resonance_frequency = file_data[:, 2]
             data = file_data[:, 3]
-            file_buffer_2 = file_buffer
-        if not isinstance(file_buffer_2, str):
+        file_buffer_2 = file_buffer
+        if not isinstance(file_buffer_2, str) and not isinstance(file_buffer_2, pd.DataFrame):
             if hasattr(file_buffer_2, "seekable") and file_buffer_2.seekable():
                 # reset ByteIO buffer to beginning of stream
                 file_buffer_2.seek(0)
@@ -262,7 +265,7 @@ class QChannel1Predictor:
 
         candidates = []
 
-        for i in range(len(poi_list)):
+        for i in range(len(poi_list) - 1):
 
             # Sort and remove point
             candidates_i = sort_and_remove_point(
@@ -334,16 +337,18 @@ class QChannel2Predictor:
         return sorted_peaks
 
     def predict(self, file_buffer):
-        df = pd.read_csv(file_buffer)
-        columns_to_drop = ["Date", "Time", "Ambient", "Temperature"]
-        if not all(col in df.columns for col in columns_to_drop):
-            raise ValueError(
-                f"[QModelPredict predict()]: Input data must contain the following columns: {columns_to_drop}"
-            )
+        if isinstance(file_buffer, str):
+            df = pd.read_csv(file_buffer)
+        elif isinstance(file_buffer, pd.DataFrame):
+            df = file_buffer
+        # columns_to_drop = ["Date", "Time", "Ambient", "Temperature"]
+        # if not all(col in df.columns for col in columns_to_drop):
+        #     raise ValueError(
+        #         f"[QModelPredict predict()]: Input data must contain the following columns: {columns_to_drop}"
+        #     )
 
-        df = df.drop(columns=columns_to_drop)
-
-        if not isinstance(file_buffer, str):
+        # df = df.drop(columns=columns_to_drop)
+        if not isinstance(file_buffer, str) and not isinstance(file_buffer, pd.DataFrame):
             if hasattr(file_buffer, "seekable") and file_buffer.seekable():
                 # reset ByteIO buffer to beginning of stream
                 file_buffer.seek(0)
@@ -366,8 +371,8 @@ class QChannel2Predictor:
             # temperature = file_data[:,1]
             resonance_frequency = file_data[:, 2]
             data = file_data[:, 3]
-            file_buffer_2 = file_buffer
-        if not isinstance(file_buffer_2, str):
+        file_buffer_2 = file_buffer
+        if not isinstance(file_buffer_2, str) and not isinstance(file_buffer_2, pd.DataFrame):
             if hasattr(file_buffer_2, "seekable") and file_buffer_2.seekable():
                 # reset ByteIO buffer to beginning of stream
                 file_buffer_2.seek(0)
@@ -415,15 +420,17 @@ class QChannel2Predictor:
             candidates_1,
             candidates_2,
             candidates_3,
+            candidates_4,
+            candidates_5,
         ]
         poi_list = [poi_1, poi_2, poi_3, poi_4, poi_5]
         extracted_confidences = extracted_results[1:len(poi_list) + 1]
 
         candidates = []
 
-        for i in range(len(poi_list)):
+        for i in range(len(poi_list) - 1):
 
-            # Sort and remove point
+            # Sort and remove points
             candidates_i = sort_and_remove_point(
                 candidates_list[i], poi_list[i])
             filtered_points = candidates_i
@@ -1056,16 +1063,19 @@ class QFullPredictor:
 
     def predict(self, file_buffer, run_type=-1, start=-1, stop=-1, act=[None] * 6):
         # Load CSV data and drop unnecessary columns
-        df = pd.read_csv(file_buffer)
-        columns_to_drop = ["Date", "Time", "Ambient", "Temperature"]
-        if not all(col in df.columns for col in columns_to_drop):
-            raise ValueError(
-                f"[QModelPredict predict()]: Input data must contain the following columns: {columns_to_drop}"
-            )
+        if isinstance(file_buffer, str):
+            df = pd.read_csv(file_buffer)
+        elif isinstance(file_buffer, pd.DataFrame):
+            df = file_buffer
+        # columns_to_drop = ["Date", "Time", "Ambient", "Temperature"]
+        # if not all(col in df.columns for col in columns_to_drop):
+        #     raise ValueError(
+        #         f"[QModelPredict predict()]: Input data must contain the following columns: {columns_to_drop}"
+        #     )
 
-        df = df.drop(columns=columns_to_drop)
+        # df = df.drop(columns=columns_to_drop)
 
-        if not isinstance(file_buffer, str):
+        if not isinstance(file_buffer, str) and not isinstance(file_buffer, pd.DataFrame):
             if hasattr(file_buffer, "seekable") and file_buffer.seekable():
                 # reset ByteIO buffer to beginning of stream
                 file_buffer.seek(0)
@@ -1113,7 +1123,7 @@ class QFullPredictor:
         ############################
 
         file_buffer_2 = file_buffer
-        if not isinstance(file_buffer_2, str):
+        if not isinstance(file_buffer_2, str) and not isinstance(file_buffer_2, pd.DataFrame):
             if hasattr(file_buffer_2, "seekable") and file_buffer_2.seekable():
                 # reset ByteIO buffer to beginning of stream
                 file_buffer_2.seek(0)
