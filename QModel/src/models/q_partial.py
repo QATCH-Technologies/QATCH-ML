@@ -90,7 +90,7 @@ def load_and_prepare_data(dataset_paths):
 
     le = LabelEncoder()
     y_encoded = le.fit_transform(y)
-    joblib.dump(le, "SavedModels/label_encoder.pkl")
+    joblib.dump(le, "QModel/SavedModels/partial_label_encoder.pkl")
 
     return X_df, y_encoded
 
@@ -447,7 +447,7 @@ def plot_feature_target_correlation(X, y, top_n=10):
     plt.show()
 
 
-def predict(input_file_path, model_path="SavedModels/partial_model.h5", scaler_path="SavedModels/partial_scaler.pkl", label_encoder_path="label_encoder.pkl"):
+def predict(input_file_path, model_path="SavedModels/partial_model.h5", scaler_path="SavedModels/partial_scaler.pkl", label_encoder_path="kl"):
     """
     Predict the class of a given input CSV file using the trained model.
 

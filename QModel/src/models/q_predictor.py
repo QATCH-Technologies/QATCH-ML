@@ -24,7 +24,7 @@ except:
 QConstants_found = False
 try:
     if not QConstants_found:
-        from QConstants import *
+        from q_constants import *
     QConstants_found = True
 except:
     QConstants_found = False

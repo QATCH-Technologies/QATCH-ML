@@ -404,6 +404,7 @@ class QClusterer:
             pass
         qdp = QDataPipeline(data_filepath=file_buffer)
         qdp.preprocess()
+        print(file_buffer)
         data = qdp.__dataframe__["Dissipation"]
 
         # Generate the image

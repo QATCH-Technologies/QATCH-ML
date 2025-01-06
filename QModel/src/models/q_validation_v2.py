@@ -14,7 +14,7 @@ This will probably have data contamination which will need to be resolved for a 
 3. Build graphic visualizations for these metrics
 """
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
-from q_predictor import QPredictor
+from q_predictor_v2 import QPredictor
 import matplotlib.pyplot as plt
 import numpy as np
 import os
@@ -24,6 +24,7 @@ from tqdm import tqdm
 from contextlib import redirect_stdout
 from io import StringIO
 from sklearn.metrics import accuracy_score
+import tempfile
 
 
 def load_and_partition_datasets(base_dir, data_percentage=0.1):
@@ -58,12 +59,16 @@ def load_and_partition_datasets(base_dir, data_percentage=0.1):
 
     # Randomly sample the datasets
     sampled_paths = random.sample(dataset_paths, datasets_to_load)
-
-    # Initialize progress bar
+    # Initialize predictor
+    predictor = QPredictor(
+        model_path=r"QModel\SavedModels\partial_model.h5",
+        scaler_path=r"QModel\SavedModels\partial_scaler.pkl",
+        label_encoder_path=r'QModel\SavedModels\label_encoder.pkl'
+    )
     # , redirect_stdout(StringIO())
+    # Initialize progress bar
     with tqdm(total=len(sampled_paths), desc="Processing datasets") as pbar:
         for subdir, files in sampled_paths:
-            # Locate main and POI files
             main_file = next(
                 (f for f in files if not f.endswith('_poi.csv')), None)
             poi_file = next((f for f in files if f.endswith('_poi.csv')), None)
@@ -82,30 +87,36 @@ def load_and_partition_datasets(base_dir, data_percentage=0.1):
             # Partition data
             partitions = {
                 'no_fill': data.iloc[0:random.randint(0, poi_indices[0])],
-                'channel_1_partial': data.iloc[0:random.randint(poi_indices[3], poi_indices[4])],
-                'channel_2_partial': data.iloc[0:random.randint(poi_indices[4], poi_indices[5])],
+                'channel_1_partial': data.iloc[poi_indices[3]:poi_indices[4]],
+                'channel_2_partial': data.iloc[poi_indices[4]:poi_indices[5]],
                 'full_fill': data
             }
 
-            # Predict POIs
             for fill_type, partition in partitions.items():
-                predictor = QPredictor(
-                    model_path=r"QModel\SavedModels\partial_model.h5",
-                    scaler_path=r"QModel\SavedModels\partial_scaler.pkl",
-                    label_encoder_path=r'QModel\SavedModels\label_encoder.pkl')
-                prediction = predictor.predict(partition)
+                if partition.empty:
+                    continue  # Skip empty partitions
+
+                # Write partition to a temporary CSV file
+                temp_file_path = tempfile.NamedTemporaryFile(
+                    delete=False, suffix='.csv').name
+                partition.to_csv(temp_file_path, index=False)
+
+                # Pass the file path to the predictor
+                prediction = predictor.predict(temp_file_path)
                 true_labels.append(fill_type)
                 predicted_labels.append(prediction[0])
-                if fill_type == "no_fill" or prediction[0] == 'no_fill':
-                    continue
-                results.append({
-                    'true_fill_type': fill_type,
-                    'predicted_fill_type': prediction[0],
-                    'predicted_pois': unpack_pois(prediction[1]),
-                    'true_pois': poi_indices
-                })
 
-            pbar.update(1)
+                if fill_type != "no_fill" and prediction[0] != 'no_fill':
+                    results.append({
+                        'true_fill_type': fill_type,
+                        'predicted_fill_type': prediction[0],
+                        'predicted_pois': unpack_pois(prediction[1]),
+                        'true_pois': poi_indices
+                    })
+
+                # Cleanup temporary file
+                os.remove(temp_file_path)
+        pbar.update(1)
 
     # Calculate accuracy
     accuracy = accuracy_score(true_labels, predicted_labels)

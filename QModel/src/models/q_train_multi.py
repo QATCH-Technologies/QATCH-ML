@@ -59,7 +59,7 @@ from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from tqdm import tqdm
 import joblib
-from QConstants import M_TARGET, TRAINING, FEATURES, TESTING, PLOTTING
+from q_constants import M_TARGET, TRAINING, FEATURES, TESTING, PLOTTING
 from q_data_pipeline import QDataPipeline
 from q_multi_model import QMultiModel, QPredictor
 

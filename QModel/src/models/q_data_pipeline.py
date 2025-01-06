@@ -196,7 +196,7 @@ class QDataPipeline:
         if isinstance(data_filepath, pd.DataFrame):
             self.__dataframe__ = data_filepath.copy()
         elif isinstance(data_filepath, str):
-            self._datafr__dataframe__ame = pd.read_csv(data_filepath)
+            self.__dataframe__ = pd.read_csv(data_filepath)
         else:
             raise ValueError(
                 f"[QDataPipeline.__init__] Filepath required, found {data_filepath}."
@@ -238,6 +238,7 @@ class QDataPipeline:
         ]
 
         # Check for columns that exist in the dataframe
+
         existing_columns = [
             col for col in columns_to_drop if col in self.__dataframe__.columns]
 
