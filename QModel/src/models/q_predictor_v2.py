@@ -976,9 +976,9 @@ class QChannelPredictor():
 
         diss_raw = qdp.__dataframe__["Dissipation"]
         qdp.preprocess(poi_filepath=None)
-        extracted_1 = np.argmax(extracted_results[0])
-        extracted_2 = np.argmax(extracted_results[1])
-        extracted_4 = np.argmax(extracted_results[3])
+        extracted_1 = np.argmax(extracted_results[1])
+        extracted_2 = np.argmax(extracted_results[2])
+        extracted_4 = np.argmax(extracted_results[4])
         # plt.figure()
         # # plt.plot(df["Dissipation"])
         # plt.plot(extracted_1)
@@ -995,14 +995,14 @@ class QChannelPredictor():
         poi_1 = PredictorUtils.adjustment_poi_1(
             initial_guess=start_1, dissipation_data=diss_raw)
 
-        candidates_1 = PredictorUtils.find_and_sort_peaks(extracted_results[0])
-        candidates_2 = PredictorUtils.find_and_sort_peaks(extracted_results[1])
-        candidates_3 = PredictorUtils.find_and_sort_peaks(extracted_results[2])
-        candidates_4 = PredictorUtils.find_and_sort_peaks(extracted_results[3])
+        candidates_1 = PredictorUtils.find_and_sort_peaks(extracted_results[1])
+        candidates_2 = PredictorUtils.find_and_sort_peaks(extracted_results[2])
+        candidates_3 = PredictorUtils.find_and_sort_peaks(extracted_results[3])
+        candidates_4 = PredictorUtils.find_and_sort_peaks(extracted_results[4])
 
-        poi_3 = np.argmax(extracted_results[2])
+        poi_3 = np.argmax(extracted_results[3])
         bounds_2 = (poi_1, poi_3)
-        bounds_4 = (poi_3, len(extracted_results[3]))
+        bounds_4 = (poi_3, len(extracted_results[4]))
         # skip adjustment of point 6 when inverted (drop applied to outlet)
 
         poi_2 = PredictorUtils.adjustment_poi_2(
