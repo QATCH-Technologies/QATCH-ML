@@ -93,7 +93,8 @@ import os
 import csv
 import pandas as pd
 import numpy as np
-from scipy.signal import savgol_filter, butter, filtfilt, detrend
+from scipy.signal import savgol_filter, butter, filtfilt, detrend, find_peaks
+from scipy.fft import fft
 from sklearn.preprocessing import StandardScaler
 from scipy.stats import entropy, linregress
 from typing import Union
@@ -720,7 +721,13 @@ class QDataPipeline:
             >>> normalize_data(data)
             array([0. , 0.25, 0.5 , 0.75, 1. ])
         """
-        return (data - np.min(data)) / (np.max(data) - np.min(data))
+        min_val = np.min(data)
+        max_val = np.max(data)
+        range_val = max_val - min_val
+        if range_val == 0:
+            # If all values are identical, return an array of zeros (or any desired constant value)
+            return np.zeros_like(data)
+        return (data - min_val) / range_val
 
     def fill_nan(
         self,
@@ -933,6 +940,9 @@ class QPartialDataPipeline:
             self._lag_and_trend_statistics(column_data, col_name))
         column_features.update(
             self._end_focused_statistics(column_data, col_name))
+        column_features.update(self._frequency_features(column_data, col_name))
+        column_features.update(self._temporal_features(column_data, col_name))
+        column_features.update(self._shape_features(column_data, col_name))
 
         return column_features
 
@@ -996,3 +1006,64 @@ class QPartialDataPipeline:
         column_mean = column_data.mean()
         column_std = column_data.std() if column_data.std() != 0 else 0
         return {f"{col_name}_signal_to_noise": column_mean / column_std}
+
+    def _frequency_features(self, column_data, col_name):
+        # Convert to NumPy array
+        column_array = column_data.to_numpy()
+
+        # Check if the column_array is non-empty
+        if len(column_array) == 0:
+            return {
+                f'{col_name}_fft_peak_freq': None,
+                f'{col_name}_fft_energy': 0,
+                f'{col_name}_fft_entropy': 0,
+            }
+
+        # Frequency domain features using FFT
+        fft_values = np.abs(fft(column_array))
+        power_spectrum = fft_values ** 2
+        freqs = np.fft.fftfreq(len(column_array))
+
+        # Ensure there are values beyond the DC component
+        if len(power_spectrum) <= 1:
+            peak_freq = None
+        else:
+            peak_freq = freqs[np.argmax(power_spectrum[1:]) + 1]
+
+        # Compute entropy safely
+        entropy = -np.sum(power_spectrum * np.log2(power_spectrum + 1e-12))
+
+        return {
+            # Dominant frequency (ignoring DC)
+            f'{col_name}_fft_peak_freq': peak_freq,
+            # Energy in frequency domain
+            f'{col_name}_fft_energy': np.sum(power_spectrum),
+            # Entropy
+            f'{col_name}_fft_entropy': entropy,
+        }
+
+    def _temporal_features(self, column_data, col_name):
+        # Temporal features like autocorrelation and zero crossings
+        autocorr = np.correlate(column_data, column_data,
+                                mode='full') / len(column_data)
+        zero_crossings = np.where(np.diff(np.sign(column_data)))[0]
+
+        return {
+            # Lag with max autocorrelation
+            f'{col_name}_autocorr_max_lag': np.argmax(autocorr),
+            # Number of zero crossings
+            f'{col_name}_zero_crossings': len(zero_crossings),
+        }
+
+    def _shape_features(self, column_data, col_name):
+        # Shape-based features like peak analysis
+        peaks, _ = find_peaks(column_data)
+        peak_heights = column_data[peaks] if len(peaks) > 0 else []
+
+        return {
+            f'{col_name}_num_peaks': len(peaks),  # Number of peaks
+            # Mean peak height
+            f'{col_name}_peak_mean': np.mean(peak_heights) if len(peaks) > 0 else 0,
+            # Max peak height
+            f'{col_name}_peak_max': np.max(peak_heights) if len(peaks) > 0 else 0,
+        }

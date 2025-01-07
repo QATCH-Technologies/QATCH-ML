@@ -75,14 +75,14 @@ def process_trim(base_dir, data_df, poi_df, output_dirs, file_path):
                       output_dirs["no_fill"], sub_dir, file_name)
 
     # Trim between the 3rd and 4th POIs
-    random_3_4 = random.randint(poi_indices[2], poi_indices[3])
+    random_3_4 = random.randint(poi_indices[0], poi_indices[4])
     second_trim = data_df.iloc[:random_3_4].reset_index(drop=True)
     second_poi = poi_df[poi_df["Index"] <= random_3_4].reset_index(drop=True)
     save_trimmed_data(second_trim, second_poi,
                       output_dirs["channel_1"], sub_dir, file_name)
 
     # Trim between the 5th and 6th POIs
-    random_5_6 = random.randint(poi_indices[4], poi_indices[5])
+    random_5_6 = random.randint(poi_indices[3], poi_indices[5])
     third_trim = data_df.iloc[:random_5_6].reset_index(drop=True)
     third_poi = poi_df[poi_df["Index"] <= random_5_6].reset_index(drop=True)
     save_trimmed_data(third_trim, third_poi,
@@ -142,7 +142,7 @@ def display_dissipation_column(output_dirs):
 
 
 if __name__ == "__main__":
-    base_directory = "content/dropbox_dump"
+    base_directory = "content/training_data/train_clusters"
     load_and_process_files(base_directory)
 
     # Paths to the output directories

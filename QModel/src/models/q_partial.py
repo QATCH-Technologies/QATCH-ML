@@ -52,9 +52,6 @@ class HybridBatchSizeCallback(Callback):
         # Switch batch size at the defined epoch
         if epoch == self.switch_epoch:
             self.params['batch_size'] = self.final_batch_size
-            print(f"Switching to batch size: {self.final_batch_size}")
-        elif epoch == 0:
-            print(f"Using initial batch size: {self.initial_batch_size}")
 
 
 def load_and_prepare_data(dataset_paths):

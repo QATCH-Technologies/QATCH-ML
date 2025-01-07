@@ -114,6 +114,8 @@ class QMultiModel:
         dataset: pd.DataFrame = None,
         predictors: list = None,
         target_features: str = "Class",
+        num_targets: int = 7,
+        eval_metric: str = "auc",
     ) -> None:
         """
         Initializes the XGBoost model with the specified dataset, predictors, and target features.
@@ -155,7 +157,7 @@ class QMultiModel:
         """
         self.__params__ = {
             "objective": "multi:softprob",
-            "eval_metric": "auc",
+            "eval_metric": eval_metric,
             "eta": 0.175,
             "max_depth": 5,
             "min_child_weight": 4.0,
@@ -168,8 +170,7 @@ class QMultiModel:
             "tree_method": "auto",
             "sampling_method": "gradient_based",
             "seed": SEED,
-            # "multi_strategy": "multi_output_tree",
-            "num_class": 6,
+            "num_class": num_targets,
         }
         self.__train_df__, self.__test_df__ = train_test_split(
             dataset, test_size=TEST_SIZE, random_state=SEED, shuffle=True
@@ -198,7 +199,8 @@ class QMultiModel:
             (self.__dtrain__, "train"),
             (self.__dvalid__, "valid"),
         ]
-
+        self.__num_targets__ = num_targets
+        self.__eval_metric__ = eval_metric
         self.__model__ = None
 
     def train_model(self) -> None:
@@ -278,12 +280,12 @@ class QMultiModel:
             nfold=NUMBER_KFOLDS,
             stratified=True,
             early_stopping_rounds=20,
-            metrics=["auc"],
+            metrics=[self.__eval_metric__],
             verbose_eval=VERBOSE_EVAL,
             seed=SEED,
         )
-        best_score = results["test-auc-mean"].max()
-        return {"loss": best_score, "status": STATUS_OK}
+        best_score = results[f"test-{self.__eval_metric__}-mean"].max()
+        return {"loss": -best_score, "status": STATUS_OK}
 
     def tune(self, evaluations: int = 250) -> dict:
         """
@@ -323,7 +325,7 @@ class QMultiModel:
                 "max_delta_step", np.arange(1, 10, 1, dtype="int")
             ),
             "subsample": hp.uniform("subsample", 0.5, 1),
-            "eval_metric": "auc",
+            "eval_metric": self.__eval_metric__,
             "objective": "multi:softprob",
             "nthread": NUM_THREADS,
             "booster": "gbtree",
@@ -332,7 +334,7 @@ class QMultiModel:
             "sampling_method": "gradient_based",
             "seed": SEED,
             # "multi_strategy": "multi_output_tree",
-            "num_class": 6,
+            "num_class": self.__num_targets__,
         }
         trials = Trials()
         best_hyperparams = fmin(

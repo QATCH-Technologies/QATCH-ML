@@ -289,8 +289,7 @@ def xgb_pipeline(training_content: list) -> pd.DataFrame:
             actual = pd.read_csv(matched_poi_file, header=None).values
 
             if (
-                t_delta > 0
-                and max(qdp_pipeline.__dataframe__["Relative_time"]) < 1800
+                max(qdp_pipeline.__dataframe__["Relative_time"]) < 1800
                 and max(actual) < len(qdp_pipeline.__dataframe__) - 1
             ):
 
@@ -300,7 +299,7 @@ def xgb_pipeline(training_content: list) -> pd.DataFrame:
                     qdp_pipeline.__dataframe__["Class"] != 0
                 ].tolist()
                 # print(f"actual: {actual}")
-                qdp_pipeline.downsample(t_delta, 20)
+                # qdp_pipeline.downsample(t_delta, 20)
                 has_nan = qdp_pipeline.__dataframe__.isna().any().any()
                 if not has_nan:
                     xgb_df = pd.concat([xgb_df, qdp_pipeline.get_dataframe()])
@@ -316,9 +315,9 @@ if __name__ == "__main__":
     vals = [0, 1, 2]
     for t in vals:
 
-        model_name = f"QMulti_Channel_2"
+        model_name = f"QMulti_Channel_1"
         print(f"[INFO] Training {model_name}")
-        TRAIN_PATH = r"C:\Users\paulm\dev\QATCH\QATCH-ML\content\channel_2"
+        TRAIN_PATH = r"C:\Users\paulm\dev\QATCH\QATCH-ML\content\training_data"
 
         if TRAINING:
             train_content = load_content(TRAIN_PATH)

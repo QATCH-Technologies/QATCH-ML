@@ -21,8 +21,6 @@ import os
 import pandas as pd
 import random
 from tqdm import tqdm
-from contextlib import redirect_stdout
-from io import StringIO
 from sklearn.metrics import accuracy_score
 import tempfile
 
@@ -60,11 +58,7 @@ def load_and_partition_datasets(base_dir, data_percentage=0.1):
     # Randomly sample the datasets
     sampled_paths = random.sample(dataset_paths, datasets_to_load)
     # Initialize predictor
-    predictor = QPredictor(
-        model_path=r"QModel\SavedModels\partial_model.h5",
-        scaler_path=r"QModel\SavedModels\partial_scaler.pkl",
-        label_encoder_path=r'QModel\SavedModels\label_encoder.pkl'
-    )
+    predictor = QPredictor()
     # , redirect_stdout(StringIO())
     # Initialize progress bar
     with tqdm(total=len(sampled_paths), desc="Processing datasets") as pbar:
@@ -102,18 +96,19 @@ def load_and_partition_datasets(base_dir, data_percentage=0.1):
                 partition.to_csv(temp_file_path, index=False)
 
                 # Pass the file path to the predictor
+
                 prediction = predictor.predict(temp_file_path)
+                predicted_type = prediction[0]
                 true_labels.append(fill_type)
-                predicted_labels.append(prediction[0])
-
-                if fill_type != "no_fill" and prediction[0] != 'no_fill':
-                    results.append({
-                        'true_fill_type': fill_type,
-                        'predicted_fill_type': prediction[0],
-                        'predicted_pois': unpack_pois(prediction[1]),
-                        'true_pois': poi_indices
-                    })
-
+                predicted_labels.append(predicted_type)
+                predicted_pois = unpack_pois(prediction[1], prediction[0])
+                # if fill_type != "no_fill" and prediction[0] != 'no_fill':
+                results.append({
+                    'true_fill_type': fill_type,
+                    'predicted_fill_type': predicted_type,
+                    'predicted_pois': predicted_pois,
+                    'true_pois': poi_indices
+                })
                 # Cleanup temporary file
                 os.remove(temp_file_path)
         pbar.update(1)
@@ -150,8 +145,10 @@ def visualize_accuracy(true_labels, predicted_labels):
     plt.show()
 
 
-def unpack_pois(poi_data):
+def unpack_pois(poi_data, pred_fill_type):
     best_pois = []
+    if pred_fill_type == "no_fill":
+        return [-1]
     for poi in poi_data:
         best_pois.append(poi[0][0])
     return best_pois
@@ -170,7 +167,6 @@ def compute_metrics_per_poi(results):
     poi_metrics = {f'POI_{i}': {'mae': [], 'mape': []} for i in range(1, 7)}
 
     for result in results[0]:
-        print(result)
         true_pois = result['true_pois']
         predicted_pois = result['predicted_pois']
 

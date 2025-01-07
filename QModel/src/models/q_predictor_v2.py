@@ -11,6 +11,8 @@ import tensorflow as tf
 from q_data_pipeline import QPartialDataPipeline, QDataPipeline
 from q_image_clusterer import QClusterer
 # from ModelData import ModelData
+FILL_TYPE_R = {0: "full_fill", 1: "channel_1_partial",
+               2: "channel_2_partial", 3: "no_fill"}
 Architecture_found = False
 try:
     if not Architecture_found:
@@ -211,59 +213,6 @@ class PredictorUtils:
         return emp_points, start_bound
 
     @staticmethod
-    def adjustment_poi_1(initial_guess, dissipation_data):
-        """Adjusts the point of interest (POI) based on the nearest zero-slope region or peak.
-
-        This method refines the initial guess of the point of interest by finding
-        nearby regions with zero slope and selecting the most suitable peak. If no
-        valid zero-slope region is found, it adjusts the guess to the nearest peak
-        in the dissipation data.
-
-        Args:
-            initial_guess (int): Initial point of interest guess, typically an index within the dataset.
-            dissipation_data (np.ndarray): 1D array of dissipation values.
-
-        Returns:
-            int: Adjusted index of the point of interest, either at or near a zero-slope
-                region or closest peak.
-        """
-        zero_slope_regions = PredictorUtils._find_zero_slope_regions(
-            PredictorUtils.normalize(dissipation_data), threshold=0.0075, min_region_length=100
-        )
-        adjusted_guess = initial_guess
-
-        if len(zero_slope_regions) >= 2:
-            left_bound = zero_slope_regions[0][1]
-            right_bound = zero_slope_regions[1][0]
-
-            peaks_between, _ = find_peaks(
-                dissipation_data[left_bound:right_bound])
-            peaks_indices = [peak + left_bound for peak in peaks_between]
-
-            if peaks_indices:
-                peaks_array = np.array(peaks_indices)
-                distances = np.abs(peaks_array - initial_guess)
-
-                if adjusted_guess >= right_bound:
-                    furthest_index = np.argmax(distances)
-                    distances[furthest_index] = np.min(
-                        distances
-                    )  # Ignore the furthest peak for the second furthest
-                    second_furthest_index = np.argmax(distances)
-                    adjusted_guess = peaks_array[second_furthest_index]
-                else:
-                    nearest_index = np.argmin(distances)
-                    adjusted_guess = peaks_array[nearest_index]
-
-        else:
-            all_peaks, _ = find_peaks(dissipation_data)
-            distances_to_peaks = np.abs(all_peaks - adjusted_guess)
-            nearest_peak = all_peaks[np.argmin(distances_to_peaks)]
-            adjusted_guess = nearest_peak
-
-        return adjusted_guess
-
-    @staticmethod
     def distribution_adjustment(prediction, rel_time, poi_num, type, i, j):
         import os
         import pickle
@@ -313,6 +262,63 @@ class PredictorUtils:
         uq_idx = next((i for i, x in reversed(
             list(enumerate(adj))) if x == 1), -1) + i
         return prediction, (lq_idx, uq_idx)
+
+    @staticmethod
+    def adjustment_poi_1(initial_guess, dissipation_data):
+        """Adjusts the point of interest (POI) based on the nearest zero-slope region or peak.
+
+        This method refines the initial guess of the point of interest by finding
+        nearby regions with zero slope and selecting the most suitable peak. If no
+        valid zero-slope region is found, it adjusts the guess to the nearest peak
+        in the dissipation data.
+
+        Args:
+            initial_guess (int): Initial point of interest guess, typically an index within the dataset.
+            dissipation_data (np.ndarray): 1D array of dissipation values.
+
+        Returns:
+            int: Adjusted index of the point of interest, either at or near a zero-slope
+                region or closest peak.
+        """
+        zero_slope_regions = PredictorUtils._find_zero_slope_regions(
+            PredictorUtils.normalize(dissipation_data), threshold=0.0075, min_region_length=100
+        )
+        adjusted_guess = initial_guess
+
+        if len(zero_slope_regions) >= 2:
+            left_bound = zero_slope_regions[0][1]
+            right_bound = zero_slope_regions[1][0]
+
+            peaks_between, _ = find_peaks(
+                dissipation_data[left_bound:right_bound])
+            peaks_indices = [peak + left_bound for peak in peaks_between]
+
+            if peaks_indices:
+                peaks_array = np.array(peaks_indices)
+                distances = np.abs(peaks_array - initial_guess)
+
+                if adjusted_guess >= right_bound:
+                    furthest_index = np.argmax(distances)
+                    distances[furthest_index] = np.min(
+                        distances
+                    )  # Ignore the furthest peak for the second furthest
+                    second_furthest_index = np.argmax(distances)
+                    adjusted_guess = peaks_array[second_furthest_index]
+                else:
+                    nearest_index = np.argmin(distances)
+                    adjusted_guess = peaks_array[nearest_index]
+
+        else:
+            all_peaks, _ = find_peaks(dissipation_data)
+
+            if all_peaks.size > 0:
+                distances_to_peaks = np.abs(all_peaks - adjusted_guess)
+                nearest_peak = all_peaks[np.argmin(distances_to_peaks)]
+                adjusted_guess = nearest_peak
+            else:
+                adjusted_guess = initial_guess
+
+        return adjusted_guess
 
     @staticmethod
     def adjustment_poi_2(initial_guess, dissipation_data, bounds, poi_1_estimate):
@@ -418,15 +424,33 @@ class PredictorUtils:
             # Difference peaks or dissipation valleys and try to correlate.
             adjusted_point = guess
         else:
-            # filtered_peaks = [point for point in peaks if bounds[0] <= point <= bounds[1]]
-            filtered_peaks = [point for point in peaks if poi_1_guess <= point]
-            # Interpolate between peaks to create the upper envelope
             t = np.arange(len(rf))
+            # Validate peaks and bounds
+            if not peaks:
+                return guess
+
+            # Filter peaks within bounds
+            filtered_peaks = [
+                point for point in peaks if bounds[0] <= point <= bounds[1]]
+            if not filtered_peaks:
+                return guess
+            # Ensure enough points for interpolation
+            unique_peaks = np.unique(filtered_peaks)
+            if len(unique_peaks) < 2:
+                return guess
+
+            # Validate rf and t arrays
+            if len(t) != len(rf):
+                return guess
+
+            if np.any(np.isnan(rf)):
+                return guess
+
+            # Interpolate between peaks to create the upper envelope
             envelope_interpolator = interp1d(
-                t[peaks], rf[peaks], kind="linear", fill_value="extrapolate"
+                t[unique_peaks], rf[unique_peaks], kind="linear", fill_value="extrapolate"
             )
             upper_envelope = envelope_interpolator(t)
-
             # Compute regions of approximately zero slope in the RF curve.
             zsr = find_zero_slope_regions(upper_envelope, threshold=0.00001)
             moved = False
@@ -438,7 +462,10 @@ class PredictorUtils:
                     moved = True
                     break
             if not moved:
-                adjusted_point = filtered_peaks[0]
+                if len(filtered_peaks) == 0:
+                    adjusted_point = guess
+                else:
+                    adjusted_point = filtered_peaks[0]
         # if abs(actual[3] - adjusted_point) > 50:
         #     fig, ax = plt.subplots()
         #     ax.plot(dissipation, label="Dissipation", color="black")
@@ -753,34 +780,75 @@ class QChannelPredictor():
             self._prediction_results = fill_type, self._channel_2_process(
                 file_buffer=file_buffer)
 
-    def _full_fill_process(self, file_buffer, full_fill_type: int):
+    def _initialize_file_buffer(self, file_buffer):
         file_buffer_2 = file_buffer
         if not isinstance(file_buffer_2, str):
             if hasattr(file_buffer_2, "seekable") and file_buffer_2.seekable():
-                # reset ByteIO buffer to beginning of stream
                 file_buffer_2.seek(0)
             else:
-                # ERROR: 'file_buffer_2' must be 'BytesIO' type here, but it's not seekable!
                 raise Exception(
-                    "Cannot 'seek' stream prior to passing to 'QDataPipeline'."
-                )
-        else:
-            # Assuming 'file_buffer_2' is a string to a file path, this will work fine as-is
-            pass
-        # Process data using QDataPipeline
+                    "Cannot 'seek' stream prior to passing to 'QDataPipeline'.")
+        return file_buffer_2
+
+    def _process_qdp(self, file_buffer_2):
         qdp = QDataPipeline(file_buffer_2)
+        qdp.preprocess(poi_filepath=None)
+        df = qdp.get_dataframe()
+        return qdp, df
+
+    def _prepare_dmatrix(self, df):
+        f_names = self._model.feature_names
+        df = df[f_names]
+        return xgb.DMatrix(df)
+
+    def _get_predictions(self, d_data):
+        results = self._model.predict(d_data)
+        normalized_results = PredictorUtils.normalize(results)
+        return PredictorUtils.extract_results(normalized_results)
+
+    def _sort_and_filter_candidates(self, candidates_list, poi_list, extracted_confidences, max_guesses=5):
+        def sort_and_remove_point(arr, point):
+            arr = np.array(arr)
+            if len(arr) > max_guesses - 1:
+                arr = arr[: max_guesses - 1]
+            arr.sort()
+            return arr[arr != point]
+
+        candidates = []
+        for i, (candidates_i, poi) in enumerate(zip(candidates_list, poi_list)):
+
+            candidates_i = sort_and_remove_point(candidates_i, poi)
+
+            filtered_points = candidates_i
+            if i < 3:
+                mean = np.mean(candidates_i)
+                std_dev = np.std(candidates_i)
+                threshold = 2
+                filtered_points = [
+                    point for point in candidates_i if abs(point - mean) <= threshold * std_dev
+                ]
+            confidence_i = np.sort(np.array(extracted_confidences[i])[
+                                   filtered_points])[::-1]
+
+            if len(candidates_i) > 1:
+                candidates_i = np.insert(candidates_i, 0, poi)[:-1]
+            else:
+                candidates_i = np.insert(candidates_i, 0, poi)
+
+            candidates.append((candidates_i, confidence_i))
+        return candidates
+
+    def _full_fill_process(self, file_buffer, full_fill_type: int):
+        file_buffer_2 = self._initialize_file_buffer(file_buffer)
+        # Process data using QDataPipeline
+        qdp, df = self._process_qdp(file_buffer_2)
+        d_data = self._prepare_dmatrix(df)
+        extracted_results = self._get_predictions(d_data)
+
         diss_raw = qdp.__dataframe__["Dissipation"]
         rel_time = qdp.__dataframe__["Relative_time"]
         qdp.preprocess(poi_filepath=None)
         diff_raw = qdp.__difference_raw__
-        df = qdp.get_dataframe()
-        f_names = self._model.feature_names
-        df = df[f_names]
-        d_data = xgb.DMatrix(df)
-
-        results = self._model.predict(d_data)
-        normalized_results = PredictorUtils.normalize(results)
-        extracted_results = PredictorUtils.extract_results(normalized_results)
 
         # extracted_1 = emp_points[0]
         extracted_1 = np.argmax(extracted_results[1])
@@ -886,14 +954,6 @@ class QChannelPredictor():
             poi_1 = adj_1
         poi_3 = np.argmax(adj_3)
 
-        def sort_and_remove_point(arr, point):
-            arr = np.array(arr)
-            if len(arr) > MAX_GUESSES - 1:
-                arr = arr[: MAX_GUESSES - 1]
-            arr.sort()
-
-            return arr[arr != point]
-
         candidates_list = [
             candidates_1,
             candidates_2,
@@ -904,71 +964,27 @@ class QChannelPredictor():
         ]
         poi_list = [poi_1, poi_2, poi_3, poi_4, poi_5, poi_6]
         extracted_confidences = extracted_results[1:7]
-
-        candidates = []
-
-        for i in range(len(poi_list)):
-
-            # Sort and remove point
-            candidates_i = sort_and_remove_point(
-                candidates_list[i], poi_list[i])
-            filtered_points = candidates_i
-            if i < 3:
-                mean = np.mean(candidates_i)
-                std_dev = np.std(candidates_i)
-                threshold = 2
-                # Filter points within the specified threshold
-                filtered_points = [point for point in candidates_i if abs(
-                    point - mean) <= threshold * std_dev]
-
-            # Extract and sort confidence
-            confidence_i = np.sort(np.array(extracted_confidences[i])[filtered_points])[
-                :: -1
-            ]
-
-            # Insert POI at the start, remove the last element
-            if len(candidates_i) > 1:
-                candidates_i = np.insert(candidates_i, 0, poi_list[i])[:-1]
-            else:
-                candidates_i = np.insert(candidates_i, 0, poi_list[i])
-
-            # Append to candidates list
-            candidates.append((candidates_i, confidence_i))
-        return candidates
+        return self._sort_and_filter_candidates(candidates_list, poi_list, extracted_confidences)
 
     def _channel_1_process(self, file_buffer):
-        file_buffer_2 = file_buffer
-        if not isinstance(file_buffer_2, str):
-            if hasattr(file_buffer_2, "seekable") and file_buffer_2.seekable():
-                # reset ByteIO buffer to beginning of stream
-                file_buffer_2.seek(0)
-            else:
-                # ERROR: 'file_buffer_2' must be 'BytesIO' type here, but it's not seekable!
-                raise Exception(
-                    "Cannot 'seek' stream prior to passing to 'QDataPipeline'."
-                )
-        else:
-            # Assuming 'file_buffer_2' is a string to a file path, this will work fine as-is
-            pass
+        file_buffer_2 = self._initialize_file_buffer(file_buffer)
         # Process data using QDataPipeline
-        qdp = QDataPipeline(file_buffer_2)
+        qdp, df = self._process_qdp(file_buffer_2)
+
+        d_data = self._prepare_dmatrix(df)
+        extracted_results = self._get_predictions(d_data)
+
         diss_raw = qdp.__dataframe__["Dissipation"]
         qdp.preprocess(poi_filepath=None)
-        df = qdp.get_dataframe()
-        f_names = self._model.feature_names
-        df = df[f_names]
-        d_data = xgb.DMatrix(df)
-
-        results = self._model.predict(d_data)
-        normalized_results = PredictorUtils.normalize(results)
-        extracted_results = PredictorUtils.extract_results(normalized_results)
-
-        # extracted_1 = emp_points[0]
-        print(extracted_results)
-        extracted_1 = np.argmax(extracted_results[1])
-        extracted_2 = np.argmax(extracted_results[2])
+        extracted_1 = np.argmax(extracted_results[0])
+        extracted_2 = np.argmax(extracted_results[1])
         extracted_4 = np.argmax(extracted_results[3])
-
+        # plt.figure()
+        # # plt.plot(df["Dissipation"])
+        # plt.plot(extracted_1)
+        # plt.plot(extracted_2)
+        # plt.plot(extracted_4)
+        # plt.show()
         if len(self._emp_points) <= 0:
             start_1 = extracted_1
             start_2 = extracted_2
@@ -979,14 +995,14 @@ class QChannelPredictor():
         poi_1 = PredictorUtils.adjustment_poi_1(
             initial_guess=start_1, dissipation_data=diss_raw)
 
-        candidates_1 = PredictorUtils.find_and_sort_peaks(extracted_results[1])
-        candidates_2 = PredictorUtils.find_and_sort_peaks(extracted_results[2])
-        candidates_3 = PredictorUtils.find_and_sort_peaks(extracted_results[3])
-        candidates_4 = PredictorUtils.find_and_sort_peaks(extracted_results[4])
-        poi_3 = np.argmax(extracted_results[3])
+        candidates_1 = PredictorUtils.find_and_sort_peaks(extracted_results[0])
+        candidates_2 = PredictorUtils.find_and_sort_peaks(extracted_results[1])
+        candidates_3 = PredictorUtils.find_and_sort_peaks(extracted_results[2])
+        candidates_4 = PredictorUtils.find_and_sort_peaks(extracted_results[3])
 
+        poi_3 = np.argmax(extracted_results[2])
         bounds_2 = (poi_1, poi_3)
-        bounds_4 = (poi_3, len(extracted_results[4]))
+        bounds_4 = (poi_3, len(extracted_results[3]))
         # skip adjustment of point 6 when inverted (drop applied to outlet)
 
         poi_2 = PredictorUtils.adjustment_poi_2(
@@ -1008,14 +1024,6 @@ class QChannelPredictor():
         if poi_1 >= poi_2:
             poi_1 = adj_1
 
-        def sort_and_remove_point(arr, point):
-            arr = np.array(arr)
-            if len(arr) > MAX_GUESSES - 1:
-                arr = arr[: MAX_GUESSES - 1]
-            arr.sort()
-
-            return arr[arr != point]
-
         candidates_list = [
             candidates_1,
             candidates_2,
@@ -1023,61 +1031,43 @@ class QChannelPredictor():
             candidates_4,
         ]
         poi_list = [poi_1, poi_2, poi_3, poi_4]
-        extracted_confidences = extracted_results[1:5]
+        extracted_confidences = extracted_results[0:4]
 
-        candidates = []
+        # Create a figure
+        fig, axs = plt.subplots(2, 2, figsize=(10, 8))  # 2x2 grid
 
-        for i in range(len(poi_list)):
+        # Plot in each subplot
+        axs[0, 0].plot(extracted_1)
+        axs[0, 0].set_title("POI 1")
 
-            # Sort and remove point
-            candidates_i = sort_and_remove_point(
-                candidates_list[i], poi_list[i])
-            filtered_points = candidates_i
-            if i < 3:
-                mean = np.mean(candidates_i)
-                std_dev = np.std(candidates_i)
-                threshold = 2
-                # Filter points within the specified threshold
-                filtered_points = [point for point in candidates_i if abs(
-                    point - mean) <= threshold * std_dev]
+        axs[0, 1].plot(extracted_2, color='r')
+        axs[0, 1].set_title("POI 2")
 
-            # Extract and sort confidence
-            confidence_i = np.sort(np.array(extracted_confidences[i])[filtered_points])[
-                ::-1
-            ]
+        axs[1, 0].plot(extracted_results[2], color='g')
+        axs[1, 0].set_title("POI 3")
+        axs[1, 0].set_ylim(-5, 5)  # Limit y-axis to avoid extreme values
 
-            # Insert POI at the start, remove the last element
-            if len(candidates_i) > 1:
-                candidates_i = np.insert(candidates_i, 0, poi_list[i])[:-1]
-            else:
-                candidates_i = np.insert(candidates_i, 0, poi_list[i])
+        axs[1, 1].plot(extracted_4, color='m')
+        axs[1, 1].set_title("POI 4")
 
-            # Append to candidates list
-            candidates.append((candidates_i, confidence_i))
-        return candidates
+        # Adjust layout to avoid overlapping
+        plt.tight_layout()
+
+        # Show the figure
+        plt.show()
+        # print("CHANNEL 1")
+        # print(len(poi_list), len(extracted_confidences))
+        return self._sort_and_filter_candidates(candidates_list, poi_list, extracted_confidences)
 
     def _channel_2_process(self, file_buffer):
-        file_buffer_2 = file_buffer
-        if not isinstance(file_buffer_2, str):
-            if hasattr(file_buffer_2, "seekable") and file_buffer_2.seekable():
-                # reset ByteIO buffer to beginning of stream
-                file_buffer_2.seek(0)
-            else:
-                # ERROR: 'file_buffer_2' must be 'BytesIO' type here, but it's not seekable!
-                raise Exception(
-                    "Cannot 'seek' stream prior to passing to 'QDataPipeline'."
-                )
-        else:
-            # Assuming 'file_buffer_2' is a string to a file path, this will work fine as-is
-            pass
+        file_buffer_2 = self._initialize_file_buffer(file_buffer)
         # Process data using QDataPipeline
-        qdp = QDataPipeline(file_buffer_2)
+        qdp, df = self._process_qdp(file_buffer_2)
+        d_data = self._prepare_dmatrix(df)
+        extracted_results = self._get_predictions(d_data)
+
         diss_raw = qdp.__dataframe__["Dissipation"]
         qdp.preprocess(poi_filepath=None)
-        df = qdp.get_dataframe()
-        f_names = self._model.feature_names
-        df = df[f_names]
-        d_data = xgb.DMatrix(df)
 
         results = self._model.predict(d_data)
         normalized_results = PredictorUtils.normalize(results)
@@ -1139,14 +1129,6 @@ class QChannelPredictor():
         if poi_1 >= poi_2:
             poi_1 = adj_1
 
-        def sort_and_remove_point(arr, point):
-            arr = np.array(arr)
-            if len(arr) > MAX_GUESSES - 1:
-                arr = arr[: MAX_GUESSES - 1]
-            arr.sort()
-
-            return arr[arr != point]
-
         candidates_list = [
             candidates_1,
             candidates_2,
@@ -1154,70 +1136,31 @@ class QChannelPredictor():
             candidates_4,
             candidates_5,
         ]
+
         poi_list = [poi_1, poi_2, poi_3, poi_4, poi_5]
         extracted_confidences = extracted_results[1:6]
-
-        candidates = []
-
-        for i in range(len(poi_list)):
-
-            # Sort and remove point
-            candidates_i = sort_and_remove_point(
-                candidates_list[i], poi_list[i])
-            filtered_points = candidates_i
-            if i < 3:
-                mean = np.mean(candidates_i)
-                std_dev = np.std(candidates_i)
-                threshold = 2
-                # Filter points within the specified threshold
-                filtered_points = [point for point in candidates_i if abs(
-                    point - mean) <= threshold * std_dev]
-
-            # Extract and sort confidence
-            confidence_i = np.sort(np.array(extracted_confidences[i])[filtered_points])[
-                ::-1
-            ]
-
-            # Insert POI at the start, remove the last element
-            if len(candidates_i) > 1:
-                candidates_i = np.insert(candidates_i, 0, poi_list[i])[:-1]
-            else:
-                candidates_i = np.insert(candidates_i, 0, poi_list[i])
-
-            # Append to candidates list
-            candidates.append((candidates_i, confidence_i))
-        return candidates
+        return self._sort_and_filter_candidates(candidates_list, poi_list, extracted_confidences)
 
     def _no_fill_process(self):
         return None
 
 
 class QPredictor:
-    def __init__(self, model_path: str = None, scaler_path: str = None, label_encoder_path: str = None):
-        self._partial_model = tf.keras.models.load_model(model_path)
-        self._partial_scaler = joblib.load(scaler_path)
-        self._partial_label_encoder = joblib.load(label_encoder_path)
+    def __init__(self, model_path: str = "QModel/SavedModels/partial_qmm.json"):
+        self._partial_model = xgb.Booster()
+        self._partial_model.load_model(model_path)
 
     def predict(self, file_buffer: str = None):
         # Extract and preprocess features
         qpd = QPartialDataPipeline(file_buffer)
-        self._qdp = QDataPipeline(file_buffer, multi_class=True)
         qpd.preprocess()
-        features = pd.DataFrame([qpd.get_features()]).fillna(0)
-        scaled_features = self._partial_scaler.transform(features)
-
-        # Predict class probabilities and decode predicted class
-        probabilities = self._partial_model.predict(scaled_features)[0]
-        predicted_class_index = np.argmax(probabilities)
-        predicted_num_channels = self._partial_label_encoder.inverse_transform(
-            [predicted_class_index])[0]
-
-        # Map probabilities to class labels (optional if not used elsewhere)
-        class_probabilities = {
-            self._partial_label_encoder.inverse_transform([i])[0]: prob
-            for i, prob in enumerate(probabilities)
-        }
-        print(class_probabilities)
+        features = qpd.get_features()
+        features_df = pd.DataFrame([features]).fillna(0)
+        f_names = self._partial_model.feature_names
+        df = features_df[f_names]
+        d_data = xgb.DMatrix(df)
+        predicted_class_index = self._partial_model.predict(d_data)
+        predicted_fill_type = FILL_TYPE_R[np.argmax(predicted_class_index)]
         channel_predictor = QChannelPredictor(
-            file_buffer, predicted_num_channels)
+            file_buffer, predicted_fill_type)
         return channel_predictor.get_prediction_results()
