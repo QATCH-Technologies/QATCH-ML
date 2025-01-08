@@ -313,7 +313,7 @@ if __name__ == "__main__":
     print("[INFO] q_train_partial.py script start")
     model_name = f"QMulti_Channel_1"
     print(f"[INFO] Training {model_name}")
-    TRAIN_PATH = r"C:\Users\QATCH\dev\QATCH-ML\content\training_data\channel_1"
+    TRAIN_PATH = r"C:\Users\QATCH\dev\QATCH-ML\content\training_data\channel_2"
 
     if TRAINING:
         train_content = load_content(TRAIN_PATH)
