@@ -19,6 +19,7 @@ def process_file(file_path, label):
     """
     Process a single file and return its features and label.
     """
+
     qpd = QPartialDataPipeline(data_filepath=file_path)
     qpd.preprocess()
     features = qpd.get_features()
@@ -64,20 +65,10 @@ def load_and_prepare_data(dataset_paths):
 
 def train_xgboost_model(dataset, predictors, target_features, num_targets):
     qmm = QMultiModel(dataset=dataset, predictors=predictors,
-                      target_features=target_features, num_targets=num_targets, eval_metric="merror")
+                      target_features=target_features, num_targets=num_targets, eval_metric="merro")
     qmm.tune()
     qmm.train_model()
     qmm.save_model("partial_qmm")
-
-
-def plot_confusion_matrix(cm, class_names):
-    plt.figure(figsize=(8, 6))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
-                xticklabels=class_names, yticklabels=class_names)
-    plt.xlabel('Predicted')
-    plt.ylabel('Actual')
-    plt.title('Confusion Matrix')
-    plt.show()
 
 
 def predict(input_file_path, model_path="QModel/SavedModels/partial_qmm.json"):
@@ -97,15 +88,15 @@ def predict(input_file_path, model_path="QModel/SavedModels/partial_qmm.json"):
 
 if __name__ == "__main__":
     dataset_paths = {
-        "full_fill": "content/dropbox_dump",
-        "no_fill": "content/no_fill",
-        "channel_1_partial": "content/channel_1",
-        "channel_2_partial": "content/channel_2",
+        "full_fill": "content/training_data/full_fill",
+        "no_fill": "content/training_data/no_fill",
+        "channel_1_partial": "content/training_data/channel_1",
+        "channel_2_partial": "content/training_data/channel_2",
     }
 
     predictors, dataset = load_and_prepare_data(dataset_paths)
     train_xgboost_model(dataset=dataset, predictors=predictors,
-                        target_features="Class", num_targets=4)
+                        target_features="Class", num_targets=len(FILL_TYPE))
 
     test_file = "content/dropbox_dump/00001/DD240125W1_C5_OLDBSA367_3rd.csv"
     predicted_class = predict(test_file)

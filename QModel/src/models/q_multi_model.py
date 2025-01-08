@@ -284,8 +284,12 @@ class QMultiModel:
             verbose_eval=VERBOSE_EVAL,
             seed=SEED,
         )
-        best_score = results[f"test-{self.__eval_metric__}-mean"].max()
-        return {"loss": -best_score, "status": STATUS_OK}
+        if self.__eval_metric__ == "auc" or self.__eval_metric__ == "aucpr":
+            best_score = results[f"test-{self.__eval_metric__}-mean"].max()
+            return {"loss": -best_score, "status": STATUS_OK}
+        else:
+            best_score = results[f"test-{self.__eval_metric__}-mean"].min()
+            return {"loss": best_score, "status": STATUS_OK}
 
     def tune(self, evaluations: int = 250) -> dict:
         """

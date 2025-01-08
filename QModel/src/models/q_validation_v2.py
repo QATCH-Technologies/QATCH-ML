@@ -80,9 +80,9 @@ def load_and_partition_datasets(base_dir, data_percentage=0.1):
 
             # Partition data
             partitions = {
-                'no_fill': data.iloc[0:random.randint(0, poi_indices[0])],
-                'channel_1_partial': data.iloc[poi_indices[3]:poi_indices[4]],
-                'channel_2_partial': data.iloc[poi_indices[4]:poi_indices[5]],
+                'no_fill': data.iloc[0:random.randint(0, poi_indices[3])],
+                'channel_1_partial': data.iloc[0: random.randint(poi_indices[3], poi_indices[4])],
+                'channel_2_partial': data.iloc[0: random.randint(poi_indices[4], poi_indices[5])],
                 'full_fill': data
             }
 

@@ -426,7 +426,7 @@ class PredictorUtils:
         else:
             t = np.arange(len(rf))
             # Validate peaks and bounds
-            if not peaks:
+            if len(peaks) <= 0:
                 return guess
 
             # Filter peaks within bounds
@@ -792,9 +792,10 @@ class QChannelPredictor():
 
     def _process_qdp(self, file_buffer_2):
         qdp = QDataPipeline(file_buffer_2)
+        raw_df = qdp.get_dataframe().copy()
         qdp.preprocess(poi_filepath=None)
         df = qdp.get_dataframe()
-        return qdp, df
+        return qdp, df, raw_df
 
     def _prepare_dmatrix(self, df):
         f_names = self._model.feature_names
@@ -841,11 +842,11 @@ class QChannelPredictor():
     def _full_fill_process(self, file_buffer, full_fill_type: int):
         file_buffer_2 = self._initialize_file_buffer(file_buffer)
         # Process data using QDataPipeline
-        qdp, df = self._process_qdp(file_buffer_2)
+        qdp, df, raw_df = self._process_qdp(file_buffer_2)
         d_data = self._prepare_dmatrix(df)
         extracted_results = self._get_predictions(d_data)
 
-        diss_raw = qdp.__dataframe__["Dissipation"]
+        diss_raw = raw_df["Dissipation"]
         rel_time = qdp.__dataframe__["Relative_time"]
         qdp.preprocess(poi_filepath=None)
         diff_raw = qdp.__difference_raw__
@@ -969,22 +970,17 @@ class QChannelPredictor():
     def _channel_1_process(self, file_buffer):
         file_buffer_2 = self._initialize_file_buffer(file_buffer)
         # Process data using QDataPipeline
-        qdp, df = self._process_qdp(file_buffer_2)
+        qdp, df, raw_df = self._process_qdp(file_buffer_2)
 
         d_data = self._prepare_dmatrix(df)
         extracted_results = self._get_predictions(d_data)
 
-        diss_raw = qdp.__dataframe__["Dissipation"]
+        diss_raw = raw_df["Dissipation"]
         qdp.preprocess(poi_filepath=None)
         extracted_1 = np.argmax(extracted_results[1])
         extracted_2 = np.argmax(extracted_results[2])
         extracted_4 = np.argmax(extracted_results[4])
-        # plt.figure()
-        # # plt.plot(df["Dissipation"])
-        # plt.plot(extracted_1)
-        # plt.plot(extracted_2)
-        # plt.plot(extracted_4)
-        # plt.show()
+
         if len(self._emp_points) <= 0:
             start_1 = extracted_1
             start_2 = extracted_2
@@ -1032,29 +1028,63 @@ class QChannelPredictor():
         ]
         poi_list = [poi_1, poi_2, poi_3, poi_4]
         extracted_confidences = extracted_results[0:4]
+        # plt.figure()
+        # plt.plot(diss_raw, color="black")
+        # plt.axvline(extracted_1, color='r')
+        # plt.axvline(extracted_2, color='g')
+        # plt.axvline(poi_3, color='b')
+        # plt.axvline(extracted_4, color='y')
+        # plt.show()
+        # Increase the grid to 3 rows and 2 columns
+        # fig, axs = plt.subplots(3, 2, figsize=(10, 8))
 
-        # Create a figure
-        fig, axs = plt.subplots(2, 2, figsize=(10, 8))  # 2x2 grid
+        # axs[0, 0].plot(extracted_results[1])
+        # axs[0, 0].plot(PredictorUtils.normalize(diss_raw),
+        #                color='grey', linestyle='dotted')
+        # axs[0, 0].axvline(poi_1)
+        # axs[0, 0].set_title("POI 1")
 
-        # Plot in each subplot
-        axs[0, 0].plot(extracted_1)
-        axs[0, 0].set_title("POI 1")
+        # axs[0, 1].plot(extracted_results[2], color='r')
+        # axs[0, 1].plot(PredictorUtils.normalize(diss_raw),
+        #                color='grey', linestyle='dotted')
+        # axs[0, 1].axvline(poi_2)
+        # axs[0, 1].set_title("POI 2")
 
-        axs[0, 1].plot(extracted_2, color='r')
-        axs[0, 1].set_title("POI 2")
+        # axs[1, 0].plot(extracted_results[3], color='g')
+        # axs[1, 0].plot(PredictorUtils.normalize(diss_raw),
+        #                color='grey', linestyle='dotted')
+        # axs[1, 0].axvline(poi_3)
+        # axs[1, 0].set_title("POI 3")
+        # axs[1, 0].set_ylim(-5, 5)  # Limit y-axis to avoid extreme values
 
-        axs[1, 0].plot(extracted_results[2], color='g')
-        axs[1, 0].set_title("POI 3")
-        axs[1, 0].set_ylim(-5, 5)  # Limit y-axis to avoid extreme values
+        # axs[1, 1].plot(extracted_results[4], color='m')
+        # axs[1, 1].plot(PredictorUtils.normalize(diss_raw),
+        #                color='grey', linestyle='dotted')
+        # axs[1, 1].axvline(poi_4)
+        # axs[1, 1].set_title("POI 4")
 
-        axs[1, 1].plot(extracted_4, color='m')
-        axs[1, 1].set_title("POI 4")
+        # # Add the 5th subplot
+        # # Assuming there's a 5th result
+        # axs[2, 0].plot(extracted_results[0], color='b')
+        # axs[2, 0].plot(PredictorUtils.normalize(diss_raw),
+        #                color='grey', linestyle='dotted')
+        # axs[2, 0].axvline(poi_1)
+        # axs[2, 0].axvline(poi_2)
+        # axs[2, 0].axvline(poi_3)
+        # axs[2, 0].axvline(poi_4)
+        # axs[2, 0].set_title("Not POI")
+        # axs[2, 0].set_xlabel("X-axis label")  # Example label, adjust as needed
+        # axs[2, 0].set_ylabel("Y-axis label")
 
-        # Adjust layout to avoid overlapping
-        plt.tight_layout()
+        # # Remove the empty subplot (if any)
+        # axs[2, 1].plot(diss_raw, color="black")
+        # axs[2, 1].axvline(poi_1, color='r')
+        # axs[2, 1].axvline(poi_2, color='g')
+        # axs[2, 1].axvline(poi_3, color='b')
+        # axs[2, 1].axvline(poi_4, color='y')
 
-        # Show the figure
-        plt.show()
+        # plt.tight_layout()
+        # plt.show()
         # print("CHANNEL 1")
         # print(len(poi_list), len(extracted_confidences))
         return self._sort_and_filter_candidates(candidates_list, poi_list, extracted_confidences)
@@ -1062,11 +1092,11 @@ class QChannelPredictor():
     def _channel_2_process(self, file_buffer):
         file_buffer_2 = self._initialize_file_buffer(file_buffer)
         # Process data using QDataPipeline
-        qdp, df = self._process_qdp(file_buffer_2)
+        qdp, df, raw_df = self._process_qdp(file_buffer_2)
         d_data = self._prepare_dmatrix(df)
         extracted_results = self._get_predictions(d_data)
 
-        diss_raw = qdp.__dataframe__["Dissipation"]
+        diss_raw = raw_df["Dissipation"]
         qdp.preprocess(poi_filepath=None)
 
         results = self._model.predict(d_data)

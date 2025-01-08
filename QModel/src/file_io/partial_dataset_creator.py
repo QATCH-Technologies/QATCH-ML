@@ -32,7 +32,7 @@ def load_content(data_dir: str) -> list:
 def load_and_process_files(base_dir):
     # Define paths and new directories outside the dropbox_dump directory
     base_output_dir = os.path.abspath(os.path.join(base_dir, ".."))
-    types = ["no_fill", "channel_1", "channel_2"]
+    types = ["no_fill", "channel_1", "channel_2", "full_fill"]
     output_dirs = {t: os.path.join(base_output_dir, t) for t in types}
 
     # Create output directories
@@ -65,9 +65,8 @@ def process_trim(base_dir, data_df, poi_df, output_dirs, file_path):
     if len(poi_indices) < 6:
         print(f"[WARNING] Insufficient POI indices in {file_name}, skipping.")
         return
-
     # Trim before the first POI
-    random_1 = random.randint(0, poi_indices[0])
+    random_1 = random.randint(0, poi_indices[3])
     first_trim = data_df.iloc[:random_1].reset_index(drop=True)
     first_poi = poi_df[poi_df["Index"] <=
                        poi_indices[0]].reset_index(drop=True)
@@ -75,18 +74,21 @@ def process_trim(base_dir, data_df, poi_df, output_dirs, file_path):
                       output_dirs["no_fill"], sub_dir, file_name)
 
     # Trim between the 3rd and 4th POIs
-    random_3_4 = random.randint(poi_indices[0], poi_indices[4])
+    random_3_4 = random.randint(poi_indices[3], poi_indices[4])
     second_trim = data_df.iloc[:random_3_4].reset_index(drop=True)
     second_poi = poi_df[poi_df["Index"] <= random_3_4].reset_index(drop=True)
     save_trimmed_data(second_trim, second_poi,
                       output_dirs["channel_1"], sub_dir, file_name)
 
     # Trim between the 5th and 6th POIs
-    random_5_6 = random.randint(poi_indices[3], poi_indices[5])
+    random_5_6 = random.randint(poi_indices[4], poi_indices[5])
     third_trim = data_df.iloc[:random_5_6].reset_index(drop=True)
     third_poi = poi_df[poi_df["Index"] <= random_5_6].reset_index(drop=True)
     save_trimmed_data(third_trim, third_poi,
                       output_dirs["channel_2"], sub_dir, file_name)
+
+    save_trimmed_data(
+        data_df, poi_df, output_dirs["full_fill"], sub_dir, file_name)
 
 
 def save_trimmed_data(trimmed_df, trimmed_poi, output_dir, sub_dir, file_name):
@@ -150,6 +152,7 @@ if __name__ == "__main__":
         "no_fill": "content/no_fill",
         "channel_1": "content/channel_1",
         "channel_2": "content/channel_2",
+        "full_fill": "content/full_fill"
     }
 
     # Display dissipation column

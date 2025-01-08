@@ -96,7 +96,7 @@ import numpy as np
 from scipy.signal import savgol_filter, butter, filtfilt, detrend, find_peaks
 from scipy.fft import fft
 from sklearn.preprocessing import StandardScaler
-from scipy.stats import entropy, linregress
+from scipy.stats import entropy, linregress, skew
 from typing import Union
 
 M_TARGET = "Class"
@@ -918,12 +918,26 @@ class QPartialDataPipeline:
         ]
         df.drop(columns=columns_to_drop, inplace=True, errors='ignore')
 
+    def _normalize_data(self, data) -> None:
+        min_val = np.min(data)
+        max_val = np.max(data)
+        range_val = max_val - min_val
+        if range_val == 0:
+            # If all values are identical, return an array of zeros (or any desired constant value)
+            return np.zeros_like(data)
+        return (data - min_val) / range_val
+
     def _process_target_columns(self, df):
         target_columns = ["Relative_time",
                           "Resonance_Frequency", "Dissipation"]
         for col in target_columns:
             if col in df.columns:
-                column_features = self._analyze_column(df[col].dropna(), col)
+                if col != "Relative_time":
+                    column_features = self._analyze_column(
+                        df[col].dropna(), col)
+                else:
+                    column_features = self._analyze_column(
+                        df[col].dropna(), col)
                 self._features.update(column_features)
 
     def _analyze_column(self, column_data, col_name):
@@ -943,8 +957,84 @@ class QPartialDataPipeline:
         column_features.update(self._frequency_features(column_data, col_name))
         column_features.update(self._temporal_features(column_data, col_name))
         column_features.update(self._shape_features(column_data, col_name))
+        column_features.update(self._derived_features(column_data, col_name))
+        column_features.update(self._area_under_curve(column_data, col_name))
 
         return column_features
+
+    def _area_under_curve(self, column_data, col_name):
+        auc = np.trapz(column_data)
+        return {f"{col_name}_area_under_curve": auc}
+
+    def _derived_features(self, column_data, col_name):
+        column_array = column_data.to_numpy() if isinstance(
+            column_data, pd.Series) else np.array(column_data)
+        features = {}
+
+        # Entropy
+        prob_distribution = np.histogram(
+            column_array, bins=20, density=True)[0] + 1e-9
+        features[f'{col_name}_entropy'] = entropy(prob_distribution)
+
+        # Normalized Entropy
+        N = len(np.unique(column_array))
+        features[f'{col_name}_normalized_entropy'] = features[f'{col_name}_entropy'] / \
+            np.log(N)
+
+        # Skew
+        features[f'{col_name}_skew'] = skew(column_array)
+
+        # Absolute Skew
+        features[f'{col_name}_absolute_skew'] = np.abs(
+            features[f'{col_name}_skew'])
+
+        # Standard Deviation
+        features[f'{col_name}_standard_deviation'] = np.std(column_array)
+
+        # Relative Standard Deviation (RSD)
+        mean_value = np.mean(column_array)
+        features[f'{col_name}_relative_standard_deviation'] = (
+            features[f'{col_name}_standard_deviation'] / mean_value * 100
+            if mean_value != 0 else 0
+        )
+
+        # Signal-to-Noise Ratio (SNR)
+        signal_power = np.mean(column_array**2)
+        noise_power = np.var(column_array)
+        features[f'{col_name}_snr'] = signal_power / \
+            noise_power if noise_power != 0 else np.inf
+
+        # Logarithmic SNR
+        features[f'{col_name}_log_snr'] = 20 * np.log10(
+            features[f'{col_name}_snr']) if features[f'{col_name}_snr'] > 0 else -np.inf
+
+        # Mean Difference
+        mean_diff = np.mean(np.diff(column_array))
+        features[f'{col_name}_mean_difference'] = mean_diff
+
+        # Normalized Mean Difference
+        data_range = np.max(column_array) - np.min(column_array)
+        features[f'{col_name}_normalized_mean_difference'] = mean_diff / \
+            data_range if data_range != 0 else 0
+
+        # Mean Difference of Peaks
+        peaks, _ = find_peaks(column_array)
+        if len(peaks) > 1:
+            features[f'{col_name}_mean_difference_of_peaks'] = np.mean(
+                np.diff(column_array[peaks]))
+        else:
+            features[f'{col_name}_mean_difference_of_peaks'] = 0
+
+        # Composite Feature
+        weights = {'Entropy': 1.0, 'Skew': 0.5,
+                   'SNR': 2.0}  # Example weights
+        features[f'{col_name}_composite'] = (
+            weights['Entropy'] * features[f'{col_name}_entropy'] +
+            weights['Skew'] * features[f'{col_name}_skew'] +
+            weights['SNR'] * features[f'{col_name}_snr']
+        )
+
+        return features
 
     def _basic_statistics(self, column_data, col_name):
         return {
@@ -1008,10 +1098,7 @@ class QPartialDataPipeline:
         return {f"{col_name}_signal_to_noise": column_mean / column_std}
 
     def _frequency_features(self, column_data, col_name):
-        # Convert to NumPy array
         column_array = column_data.to_numpy()
-
-        # Check if the column_array is non-empty
         if len(column_array) == 0:
             return {
                 f'{col_name}_fft_peak_freq': None,
@@ -1019,51 +1106,39 @@ class QPartialDataPipeline:
                 f'{col_name}_fft_entropy': 0,
             }
 
-        # Frequency domain features using FFT
         fft_values = np.abs(fft(column_array))
         power_spectrum = fft_values ** 2
         freqs = np.fft.fftfreq(len(column_array))
 
-        # Ensure there are values beyond the DC component
         if len(power_spectrum) <= 1:
             peak_freq = None
         else:
             peak_freq = freqs[np.argmax(power_spectrum[1:]) + 1]
 
-        # Compute entropy safely
         entropy = -np.sum(power_spectrum * np.log2(power_spectrum + 1e-12))
 
         return {
-            # Dominant frequency (ignoring DC)
             f'{col_name}_fft_peak_freq': peak_freq,
-            # Energy in frequency domain
             f'{col_name}_fft_energy': np.sum(power_spectrum),
-            # Entropy
             f'{col_name}_fft_entropy': entropy,
         }
 
     def _temporal_features(self, column_data, col_name):
-        # Temporal features like autocorrelation and zero crossings
         autocorr = np.correlate(column_data, column_data,
                                 mode='full') / len(column_data)
         zero_crossings = np.where(np.diff(np.sign(column_data)))[0]
 
         return {
-            # Lag with max autocorrelation
             f'{col_name}_autocorr_max_lag': np.argmax(autocorr),
-            # Number of zero crossings
             f'{col_name}_zero_crossings': len(zero_crossings),
         }
 
     def _shape_features(self, column_data, col_name):
-        # Shape-based features like peak analysis
         peaks, _ = find_peaks(column_data)
         peak_heights = column_data[peaks] if len(peaks) > 0 else []
 
         return {
             f'{col_name}_num_peaks': len(peaks),  # Number of peaks
-            # Mean peak height
             f'{col_name}_peak_mean': np.mean(peak_heights) if len(peaks) > 0 else 0,
-            # Max peak height
             f'{col_name}_peak_max': np.max(peak_heights) if len(peaks) > 0 else 0,
         }

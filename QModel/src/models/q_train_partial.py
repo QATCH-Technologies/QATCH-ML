@@ -282,6 +282,9 @@ def xgb_pipeline(training_content: list) -> pd.DataFrame:
     for f in tqdm(training_content, desc="<<Processing XGB>>"):
         if f.endswith(".csv") and not f.endswith("_poi.csv"):
             qdp_pipeline = QDataPipeline(f, multi_class=True)
+            plt.figure()
+            plt.plot(qdp_pipeline.__dataframe__['Dissipation'])
+            plt.show()
             matched_poi_file = f.replace(".csv", "_poi.csv")
             if not os.path.exists(matched_poi_file):
                 continue
