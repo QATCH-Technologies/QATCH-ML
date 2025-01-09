@@ -466,41 +466,6 @@ class PredictorUtils:
                     adjusted_point = guess
                 else:
                     adjusted_point = filtered_peaks[0]
-        # if abs(actual[3] - adjusted_point) > 50:
-        #     fig, ax = plt.subplots()
-        #     ax.plot(dissipation, label="Dissipation", color="black")
-        #     ax.plot(difference, label="Difference", color="tan")
-        #     ax.fill_betweenx(
-        #         [0, max(dissipation)], bounds[0], bounds[1], color=f"yellow", alpha=0.1
-        #     )
-        #     ax.plot(rf, label="rf", color="grey")
-        #     ax.plot(upper_envelope, label="upper_envelope", color="brown")
-        #     ax.scatter(actual, upper_envelope[actual], color="blue", label="Actual")
-        #     ax.scatter(
-        #         candidates,
-        #         upper_envelope[candidates],
-        #         color="red",
-        #         label="Candidates",
-        #         marker="x",
-        #     )
-        #     for region in zsr:
-        #         ax.axvspan(
-        #             region[0],
-        #             region[-1],
-        #             color="red",
-        #             alpha=0.5,
-        #             label="Zero Slope Region",
-        #         )
-        #     ax.scatter(
-        #         filtered_peaks,
-        #         upper_envelope[filtered_peaks],
-        #         color="green",
-        #         label="Peaks",
-        #     )
-
-        #     ax.axvline(adjusted_point, color="orange", label="adjusted_point")
-        #     plt.legend()
-        #     plt.show()
         return adjusted_point
 
     @staticmethod
@@ -564,26 +529,6 @@ class PredictorUtils:
 
         else:
             adjusted_point = guess
-
-        # if abs(adjusted_point - actual) > 50:
-        #     fig, ax = plt.subplots()
-        #     ax.plot(diss, color="grey")
-        #     ax.fill_betweenx(
-        #         [0, max(diss)], bounds[0], bounds[1], color=f"yellow", alpha=0.5
-        #     )
-        #     ax.scatter(diss_peaks, diss[diss_peaks], color="red", label="diss peaks")
-        #     ax.scatter(diff_peaks, diss[diff_peaks], color="green", label="diff peaks")
-        #     ax.scatter(
-        #         emp_guess, diss[emp_guess], color="pink", marker="x", label="emp guess"
-        #     )
-        #     ax.scatter(candidates, diss[candidates], color="black", label="candidates")
-        #     ax.axvline(guess, color="purple", linestyle="dotted", label="guess")
-
-        #     ax.axvline(adjusted_point, color="brown", label="adjusted")
-        #     ax.axvline(actual, color="orange", linestyle="--", label="actual")
-        #     ax.scatter(actual, diss[actual], color="orange", marker="*")
-        #     plt.legend()
-        #     plt.show()
         return adjusted_point
 
     @staticmethod
@@ -681,53 +626,47 @@ class PredictorUtils:
             filtered_candidates = candidates
             adjusted_poi_6 = poi_6_guess
 
-        # if abs(actual[5] - adjusted_poi_6) > 30 and tail_class == "increasing":
-        #     plt.figure(figsize=(8, 8))
-        #     plt.plot(dissipation, label="Dissipation", color="grey")
-        #     plt.scatter(
-        #         filtered_candidates,
-        #         dissipation[filtered_candidates],
-        #         color="red",
-        #         label="Candidates",
-        #         marker="x",
-        #     )
-
-        #     plt.plot(difference, label="Difference", color="brown")
-        #     plt.plot(rf, label="Resonance frequency", color="tan")
-
-        #     plt.scatter(actual, dissipation[actual], label="actual", color="blue")
-        #     # plt.scatter(rf_max, dissipation[rf_max], label="rf_peaks", color="green")
-        #     plt.scatter(
-        #         nearest_peak,
-        #         dissipation[nearest_peak],
-        #         label="Nearest Peak",
-        #         color="yellow",
-        #         marker="*",
-        #     )
-        #     plt.scatter(
-        #         crossings,
-        #         difference[crossings],
-        #         color="red",
-        #         label="Crossings",
-        #         zorder=5,
-        #     )
-        #     plt.scatter(
-        #         nearest_crossing,
-        #         difference[nearest_crossing],
-        #         color="yellow",
-        #         marker="*",
-        #         label="Nearest Crossing",
-        #         zorder=5,
-        #     )
-
-        #     if t_delta > 0:
-        #         plt.axvline(t_delta, label="t_delta", color="black", linestyle="dotted")
-        #     plt.axvline(adjusted_poi_6, label="poi_6", color="purple")
-        #     plt.legend()
-        #     plt.title(tail_class)
-        #     plt.show()
-
         return adjusted_poi_6
+
+    @staticmethod
+    def channel_fill_post_process(class_probabilities, file_buffer, true_fill):
+        predicted_fill_type = FILL_TYPE_R[np.argmax(class_probabilities)]
+        full_booster_1 = xgb.Booster()
+        full_booster_2 = xgb.Booster()
+        full_booster_3 = xgb.Booster()
+        partial_1_booster = xgb.Booster()
+        partial_2_booster = xgb.Booster()
+        full_booster_1.load_model("QModel/SavedModels/QMultiType_0.json")
+        full_booster_2.load_model("QModel/SavedModels/QMultiType_1.json")
+        full_booster_3.load_model("QModel/SavedModels/QMultiType_2.json")
+        partial_1_booster.load_model(
+            "QModel/SavedModels/QMulti_Channel_1.json")
+        partial_2_booster.load_model(
+            "QModel/SavedModels/QMulti_Channel_2.json")
+        qdp = QDataPipeline(file_buffer)
+        qdp.preprocess()
+        df = qdp.get_dataframe()
+
+        f_names = full_booster_1.feature_names
+        df = df[f_names]
+        ddata = xgb.DMatrix(df)
+        pfb1 = PredictorUtils.extract_results(full_booster_1.predict(ddata))
+        pfb2 = PredictorUtils.extract_results(full_booster_2.predict(ddata))
+        pfb3 = PredictorUtils.extract_results(full_booster_3.predict(ddata))
+        ppb1 = PredictorUtils.extract_results(partial_1_booster.predict(ddata))
+        ppb2 = PredictorUtils.extract_results(partial_2_booster.predict(ddata))
+        print(max(pfb1))
+        # print(max(pfb2))
+        # print(max(pfb3))
+        # print(max(ppb1))
+        # print(max(ppb2))
+
+        plt.figure()
+        plt.plot(df['Dissipation'])
+        plt.title(f'Pred: {predicted_fill_type} Was: {true_fill}')
+
+        plt.show()
+        return predicted_fill_type
 
 
 class QChannelPredictor():
@@ -745,7 +684,7 @@ class QChannelPredictor():
         }
 
         self._model = xgb.Booster()
-        self._prediction_results = "not_set", None
+        self._prediction_results = ("not_set", None)
         self._process(file_buffer, fill_type)
 
     def get_prediction_results(self):
@@ -760,13 +699,8 @@ class QChannelPredictor():
             full_fill_type = int(full_fill_type)
             self._model.load_model(
                 self._model_paths["full_fill"][full_fill_type])
-
-            if full_fill_type in list(self._full_fill_predictors.keys()):
-                self._prediction_results = fill_type, self._full_fill_process(
-                    file_buffer=file_buffer, full_fill_type=full_fill_type)
-            else:
-                raise ValueError(
-                    f"Invalid predicted full-fill type: {full_fill_type}")
+            self._prediction_results = fill_type, self._full_fill_process(
+                file_buffer=file_buffer, full_fill_type=full_fill_type)
         elif fill_type == "no_fill":
             self._prediction_results = fill_type, self._no_fill_process()
         elif fill_type == "channel_1_partial":
@@ -1180,7 +1114,7 @@ class QPredictor:
         self._partial_model = xgb.Booster()
         self._partial_model.load_model(model_path)
 
-    def predict(self, file_buffer: str = None):
+    def predict(self, file_buffer: str = None, true_fill: str = None):
         # Extract and preprocess features
         qpd = QPartialDataPipeline(file_buffer)
         qpd.preprocess()
@@ -1189,8 +1123,10 @@ class QPredictor:
         f_names = self._partial_model.feature_names
         df = features_df[f_names]
         d_data = xgb.DMatrix(df)
-        predicted_class_index = self._partial_model.predict(d_data)
-        predicted_fill_type = FILL_TYPE_R[np.argmax(predicted_class_index)]
+        class_probabilities = self._partial_model.predict(d_data)
+        predicted_fill_type = PredictorUtils.channel_fill_post_process(
+            class_probabilities=class_probabilities, file_buffer=file_buffer, true_fill=true_fill)
+
         channel_predictor = QChannelPredictor(
-            file_buffer, predicted_fill_type)
+            file_buffer=file_buffer, fill_type=predicted_fill_type)
         return channel_predictor.get_prediction_results()

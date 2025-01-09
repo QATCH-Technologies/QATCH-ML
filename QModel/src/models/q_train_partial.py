@@ -282,9 +282,6 @@ def xgb_pipeline(training_content: list) -> pd.DataFrame:
     for f in tqdm(training_content, desc="<<Processing XGB>>"):
         if f.endswith(".csv") and not f.endswith("_poi.csv"):
             qdp_pipeline = QDataPipeline(f, multi_class=True)
-            plt.figure()
-            plt.plot(qdp_pipeline.__dataframe__['Dissipation'])
-            plt.show()
             matched_poi_file = f.replace(".csv", "_poi.csv")
             if not os.path.exists(matched_poi_file):
                 continue
@@ -311,7 +308,7 @@ def xgb_pipeline(training_content: list) -> pd.DataFrame:
 
 if __name__ == "__main__":
     print("[INFO] q_train_partial.py script start")
-    model_name = f"QMulti_Channel_1"
+    model_name = f"QMulti_Channel_2"
     print(f"[INFO] Training {model_name}")
     TRAIN_PATH = r"C:\Users\QATCH\dev\QATCH-ML\content\training_data\channel_2"
 
@@ -322,9 +319,9 @@ if __name__ == "__main__":
         input(training_set)
         print("[STATUS] Building multi-target model")
         qmodel = QMultiModel(
-            dataset=training_set, predictors=FEATURES, target_features=M_TARGET, num_targets=5
+            dataset=training_set, predictors=FEATURES, target_features=M_TARGET, num_targets=6
         )
-        qmodel.tune()
+        qmodel.tune(evaluations=12)
         qmodel.train_model()
         qmodel.save_model(model_name)
     # if TESTING:

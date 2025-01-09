@@ -97,7 +97,7 @@ def load_and_partition_datasets(base_dir, data_percentage=0.1):
 
                 # Pass the file path to the predictor
 
-                prediction = predictor.predict(temp_file_path)
+                prediction = predictor.predict(temp_file_path, fill_type)
                 predicted_type = prediction[0]
                 true_labels.append(fill_type)
                 predicted_labels.append(predicted_type)
