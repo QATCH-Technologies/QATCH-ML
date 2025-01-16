@@ -236,7 +236,7 @@ def visualize_poi_metrics(poi_metrics):
 if __name__ == "__main__":
     base_dir = "content/test_data/test"
     # try:
-    results = load_and_partition_datasets(base_dir, data_percentage=0.25)
+    results = load_and_partition_datasets(base_dir, data_percentage=0.1)
     poi_metrics = compute_metrics_per_poi(results)
     visualize_poi_metrics(poi_metrics)
     print("Per-POI metrics processing complete!")

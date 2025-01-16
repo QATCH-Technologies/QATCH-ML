@@ -642,46 +642,59 @@ class QDataPipeline:
             computed differences.
         """
         # Ensure the required columns are present
-        required_columns = ["Dissipation", "Resonance_Frequency"]
-        if not all(column in self.__dataframe__.columns for column in required_columns):
+        required_columns = ["Dissipation",
+                            "Resonance_Frequency", "Relative_time"]
+        missing_columns = [
+            col for col in required_columns if col not in self.__dataframe__.columns]
+        if missing_columns:
             raise ValueError(
-                "[QDataPipeline.compute_difference] Input CSV must contain the"
-                + f" following columns: {required_columns}"
+                f"[QDataPipeline.compute_difference] Input CSV must contain the "
+                f"following columns: {required_columns}. Missing: {missing_columns}"
             )
 
-        # Calculate the average value of 'Dissipation' and 'Resonance_Frequency' columns
+        # Extract necessary data
         xs = self.__dataframe__["Relative_time"]
-        i = next(x + 0 for x, t in enumerate(xs) if t > 0.5)
-        j = next(x + 1 for x, t in enumerate(xs) if t > 2.5)
+
+        # Safely determine indices using default values for `next`
+        i = next((x for x, t in enumerate(xs) if t > 0.5), 0)
+        j = next((x + 1 for x, t in enumerate(xs) if t > 2.5), len(xs))
+
+        # Compute averages within the range
         avg_resonance_frequency = self.__dataframe__[
             "Resonance_Frequency"][i:j].mean()
         avg_dissipation = self.__dataframe__["Dissipation"][i:j].mean()
-        # Compute the ys_diss, ys_freq, and ys_diff
+
+        # Compute ys_diss and ys_freq
         self.__dataframe__["ys_diss"] = (
             (self.__dataframe__["Dissipation"] - avg_dissipation)
-            * avg_resonance_frequency
-            / 2
+            * avg_resonance_frequency / 2
         )
         self.__dataframe__["ys_freq"] = (
             avg_resonance_frequency - self.__dataframe__["Resonance_Frequency"]
         )
+
+        # Compute the difference with a defined factor
         diff_factor = 1.5
         self.__dataframe__["Difference"] = (
             self.__dataframe__["ys_freq"] -
             diff_factor * self.__dataframe__["ys_diss"]
         )
 
-        # Drop the intermediate columns if not needed
+        # Replace original columns with processed data
         self.__dataframe__[
             "Resonance_Frequency"] = self.__dataframe__["ys_freq"]
         self.__dataframe__["Dissipation"] = self.__dataframe__["ys_diss"]
+
+        # Compute cumulative values using Savitzky-Golay filter
         self.__dataframe__["Cumulative"] = savgol_filter(
-            self.__dataframe__["Dissipation"].values
-            + self.__dataframe__["Resonance_Frequency"].values,
-            25,
-            1,
-            1,
+            self.__dataframe__["Dissipation"].values +
+            self.__dataframe__["Resonance_Frequency"].values,
+            window_length=25,
+            polyorder=1,
+            deriv=1,
         )
+
+        # Drop intermediate columns to keep the DataFrame clean
         self.__dataframe__.drop(columns=["ys_diss", "ys_freq"], inplace=True)
 
     def normalize_df(self) -> None:

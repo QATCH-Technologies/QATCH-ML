@@ -179,9 +179,9 @@ if __name__ == "__main__":
             data_dir, sequence_length=SEQUENCE_LEN)
 
     full_data = pd.read_csv(
-        r'C:\Users\QATCH\dev\QATCH-ML\content\training_data\full_fill\00990\DD240409W1_VOYBUF_I10_3rd.csv')
+        r'C:\Users\paulm\dev\QATCH\QATCH-ML\content\training_data\00913\MM230816W6_DIAT20C_2_3rd.csv')
     model = tf.keras.models.load_model(
-        "QModel/SavedModels/forecaster_cnn_lstm")
+        r"C:\Users\paulm\dev\QATCH\QATCH-ML\QModel\SavedModels\forecaster_cnn_lstm")
     scaler = joblib.load("QModel/SavedModels/forecaster_scaler.pkl")
 
     # Initialize plot

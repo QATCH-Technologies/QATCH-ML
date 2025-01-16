@@ -655,17 +655,17 @@ class PredictorUtils:
         pfb3 = PredictorUtils.extract_results(full_booster_3.predict(ddata))
         ppb1 = PredictorUtils.extract_results(partial_1_booster.predict(ddata))
         ppb2 = PredictorUtils.extract_results(partial_2_booster.predict(ddata))
-        print(max(pfb1))
+        # print(max(pfb1))
         # print(max(pfb2))
         # print(max(pfb3))
         # print(max(ppb1))
         # print(max(ppb2))
 
-        plt.figure()
-        plt.plot(df['Dissipation'])
-        plt.title(f'Pred: {predicted_fill_type} Was: {true_fill}')
+        # plt.figure()
+        # plt.plot(df['Dissipation'])
+        # plt.title(f'Pred: {predicted_fill_type} Was: {true_fill}')
 
-        plt.show()
+        # plt.show()
         return predicted_fill_type
 
 
