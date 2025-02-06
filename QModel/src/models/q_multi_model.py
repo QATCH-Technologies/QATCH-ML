@@ -1028,6 +1028,94 @@ class QPredictor:
 
         return adjusted_poi_6
 
+    import matplotlib.pyplot as plt
+
+    def backtrack(self, pois, candidates, dissipation, relative_time):
+        """
+        Adjusts POIs based on the expected square root slowing behavior of the fluid.
+        Always plots the dissipation curve with POIs.
+
+        Parameters:
+            pois (list): List of current points of interest (POIs).
+            candidates (list): Candidate POIs to adjust selection.
+            dissipation (list): Dissipation values corresponding to each point.
+            relative_time (list): Relative time values for each POI.
+
+        Returns:
+            tuple: Adjusted POIs and candidates.
+        """
+        def find_best_candidate(candidates, target_time, relative_time):
+            """Finds the closest candidate to the expected target time."""
+            return min(candidates, key=lambda c: abs(relative_time[c] - target_time))
+
+        # Estimate t1 based on initial fill region
+        t1 = relative_time[pois[1]] - \
+            relative_time[pois[0]]  # Time for poi2 to poi1
+        T = 12 * t1 - 22 * t1  # Adjusted T for the first channel
+
+        if T <= 0:
+            return pois, candidates  # Avoid invalid calculations
+
+        # Expected time windows
+        T_range_2 = (3 * T, 5 * T)  # Second channel (~10mm)
+        T_range_3 = (7 * T, 11 * T)  # Third channel (~15mm)
+
+        adjusted_pois = []  # Track adjusted POIs
+
+        # Adjust POIs based on time ranges
+        for i, poi in enumerate(pois):
+            time_poi = relative_time[poi]
+
+            if i in {0, 1}:  # First channel (~5mm)
+                if not (T * 0.8 <= time_poi <= T * 1.2):
+                    new_poi = find_best_candidate(candidates, T, relative_time)
+                    if new_poi != pois[i]:
+                        adjusted_pois.append((i, pois[i], new_poi))
+                        pois[i] = new_poi
+
+            elif i in {2, 3}:  # Second channel (~10mm)
+                if not (T_range_2[0] <= time_poi <= T_range_2[1]):
+                    new_poi = find_best_candidate(
+                        candidates, sum(T_range_2) / 2, relative_time)
+                    if new_poi != pois[i]:
+                        adjusted_pois.append((i, pois[i], new_poi))
+                        pois[i] = new_poi
+
+            elif i in {4, 5}:  # Third channel (~15mm)
+                if not (T_range_3[0] <= time_poi <= T_range_3[1]):
+                    new_poi = find_best_candidate(
+                        candidates, sum(T_range_3) / 2, relative_time)
+                    if new_poi != pois[i]:
+                        adjusted_pois.append((i, pois[i], new_poi))
+                        pois[i] = new_poi
+
+        # Plot dissipation curve with POIs
+        plt.figure(figsize=(10, 5))
+        plt.plot(relative_time, dissipation,
+                 label="Dissipation Curve", color="blue")
+
+        # Plot final POIs
+        plt.scatter([relative_time[p] for p in pois], [dissipation[p] for p in pois],
+                    color="green", marker="o", label="Final POIs")
+
+        # If adjustments occurred, show old and new POIs
+        for idx, old_poi, new_poi in adjusted_pois:
+            plt.scatter(relative_time[old_poi], dissipation[old_poi],
+                        color="red", marker="x", label="Old POI" if idx == adjusted_pois[0][0] else "")
+            plt.scatter(relative_time[new_poi], dissipation[new_poi],
+                        color="orange", marker="*", label="Adjusted POI" if idx == adjusted_pois[0][0] else "")
+            plt.plot([relative_time[old_poi], relative_time[new_poi]],
+                     [dissipation[old_poi], dissipation[new_poi]],
+                     linestyle="dashed", color="gray", alpha=0.6)
+
+        plt.xlabel("Relative Time")
+        plt.ylabel("Dissipation")
+        plt.title("POI Adjustments")
+        plt.legend()
+        plt.show()
+
+        return pois, candidates
+
     def predict(self, file_buffer, run_type=-1, start=-1, stop=-1, act=[None] * 6):
         # Load CSV data and drop unnecessary columns
         df = pd.read_csv(file_buffer)
@@ -1255,6 +1343,8 @@ class QPredictor:
             candidates_6,
         ]
         poi_list = [poi_1, poi_2, poi_3, poi_4, poi_5, poi_6]
+        poi_list, candidates_list = self.backtrack(
+            poi_list, candidates_list, diss_raw, df['Relative_time'].values)
         extracted_confidences = extracted_results[1:7]
 
         candidates = []
