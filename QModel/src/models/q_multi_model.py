@@ -1028,91 +1028,125 @@ class QPredictor:
 
         return adjusted_poi_6
 
-    import matplotlib.pyplot as plt
-
     def backtrack(self, pois, candidates, dissipation, relative_time):
         """
         Adjusts POIs based on the expected square root slowing behavior of the fluid.
-        Always plots the dissipation curve with POIs.
+        Plots a detailed visualization of the dissipation curve and POI adjustments.
 
         Parameters:
             pois (list): List of current points of interest (POIs).
             candidates (list): Candidate POIs to adjust selection.
             dissipation (list): Dissipation values corresponding to each point.
-            relative_time (list): Relative time values for each POI.
+            relative_time (list or np.array): Relative time values for each POI.
 
         Returns:
             tuple: Adjusted POIs and candidates.
         """
         def find_best_candidate(candidates, target_time, relative_time):
-            """Finds the closest candidate to the expected target time."""
             return min(candidates, key=lambda c: abs(relative_time[c] - target_time))
+
+        # Convert to numpy array if not already
+        relative_time = np.array(relative_time)
 
         # Estimate t1 based on initial fill region
         t1 = relative_time[pois[1]] - \
             relative_time[pois[0]]  # Time for poi2 to poi1
-        T = 12 * t1 - 22 * t1  # Adjusted T for the first channel
+        # Adjusted T for the first channel
+        T = t1
 
         if T <= 0:
             return pois, candidates  # Avoid invalid calculations
+        baseline = relative_time[pois[0]]
+        T_max = relative_time[-1]
+        tolerance = 0.05  # Adjust this factor as needed
 
-        # Expected time windows
-        T_range_2 = (3 * T, 5 * T)  # Second channel (~10mm)
-        T_range_3 = (7 * T, 11 * T)  # Third channel (~15mm)
+        T_range_2 = ((T * ((18.0602 - 1.5 * 4.7701)) * (1 - tolerance)) + baseline,
+                     (T * ((18.0602 + 1.5 * 4.7701)) * (1 + tolerance)) + baseline)
 
+        T_range_3 = ((T * ((89.6482 - 1.5 * 24.5284)) * (1 - tolerance)) + baseline,
+                     (T * ((89.6482 + 1.5 * 24.5284)) * (1 + tolerance)) + baseline)
+
+        T_range_4 = ((T * ((198.8229 - 1.5 * 57.0427)) * (1 - tolerance)) + baseline,
+                     min(((T * ((198.8229 + 1.5 * 57.0427)) * (1 + tolerance)) + baseline), T_max))
+        # T_range_3 = ((T * ((89.6482 - 1.5 * 24.5284)) * (1 - tolerance)) + baseline,
+        #              min(T * ((89.6482 + 1.5 * 24.5284)) * (1 + tolerance) + baseline, T_range_4[0]))
         adjusted_pois = []  # Track adjusted POIs
 
         # Adjust POIs based on time ranges
         for i, poi in enumerate(pois):
             time_poi = relative_time[poi]
 
-            if i in {0, 1}:  # First channel (~5mm)
-                if not (T * 0.8 <= time_poi <= T * 1.2):
-                    new_poi = find_best_candidate(candidates, T, relative_time)
-                    if new_poi != pois[i]:
-                        adjusted_pois.append((i, pois[i], new_poi))
-                        pois[i] = new_poi
+            # if i in {0, 1}:  # First channel (~5mm)
+            #     if not (T * 0.8 <= time_poi <= T * 1.2):
+            #         new_poi = find_best_candidate(
+            #             candidates[i], T, relative_time)
+            #         if new_poi != pois[i]:
+            #             adjusted_pois.append((i, pois[i], new_poi))
+            #             pois[i] = new_poi
 
-            elif i in {2, 3}:  # Second channel (~10mm)
+            if i in {3}:
                 if not (T_range_2[0] <= time_poi <= T_range_2[1]):
                     new_poi = find_best_candidate(
-                        candidates, sum(T_range_2) / 2, relative_time)
+                        candidates[i], sum(T_range_2) / 2, relative_time)
                     if new_poi != pois[i]:
                         adjusted_pois.append((i, pois[i], new_poi))
                         pois[i] = new_poi
 
-            elif i in {4, 5}:  # Third channel (~15mm)
+            elif i in {4}:
                 if not (T_range_3[0] <= time_poi <= T_range_3[1]):
                     new_poi = find_best_candidate(
-                        candidates, sum(T_range_3) / 2, relative_time)
+                        candidates[i], sum(T_range_3) / 2, relative_time)
+                    if new_poi != pois[i]:
+                        adjusted_pois.append((i, pois[i], new_poi))
+                        pois[i] = new_poi
+
+            elif i in {5}:
+                if not (T_range_4[0] <= time_poi <= T_range_4[1]):
+                    new_poi = find_best_candidate(
+                        candidates[i], sum(T_range_4) / 2, relative_time)
                     if new_poi != pois[i]:
                         adjusted_pois.append((i, pois[i], new_poi))
                         pois[i] = new_poi
 
         # Plot dissipation curve with POIs
-        plt.figure(figsize=(10, 5))
-        plt.plot(relative_time, dissipation,
-                 label="Dissipation Curve", color="blue")
+        plotting = False
+        if adjusted_pois and plotting:
+            plt.figure(figsize=(12, 6))
+            plt.plot(relative_time, dissipation,
+                     label="Dissipation Curve", color="blue", linewidth=2)
+            plt.axvline(baseline)
+            # Shade expected time regions
+            plt.axvspan(T_range_2[0], T_range_2[1], color="yellow",
+                        alpha=0.2, label="Expected 1st Channel")
+            plt.axvspan(T_range_3[0], T_range_3[1], color="purple",
+                        alpha=0.2, label="Expected 2nd Channel")
+            plt.axvspan(T_range_4[0], T_range_4[1], color="green",
+                        alpha=0.2, label="Expected Exit")
 
-        # Plot final POIs
-        plt.scatter([relative_time[p] for p in pois], [dissipation[p] for p in pois],
-                    color="green", marker="o", label="Final POIs")
+            # Plot final POIs
+            plt.scatter([relative_time[p] for p in pois], [dissipation[p] for p in pois],
+                        color="green", marker="o", s=100, label="Final POIs")
 
-        # If adjustments occurred, show old and new POIs
-        for idx, old_poi, new_poi in adjusted_pois:
-            plt.scatter(relative_time[old_poi], dissipation[old_poi],
-                        color="red", marker="x", label="Old POI" if idx == adjusted_pois[0][0] else "")
-            plt.scatter(relative_time[new_poi], dissipation[new_poi],
-                        color="orange", marker="*", label="Adjusted POI" if idx == adjusted_pois[0][0] else "")
-            plt.plot([relative_time[old_poi], relative_time[new_poi]],
-                     [dissipation[old_poi], dissipation[new_poi]],
-                     linestyle="dashed", color="gray", alpha=0.6)
+            # If adjustments occurred, show old and new POIs
+            for idx, old_poi, new_poi in adjusted_pois:
+                plt.scatter(relative_time[old_poi], dissipation[old_poi],
+                            color="red", marker="x", s=100, label="Old POI" if idx == adjusted_pois[0][0] else "")
+                plt.scatter(relative_time[new_poi], dissipation[new_poi],
+                            color="orange", marker="*", s=120, label="Adjusted POI" if idx == adjusted_pois[0][0] else "")
+                plt.plot([relative_time[old_poi], relative_time[new_poi]],
+                         [dissipation[old_poi], dissipation[new_poi]],
+                         linestyle="dashed", color="gray", alpha=0.6)
+                plt.annotate(f"Adj {idx}", (relative_time[new_poi], dissipation[new_poi]),
+                             textcoords="offset points", xytext=(-10, 10), ha='center', fontsize=10, color='black')
 
-        plt.xlabel("Relative Time")
-        plt.ylabel("Dissipation")
-        plt.title("POI Adjustments")
-        plt.legend()
-        plt.show()
+            # Labels and Legends
+            plt.xlabel("Relative Time", fontsize=12)
+            plt.ylabel("Dissipation", fontsize=12)
+            plt.title(
+                "Detailed POI Adjustments on Dissipation Curve", fontsize=14)
+            plt.legend()
+            plt.grid(True, linestyle="--", alpha=0.5)
+            plt.show()
 
         return pois, candidates
 
