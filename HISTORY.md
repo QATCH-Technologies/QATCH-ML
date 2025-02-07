@@ -16,7 +16,6 @@
 ### Removed
 - No removals
   
-# History
 ## 2.0.8 (11-08-2024)
 ### Added
 - Improved restrictions for POI1-3 to prevent unreasonable prediction estimates.
