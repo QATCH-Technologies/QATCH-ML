@@ -38,3 +38,15 @@ To install **QModel**, follow these steps:
     ```bash
     pip install -r requirements.txt
     ```
+
+## Contributing
+We welcome contributions to QModel. If you'd like to improve the software or fix bugs, please follow these steps:
+
+1. Fork the repository
+2. Create a new branch
+3. Make your changes
+4. Submit a pull request
+5. For any issues or questions, feel free to open an issue on GitHub.
+
+License
+QModel is licensed under the MIT License. See the LICENSE file for more details.
