@@ -1105,17 +1105,17 @@ class QPredictor:
                     if new_poi != pois[i] and new_poi is not None:
                         adjusted_pois.append((i, pois[i], new_poi))
                         pois[i] = new_poi
-            elif i in {5}:
-                if not (T_range_4[0] <= time_poi <= T_range_4[1]):
-                    # First, move to the best candidate based on confidence
-                    idx_0 = (np.abs(relative_time - T_range_4[0])).argmin()
-                    idx_1 = (np.abs(relative_time - T_range_4[1])).argmin()
-                    window_size = idx_1 - idx_0
-                    new_poi = find_best_candidate(
-                        candidates[i], confidences[i], T_range_4, relative_time)
-                    if new_poi != pois[i] and new_poi is not None:
-                        adjusted_pois.append((i, pois[i], new_poi))
-                        pois[i] = new_poi
+            # elif i in {5}:
+            #     if not (T_range_4[0] <= time_poi <= T_range_4[1]):
+            #         # First, move to the best candidate based on confidence
+            #         idx_0 = (np.abs(relative_time - T_range_4[0])).argmin()
+            #         idx_1 = (np.abs(relative_time - T_range_4[1])).argmin()
+            #         window_size = idx_1 - idx_0
+            #         new_poi = find_best_candidate(
+            #             candidates[i], confidences[i], T_range_4, relative_time)
+            #         if new_poi != pois[i] and new_poi is not None:
+            #             adjusted_pois.append((i, pois[i], new_poi))
+            #             pois[i] = new_poi
 
         # Plot dissipation curve with POIs
         plotting = False
@@ -1203,7 +1203,6 @@ class QPredictor:
         else:
             emp_predictions = ModelData().IdentifyPoints(file_buffer)
         emp_points = []
-        start_bound = -1
         if isinstance(emp_predictions, list):
             for pt in emp_predictions:
                 if isinstance(pt, int):
@@ -1211,7 +1210,6 @@ class QPredictor:
                 elif isinstance(pt, list):
                     max_pair = max(pt, key=lambda x: x[1])
                     emp_points.append(max_pair[0])
-            start_bound = emp_points[0]
 
         ############################
         # MAIN PREDICTION PIPELINE #
@@ -1404,7 +1402,6 @@ class QPredictor:
         # extracted_confidences = extracted_results[1:7]
         poi_list, candidates_list = self.backtrack(
             poi_list, candidates_list, extracted_confidences, df_raw)
-        poi_list = [poi_1, poi_2, poi_3, poi_4, poi_5, poi_6]
         candidates = []
 
         for i in range(len(poi_list)):
@@ -1435,16 +1432,16 @@ class QPredictor:
             # Append to candidates list
             candidates.append((candidates_i, confidence_i))
 
-        for poi, actual in zip(poi_list, act):
-            if abs(poi - actual) > 50 and False:
-                plt.figure()
-                plt.plot(diss_raw, color='grey', label="Dissipation")
-                plt.scatter(
-                    poi_list, diss_raw[poi_list], color='blue', label="Guesses")
-                plt.scatter(act, diss_raw[act], color='green', label="Actual")
-                plt.axvline(poi, color='red')
-                plt.axvline(actual, color='red')
-                plt.legend()
-                plt.title("Bad guess")
-                plt.show()
+        # for poi, actual in zip(poi_list, act):
+        #     if abs(poi - actual) > 50 and False:
+        #         plt.figure()
+        #         plt.plot(diss_raw, color='grey', label="Dissipation")
+        #         plt.scatter(
+        #             poi_list, diss_raw[poi_list], color='blue', label="Guesses")
+        #         plt.scatter(act, diss_raw[act], color='green', label="Actual")
+        #         plt.axvline(poi, color='red')
+        #         plt.axvline(actual, color='red')
+        #         plt.legend()
+        #         plt.title("Bad guess")
+        #         plt.show()
         return candidates
