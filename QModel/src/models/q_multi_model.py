@@ -5,13 +5,10 @@ import pandas as pd
 import xgboost as xgb
 from hyperopt import STATUS_OK, Trials, fmin, hp, tpe
 from hyperopt.early_stop import no_progress_loss
-from scipy.signal import find_peaks
 from sklearn.model_selection import train_test_split
 import pickle
-from scipy.signal import find_peaks
-from scipy.stats import linregress
+from scipy.signal import find_peaks, savgol_filter
 from scipy.interpolate import interp1d
-
 
 # from ModelData import ModelData
 Architecture_found = False
@@ -1028,7 +1025,7 @@ class QPredictor:
 
         return adjusted_poi_6
 
-    def backtrack(self, pois, candidates, dissipation, relative_time):
+    def backtrack(self, pois, candidates, confidences, df: pd.DataFrame):
         """
         Adjusts POIs based on the expected square root slowing behavior of the fluid.
         Plots a detailed visualization of the dissipation curve and POI adjustments.
@@ -1036,75 +1033,89 @@ class QPredictor:
         Parameters:
             pois (list): List of current points of interest (POIs).
             candidates (list): Candidate POIs to adjust selection.
+            confidences (list): Confidence values corresponding to each candidate.
             dissipation (list): Dissipation values corresponding to each point.
             relative_time (list or np.array): Relative time values for each POI.
 
         Returns:
             tuple: Adjusted POIs and candidates.
         """
-        def find_best_candidate(candidates, target_time, relative_time):
-            return min(candidates, key=lambda c: abs(relative_time[c] - target_time))
+        relative_time = df["Relative_time"].values
+        dissipation = df["Dissipation"].values
 
-        # Convert to numpy array if not already
+        def find_best_candidate(candidates, confidences, time_range, relative_time):
+            """
+            Selects the candidate with the highest confidence within the time range.
+            """
+            valid_candidates = [
+                c for c in candidates if time_range[0] <= relative_time[c] <= time_range[1]
+            ]
+            if not valid_candidates:
+                return None  # If no valid candidates, return None or handle accordingly
+            # Find candidate with the highest confidence
+            best_candidate = max(
+                valid_candidates, key=lambda c: confidences[c])
+            return best_candidate
+
         relative_time = np.array(relative_time)
-
         # Estimate t1 based on initial fill region
-        t1 = relative_time[pois[1]] - \
-            relative_time[pois[0]]  # Time for poi2 to poi1
-        # Adjusted T for the first channel
+        t1 = relative_time[pois[1]] - relative_time[pois[0]]
         T = t1
-
         if T <= 0:
-            return pois, candidates  # Avoid invalid calculations
+            return pois, candidates
         baseline = relative_time[pois[0]]
         T_max = relative_time[-1]
-        tolerance = 0.05  # Adjust this factor as needed
+        tolerance = 0.075
 
         T_range_2 = ((T * ((18.0602 - 1.5 * 4.7701)) * (1 - tolerance)) + baseline,
                      (T * ((18.0602 + 1.5 * 4.7701)) * (1 + tolerance)) + baseline)
-
+        T_range_4 = ((T * ((198.8229 - 1.5 * 57.0427)) *
+                     (1 - tolerance)) + baseline, T_max)
         T_range_3 = ((T * ((89.6482 - 1.5 * 24.5284)) * (1 - tolerance)) + baseline,
-                     (T * ((89.6482 + 1.5 * 24.5284)) * (1 + tolerance)) + baseline)
-
-        T_range_4 = ((T * ((198.8229 - 1.5 * 57.0427)) * (1 - tolerance)) + baseline,
-                     min(((T * ((198.8229 + 1.5 * 57.0427)) * (1 + tolerance)) + baseline), T_max))
+                     T_range_4[1])
         # T_range_3 = ((T * ((89.6482 - 1.5 * 24.5284)) * (1 - tolerance)) + baseline,
-        #              min(T * ((89.6482 + 1.5 * 24.5284)) * (1 + tolerance) + baseline, T_range_4[0]))
+        #              (T * ((89.6482 + 1.5 * 24.5284)) * (1 + tolerance)) + baseline)
+
+        # T_range_4 = ((T * ((198.8229 - 1.5 * 57.0427)) * (1 - tolerance)) + baseline,
+        #              min(((T * ((198.8229 + 1.5 * 57.0427)) * (1 + tolerance)) + baseline), T_max))
+
         adjusted_pois = []  # Track adjusted POIs
 
         # Adjust POIs based on time ranges
         for i, poi in enumerate(pois):
             time_poi = relative_time[poi]
-
-            # if i in {0, 1}:  # First channel (~5mm)
-            #     if not (T * 0.8 <= time_poi <= T * 1.2):
-            #         new_poi = find_best_candidate(
-            #             candidates[i], T, relative_time)
-            #         if new_poi != pois[i]:
-            #             adjusted_pois.append((i, pois[i], new_poi))
-            #             pois[i] = new_poi
-
             if i in {3}:
                 if not (T_range_2[0] <= time_poi <= T_range_2[1]):
+                    # First, move to the best candidate based on confidence
+                    idx_0 = (np.abs(relative_time - T_range_2[0])).argmin()
+                    idx_1 = (np.abs(relative_time - T_range_2[1])).argmin()
+                    window_size = idx_1 - idx_0
                     new_poi = find_best_candidate(
-                        candidates[i], sum(T_range_2) / 2, relative_time)
-                    if new_poi != pois[i]:
+                        candidates[i], confidences[i], T_range_2, relative_time)
+                    if new_poi != pois[i] and new_poi is not None:
                         adjusted_pois.append((i, pois[i], new_poi))
                         pois[i] = new_poi
-
             elif i in {4}:
                 if not (T_range_3[0] <= time_poi <= T_range_3[1]):
+                    # First, move to the best candidate based on confidence
+                    idx_0 = (np.abs(relative_time - T_range_3[0])).argmin()
+                    idx_1 = (np.abs(relative_time - T_range_3[1])).argmin()
+                    window_size = idx_1 - idx_0
                     new_poi = find_best_candidate(
-                        candidates[i], sum(T_range_3) / 2, relative_time)
-                    if new_poi != pois[i]:
+                        candidates[i], confidences[i], T_range_3, relative_time)
+                    if new_poi != pois[i] and new_poi is not None:
                         adjusted_pois.append((i, pois[i], new_poi))
                         pois[i] = new_poi
 
             elif i in {5}:
                 if not (T_range_4[0] <= time_poi <= T_range_4[1]):
+                    # First, move to the best candidate based on confidence
+                    idx_0 = (np.abs(relative_time - T_range_4[0])).argmin()
+                    idx_1 = (np.abs(relative_time - T_range_4[1])).argmin()
+                    window_size = idx_1 - idx_0
                     new_poi = find_best_candidate(
-                        candidates[i], sum(T_range_4) / 2, relative_time)
-                    if new_poi != pois[i]:
+                        candidates[i], confidences[i], T_range_4, relative_time)
+                    if new_poi != pois[i] and new_poi is not None:
                         adjusted_pois.append((i, pois[i], new_poi))
                         pois[i] = new_poi
 
@@ -1226,6 +1237,7 @@ class QPredictor:
         qdp = QDataPipeline(file_buffer_2)
         diss_raw = qdp.__dataframe__["Dissipation"]
         rel_time = qdp.__dataframe__["Relative_time"]
+        df_raw = qdp.__dataframe__.copy()
         qdp.preprocess(poi_filepath=None)
         diff_raw = qdp.__difference_raw__
         df = qdp.get_dataframe()
@@ -1258,7 +1270,10 @@ class QPredictor:
             start_2 = extracted_2
             start_3 = extracted_3
             start_4 = extracted_4
-            start_5 = extracted_5
+            if len(emp_points) < 6:
+                start_5 = extracted_5
+            else:
+                start_5 = emp_points[4]
             start_6 = extracted_6
         else:
             start_1 = emp_points[0]
@@ -1325,15 +1340,29 @@ class QPredictor:
         candidates_3 = self.find_and_sort_peaks(adj_3)
         candidates_4 = self.find_and_sort_peaks(adj_4)
         candidates_5 = self.find_and_sort_peaks(adj_5)
-
+        candidates_list = [
+            candidates_1,
+            candidates_2,
+            candidates_3,
+            candidates_4,
+            candidates_5,
+            candidates_6,
+        ]
+        extracted_confidences = extracted_results[1:7]
+        poi_list = [poi_1, start_2, start_3, start_4, start_5, poi_6]
         # skip adjustment of point 6 when inverted (drop applied to outlet)
-
+        poi_list, candidates_list = self.backtrack(
+            poi_list, candidates_list, extracted_confidences, df_raw)
+        start_2 = poi_list[1]
+        extracted_4 = poi_list[3]
+        start_5 = poi_list[4]
         poi_2 = self.adjustment_poi_2(
             initial_guess=start_2,
             dissipation_data=diss_raw,
             bounds=bounds_2,
             poi_1_estimate=poi_1,
         )
+
         poi_4 = self.adjustmet_poi_4(
             df=df,
             candidates=candidates_4,
@@ -1368,18 +1397,18 @@ class QPredictor:
 
             return arr[arr != point]
 
-        candidates_list = [
-            candidates_1,
-            candidates_2,
-            candidates_3,
-            candidates_4,
-            candidates_5,
-            candidates_6,
-        ]
-        poi_list = [poi_1, poi_2, poi_3, poi_4, poi_5, poi_6]
-        poi_list, candidates_list = self.backtrack(
-            poi_list, candidates_list, diss_raw, df['Relative_time'].values)
-        extracted_confidences = extracted_results[1:7]
+        # candidates_list = [
+        #     candidates_1,
+        #     candidates_2,
+        #     candidates_3,
+        #     candidates_4,
+        #     candidates_5,
+        #     candidates_6,
+        # ]
+        # poi_list = [poi_1, poi_2, poi_3, poi_4, poi_5, poi_6]
+        # extracted_confidences = extracted_results[1:7]
+        # poi_list, candidates_list = self.backtrack(
+        #     poi_list, candidates_list, extracted_confidences, df_raw)
 
         candidates = []
 
