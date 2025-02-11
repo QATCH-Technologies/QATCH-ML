@@ -53,4 +53,4 @@ We welcome contributions to **QModel**! If you'd like to enhance the software or
 
 ## 📄 **License**
 
-**QModel** is licensed under the MIT License. See the [LICENSE](./LICENSE) file for more details.
+**QModel** is licensed under the MIT License. See the [LICENSE](https://github.com/QATCH-Technologies/QATCH-ML/blob/main/MIT-LICENSE) file for more details.
