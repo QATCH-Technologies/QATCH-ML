@@ -1,60 +1,40 @@
-from matplotlib.animation import FuncAnimation
-import matplotlib.pyplot as plt
+import keras_tuner as kt
+import keras
+from keras.models import Sequential
+from keras.layers import Conv1D, MaxPooling1D, BatchNormalization, Dropout, LSTM, Dense
+from keras.callbacks import EarlyStopping, ReduceLROnPlateau
+from keras.optimizers import Adam
+from collections import deque
 import os
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import MinMaxScaler
-from sklearn.model_selection import train_test_split
-import tensorflow as tf
-from keras.layers import TimeDistributed, Conv1D, MaxPooling1D, Flatten, LSTM, Dense
-from keras.optimizers import Adam
-from keras.models import Sequential
-import joblib
-import random
 from tqdm import tqdm
 
-SEQUENCE_LEN = 200
-TRAINING = True  # Set True to retrain the model
+# Set constants
+NUM_CLASSES = 2  # Adjust as needed for your application
+DATA_TO_LOAD = 100
+OVERWRITE_HYPERPARAMS = True
+TRAINING = True
 
-# -----------------------------------------------------------------------------
-# Utility: Load list of CSV files along with their corresponding POI file.
+# New constant for slice size (every 100 data points)
+SLICE_SIZE = 2
 
-# -----------------------------------------------------------------------------
-# Custom callback for live training monitoring.
+# --- Reassign POI labels into 5 regions ---
 
 
-class LiveTrainingMonitor(tf.keras.callbacks.Callback):
-    def __init__(self):
-        super(LiveTrainingMonitor, self).__init__()
-        self.epoch_count = []
-        self.train_loss = []
-        self.val_loss = []
-        # Turn on interactive mode.
-        plt.ion()
-        self.fig, self.ax = plt.subplots()
-        self.ax.set_xlabel("Epoch")
-        self.ax.set_ylabel("Loss")
-        self.ax.set_title("Live Training Monitor")
-        self.fig.show()
-        self.fig.canvas.draw()
-
-    def on_epoch_end(self, epoch, logs=None):
-        logs = logs or {}
-        self.epoch_count.append(epoch)
-        self.train_loss.append(logs.get("loss"))
-        self.val_loss.append(logs.get("val_loss"))
-
-        self.ax.clear()
-        self.ax.plot(self.epoch_count, self.train_loss,
-                     label="Training Loss", marker='o')
-        self.ax.plot(self.epoch_count, self.val_loss,
-                     label="Validation Loss", marker='o')
-        self.ax.set_xlabel("Epoch")
-        self.ax.set_ylabel("Loss")
-        self.ax.set_title("Live Training Monitor")
-        self.ax.legend()
-        self.fig.canvas.draw()
-        plt.pause(0.01)
+def reassign_region(poi):
+    if poi == 0:
+        return 0
+    elif poi in [1, 2, 3]:
+        return 0
+    elif poi == 4:
+        return 0
+    elif poi == 5:
+        return 0
+    elif poi == 6:
+        return 1
+    else:
+        return poi  # fallback if needed
 
 
 def load_content(data_dir: str) -> list:
@@ -70,43 +50,42 @@ def load_content(data_dir: str) -> list:
             ):
                 matched_poi_file = f.replace(".csv", "_poi.csv")
                 loaded_content.append(
-                    (os.path.join(data_root, f), os.path.join(data_root, matched_poi_file)))
+                    (os.path.join(data_root, f), os.path.join(
+                        data_root, matched_poi_file))
+                )
     return loaded_content
 
-# -----------------------------------------------------------------------------
-# Data Loading and Preprocessing:
-#  - Load sensor features from the main file.
-#  - Merge in the POI file (which contains categorical labels).
-#  - Factorize POI so they are integer codes.
-#  - Scale sensor features.
 
+def load_and_preprocess_data(data_dir: str):
+    """
+    Load sensor features and associated POI information from multiple files.
+    After merging and concatenating the data, ensure the POI column has exactly 7
+    unique values (0–6). The sensor features are scaled.
+    Additionally, correct any class imbalances by oversampling the minority classes.
+    Finally, reassign the 7 POI labels into 5 regions.
+    """
+    import random
+    from sklearn.preprocessing import MinMaxScaler
 
-def load_and_preprocess_data(data_dir):
+    # Load data from files.
     all_data = []
     content = load_content(data_dir)
-    num_samples = 10  # or use all available files
+    num_samples = DATA_TO_LOAD  # or process all files available
     sampled_content = random.sample(content, k=min(num_samples, len(content)))
 
     for file, poi_path in sampled_content:
         df = pd.read_csv(file)
         if not df.empty and all(col in df.columns for col in ["Relative_time", "Resonance_Frequency", "Dissipation"]):
             df = df[["Relative_time", "Resonance_Frequency", "Dissipation"]]
-            # Load POI data
-            poi_df = pd.read_csv(poi_path)
+            poi_df = pd.read_csv(poi_path, header=None)
             if "POI" in poi_df.columns:
                 df["POI"] = poi_df["POI"]
             else:
-                # If the POI file contains indices where POI changes, create a POI column.
+                # Start with 0 everywhere.
                 df["POI"] = 0
-                # assuming indices are stored here
-                change_indices = poi_df.iloc[:, 0].values
-                new_values = list(range(1, len(change_indices)+1))
-                last_index = 0
-                for idx, new_val in zip(sorted(change_indices), new_values):
-                    df.loc[last_index:idx, "POI"] = new_val
-                    last_index = idx + 1
-                df.loc[last_index:, "POI"] = new_values[-1]
-            # Convert POI to categorical integer codes (0, 1, 2, …)
+                change_indices = sorted(poi_df.iloc[:, 0].values)
+                for idx in change_indices:
+                    df.loc[idx:, "POI"] += 1
             df["POI"] = pd.Categorical(df["POI"]).codes
             all_data.append(df)
 
@@ -115,220 +94,299 @@ def load_and_preprocess_data(data_dir):
     else:
         raise ValueError("No valid data found in the specified directory.")
 
-    # Scale only the sensor features.
+    # --- Ensure exactly 7 unique POI values ---
+    unique_poi = sorted(combined_data["POI"].unique())
+    if len(unique_poi) != 7:
+        raise ValueError(
+            f"Expected 7 unique POI values in combined data, but found {len(unique_poi)}: {unique_poi}")
+
     scaler_features = MinMaxScaler()
     combined_data[["Relative_time", "Resonance_Frequency", "Dissipation"]] = scaler_features.fit_transform(
-        combined_data[["Relative_time", "Resonance_Frequency", "Dissipation"]])
+        combined_data[["Relative_time", "Resonance_Frequency", "Dissipation"]]
+    )
+    combined_data['POI'] = combined_data['POI'].apply(reassign_region)
+    # --- Correct Class Imbalances via Oversampling ---
+    class_counts = combined_data['POI'].value_counts()
+    max_count = class_counts.max()
+    balanced_dfs = []
+    for label, group in combined_data.groupby('POI'):
+        if len(group) < max_count:
+            group_balanced = group.sample(
+                max_count, replace=True, random_state=42)
+        else:
+            group_balanced = group
+        balanced_dfs.append(group_balanced)
+    combined_data_balanced = pd.concat(balanced_dfs).sort_values(
+        by='Relative_time').reset_index(drop=True)
 
-    print("[INFO] Combined data sample:")
-    print(combined_data.head())
+    print("[INFO] Combined balanced data sample:")
+    print(combined_data_balanced.head())
+    print("[INFO] Class distribution after balancing:")
+    print(combined_data_balanced['POI'].value_counts())
 
-    return combined_data, scaler_features
+    print("[INFO] Class distribution after reassigning regions:")
+    print(combined_data_balanced['POI'].value_counts())
 
-# -----------------------------------------------------------------------------
-# Create sequences from sensor features along with the next POI label as target.
-
-
-def create_sequences(features, target, sequence_length):
-    sequences = []
-    targets = []
-    for i in range(len(features) - sequence_length):
-        sequences.append(features[i:i + sequence_length])
-        targets.append(target[i + sequence_length])
-    # shape: (num_samples, sequence_length, num_features)
-    sequences = np.array(sequences)
-    targets = np.array(targets)      # shape: (num_samples,)
-    return sequences, targets
-
-# -----------------------------------------------------------------------------
-# Build the CNN-LSTM model for classification.
+    return combined_data_balanced, scaler_features
 
 
-def build_cnn_lstm_model(sequence_length, n_features, n_classes):
+def load_and_preprocess_single(data_file: str, poi_file: str):
+    """
+    Load sensor data from a given CSV file and merge in POI information
+    from the associated POI file. Then scale the sensor features and reassign
+    the POI values into 5 regions.
+    """
+    from sklearn.preprocessing import MinMaxScaler
+
+    df = pd.read_csv(data_file)
+    required_cols = ["Relative_time", "Resonance_Frequency", "Dissipation"]
+    if df.empty or not all(col in df.columns for col in required_cols):
+        raise ValueError(
+            "Data file is empty or missing required sensor columns.")
+
+    df = df[required_cols]
+    poi_df = pd.read_csv(poi_file, header=None)
+    if "POI" in poi_df.columns:
+        df["POI"] = poi_df["POI"]
+    else:
+        df["POI"] = 0
+        change_indices = sorted(poi_df.iloc[:, 0].values)
+        for idx in change_indices:
+            df.loc[idx:, "POI"] += 1
+
+    df["POI"] = pd.Categorical(df["POI"]).codes
+    unique_poi = sorted(df["POI"].unique())
+    if len(unique_poi) != 7:
+        raise ValueError(
+            f"Expected 7 unique POI values in file {data_file}, but found {len(unique_poi)}: {unique_poi}")
+
+    scaler = MinMaxScaler()
+    df[required_cols] = scaler.fit_transform(df[required_cols])
+    df["POI"] = df["POI"].apply(reassign_region)
+
+    print("[INFO] Preprocessed single-file data sample:")
+    print(df.head())
+    return df, scaler
+
+
+def extract_window_features(window_df):
+    """
+    Given a window (DataFrame) of sensor samples, extract a feature vector.
+    Here we simply flatten the three sensor channels.
+    """
+    features = window_df[[
+        "Relative_time", "Resonance_Frequency", "Dissipation"]].to_numpy().flatten()
+    return features
+
+
+def build_model(hp, input_shape, num_classes):
     model = Sequential()
-    # TimeDistributed CNN: input shape is (sequence_length, n_features, 1)
-    model.add(TimeDistributed(Conv1D(filters=64, kernel_size=1, activation='relu'),
-                              input_shape=(sequence_length, n_features, 1)))
-    model.add(TimeDistributed(MaxPooling1D(pool_size=1)))
-    model.add(TimeDistributed(Flatten()))
-    # LSTM layer
-    model.add(LSTM(50, activation='relu'))
-    # Final Dense layer with softmax activation for classification.
-    model.add(Dense(n_classes, activation='softmax'))
+    # --- Convolutional Block ---
+    model.add(Conv1D(
+        filters=hp.Int('conv_filters', min_value=32, max_value=128, step=32),
+        kernel_size=hp.Choice('kernel_size', values=[3, 5]),
+        activation='relu',
+        input_shape=input_shape))
+    model.add(BatchNormalization())
+    model.add(MaxPooling1D(pool_size=hp.Choice('pool_size', values=[2, 3])))
+    model.add(Dropout(rate=hp.Float('conv_dropout',
+              min_value=0.2, max_value=0.5, step=0.1)))
+    # --- LSTM Layer ---
+    model.add(LSTM(units=hp.Int('lstm_units', min_value=32,
+              max_value=128, step=32), return_sequences=False))
+    # --- Dense Layers ---
+    model.add(Dense(units=hp.Int('dense_units', min_value=50,
+              max_value=150, step=25), activation='relu'))
+    model.add(Dropout(rate=hp.Float('dense_dropout',
+              min_value=0.2, max_value=0.5, step=0.1)))
+    model.add(Dense(num_classes, activation='softmax'))
 
-    model.compile(optimizer=Adam(learning_rate=1e-3),
-                  loss='sparse_categorical_crossentropy',  # targets are integer-coded
-                  metrics=['accuracy'])
-    model.summary()
+    optimizer = Adam(learning_rate=hp.Choice(
+        'learning_rate', values=[1e-2, 1e-3, 1e-4]))
+    model.compile(optimizer=optimizer,
+                  loss='sparse_categorical_crossentropy', metrics=['accuracy'])
     return model
 
-# -----------------------------------------------------------------------------
-# Training pipeline.
 
+def train_with_tuning(combined_data, window_size=SLICE_SIZE, slice_size=SLICE_SIZE,
+                      max_trials=5, executions_per_trial=1, tuner_dir='tuner_dir'):
+    """
+    Instead of building sliding windows at every single sample, we now take
+    non-overlapping slices (of length 'slice_size') from the combined data.
+    Each slice (of length 'window_size') becomes one training sample.
+    """
+    feature_list = []
+    label_list = []
 
-# Training pipeline.
-def train_cnn_lstm_model(data_dir, sequence_length=30):
-    data, scaler_features = load_and_preprocess_data(data_dir)
-    features = data[["Relative_time",
-                     "Resonance_Frequency", "Dissipation"]].values
-    target = data["POI"].values
-    n_classes = len(np.unique(target))
+    # Use non-overlapping slices every 'slice_size' data points.
+    for start in range(0, len(combined_data) - window_size + 1, slice_size):
+        window = combined_data.iloc[start:start+window_size]
+        # Sensor features as a 2D array: shape (window_size, 3)
+        features = window[["Relative_time",
+                           "Resonance_Frequency", "Dissipation"]].to_numpy()
+        feature_list.append(features)
+        # Use the last point in the slice as the label.
+        label_list.append(window.iloc[-1]["POI"])
 
-    # Create sequences for training.
-    X, y = create_sequences(features, target, sequence_length)
-    # Reshape X to add a channel dimension: (samples, sequence_length, n_features, 1)
-    X = X.reshape((X.shape[0], X.shape[1], X.shape[2], 1))
+    X_train = np.array(feature_list)
+    y_train = np.array(label_list)
 
-    # Train-validation split.
-    X_train, X_val, y_train, y_val = train_test_split(
-        X, y, test_size=0.2, random_state=42)
+    input_shape = X_train.shape[1:]  # (window_size, 3)
+    num_classes = NUM_CLASSES
 
-    # Build the model.
-    model = build_cnn_lstm_model(
-        sequence_length, n_features=3, n_classes=n_classes)
-
-    # Set up callbacks: early stopping and our live training monitor.
-    early_stopping = tf.keras.callbacks.EarlyStopping(
-        monitor="val_loss", patience=5, restore_best_weights=True
+    # Define the tuner.
+    tuner = kt.RandomSearch(
+        hypermodel=lambda hp: build_model(hp, input_shape, num_classes),
+        objective='val_accuracy',
+        max_trials=max_trials,
+        executions_per_trial=executions_per_trial,
+        directory=tuner_dir,
+        project_name='cnn_lstm_tuning',
+        overwrite=OVERWRITE_HYPERPARAMS
     )
-    live_monitor = LiveTrainingMonitor()
 
-    history = model.fit(
-        X_train, y_train,
-        validation_data=(X_val, y_val),
-        epochs=10,  # Adjust epochs as needed.
-        batch_size=32,
-        callbacks=[early_stopping, live_monitor]
-    )
+    early_stopping = EarlyStopping(
+        monitor='val_loss', patience=5, restore_best_weights=True)
+    reduce_lr = ReduceLROnPlateau(
+        monitor='val_loss', factor=0.5, patience=3, min_lr=1e-6)
 
-    # Save model and scaler.
-    model.save("QModel/SavedModels/forecaster_cnn_lstm")
-    joblib.dump(scaler_features,
-                "QModel/SavedModels/forecaster_scaler_features.pkl")
-    # Also save the number of classes.
-    with open("QModel/SavedModels/n_classes.txt", "w") as f:
-        f.write(str(n_classes))
+    tuner.search(X_train, y_train,
+                 epochs=50,
+                 batch_size=64,
+                 validation_split=0.2,
+                 callbacks=[early_stopping, reduce_lr],
+                 verbose=1)
 
-    return model, scaler_features, n_classes
-# -----------------------------------------------------------------------------
-# Load saved model and associated scaler and number of classes.
+    best_model = tuner.get_best_models(num_models=1)[0]
+    best_hp = tuner.get_best_hyperparameters(num_trials=1)[0]
+    print("Best hyperparameters:")
+    print(best_hp.values)
 
-
-def load_saved_model(model_path, scaler_features_path, n_classes_path):
-    model = tf.keras.models.load_model(model_path)
-    scaler_features = joblib.load(scaler_features_path)
-    with open(n_classes_path, "r") as f:
-        n_classes = int(f.read())
-    return model, scaler_features, n_classes
-
-# -----------------------------------------------------------------------------
-# Prediction pipeline:
-# Given partial data (sensor features), predict the next POI class.
+    best_model.save(
+        'QModel/SavedModels/live_classifier_tf_tuned.h5', include_optimizer=False)
+    print("[INFO] Best TensorFlow CNN-LSTM model trained and saved to 'QModel/SavedModels/live_classifier_tf_tuned.h5'")
+    return best_model
 
 
-def predict_future_cnn_lstm(model, scaler_features, partial_data, sequence_length=30):
-    partial_data_scaled = scaler_features.transform(
-        partial_data[["Relative_time", "Resonance_Frequency", "Dissipation"]])
-    # shape: (sequence_length, 3)
-    sequence = partial_data_scaled[-sequence_length:]
-    sequence = sequence.reshape((1, sequence_length, 3, 1))
+def run_live_detection(model, combined_data: pd.DataFrame, window_size=SLICE_SIZE, slice_size=SLICE_SIZE, delay: float = 0.01):
+    """
+    Simulate live detection by processing the data in chunks (slices) of 'slice_size'
+    data points. For each slice (when at least 'window_size' rows are available),
+    we take the last 'window_size' rows and run a prediction.
+    The predictions and ground-truth are plotted as the simulation progresses.
+    """
+    import matplotlib.pyplot as plt
 
-    probabilities = model.predict(sequence)
-    predicted_class = np.argmax(probabilities, axis=-1)[0]
-    return predicted_class
+    # Prepare plotting elements.
+    plt.ion()
+    fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(12, 10))
+    line_diss, = ax1.plot([], [], label="Dissipation", color='blue')
+    ax1.set_ylabel("Dissipation")
+    ax1.legend()
+
+    predicted_prob_data = {i: [] for i in range(NUM_CLASSES)}
+    predicted_lines = []
+    colors = ['red', 'blue', 'green', 'orange', 'purple', 'brown', 'pink']
+    for i in range(NUM_CLASSES):
+        line, = ax2.plot(
+            [], [], label=f"Predicted Class {i}", marker='x', linestyle='--', color=colors[i])
+        predicted_lines.append(line)
+    ax2.set_ylabel("Predicted Probability")
+    ax2.legend(loc="upper left")
+
+    ax2_actual = ax2.twinx()
+    line_actual, = ax2_actual.plot(
+        [], [], label="Actual POI", marker='o', linestyle='-', color='green')
+    ax2_actual.set_ylabel("Actual POI")
+    ax2_actual.legend(loc="upper right")
+
+    # Lists for x-axis and data.
+    x_data = []
+    diss_data = []
+    actual_poi_data = []
+    # Initialize predicted probability lists.
+    for i in range(NUM_CLASSES):
+        predicted_prob_data[i] = []
+
+    print("[INFO] Starting live action detection simulation in slices...")
+
+    # Process the data in slices of 'slice_size' rows.
+    for slice_start in range(0, len(combined_data), slice_size):
+        data_slice = combined_data.iloc[slice_start: slice_start + slice_size]
+        # Update plotting lists for the entire slice.
+        for idx, row in data_slice.iterrows():
+            x_data.append(idx)
+            diss_data.append(row["Dissipation"])
+            actual_poi_data.append(row["POI"])
+        # If there are enough points, take the last 'window_size' rows for prediction.
+        if len(data_slice) >= window_size:
+            window_df = data_slice.iloc[-window_size:]
+            features = window_df[["Relative_time",
+                                  "Resonance_Frequency", "Dissipation"]].to_numpy()
+            # Shape: (1, window_size, 3)
+            features = np.expand_dims(features, axis=0)
+            preds = model.predict(features)
+            new_prediction = int(np.argmax(preds, axis=1)[0])
+            print(
+                f"[Live] Data slice ending at index {slice_start + slice_size - 1}: Predicted POI = {new_prediction}")
+
+            # For plotting, extend each predicted probability line by repeating the prediction value
+            for i_class in range(NUM_CLASSES):
+                predicted_prob_data[i_class].extend(
+                    [preds[0][i_class]] * len(data_slice))
+        else:
+            # Not enough data for prediction; extend with NaN.
+            for i_class in range(NUM_CLASSES):
+                predicted_prob_data[i_class].extend([np.nan] * len(data_slice))
+
+        # Update plot data.
+        line_diss.set_data(x_data, diss_data)
+        for i_class in range(NUM_CLASSES):
+            predicted_lines[i_class].set_data(
+                x_data, predicted_prob_data[i_class])
+        line_actual.set_data(x_data, actual_poi_data)
+        ax1.relim()
+        ax1.autoscale_view()
+        ax2.relim()
+        ax2.autoscale_view()
+        ax2_actual.relim()
+        ax2_actual.autoscale_view()
+        plt.draw()
+        plt.pause(delay)
+
+    plt.ioff()
+    plt.show()
 
 
-# -----------------------------------------------------------------------------
-# Main block.
-if __name__ == "__main__":
-    data_dir = 'content/training_data/full_fill'
+def main():
+    # Path to your training data directory.
+    data_dir = "content/training_data/full_fill"  # update with your data directory
+    model_save_path = 'QModel/SavedModels/live_classifier_tf_tuned.h5'
 
     if TRAINING:
-        model, scaler_features, n_classes = train_cnn_lstm_model(
-            data_dir, sequence_length=SEQUENCE_LEN)
+        # Load and preprocess training data.
+        combined_data, scaler = load_and_preprocess_data(data_dir)
+        # Train the classifier using data slices of 100 data points.
+        best_model = train_with_tuning(
+            combined_data, window_size=SLICE_SIZE, slice_size=SLICE_SIZE)
+        keras.models.save_model(best_model, model_save_path)
     else:
-        model, scaler_features, n_classes = load_saved_model(
-            r"QModel/SavedModels/forecaster_cnn_lstm",
-            r"QModel/SavedModels/forecaster_scaler_features.pkl",
-            r"QModel/SavedModels/n_classes.txt"
-        )
+        # Load the trained model.
+        best_model = keras.models.load_model(model_save_path)
+        print(f"[INFO] Loaded TensorFlow model from {model_save_path}")
 
-    # For live monitoring, load a full CSV file with sensor data and its corresponding POI file.
-    full_data = pd.read_csv(
-        r'C:\Users\paulm\dev\QATCH\QATCH-ML\content\training_data\00913\MM230816W6_DIAT20C_2_3rd.csv')
-    poi_path = r'C:\Users\paulm\dev\QATCH\QATCH-ML\content\training_data\00913\MM230816W6_DIAT20C_2_3rd_poi.csv'
-    poi_df = pd.read_csv(poi_path)
-    if "POI" in poi_df.columns:
-        full_data["POI"] = poi_df["POI"]
-    else:
-        full_data["POI"] = 0
-        change_indices = poi_df.iloc[:, 0].values
-        new_values = list(range(1, len(change_indices)+1))
-        last_index = 0
-        for idx, new_val in zip(sorted(change_indices), new_values):
-            full_data.loc[last_index:idx, "POI"] = new_val
-            last_index = idx + 1
-        full_data.loc[last_index:, "POI"] = new_values[-1]
-    # Factorize POI in the full data so that the labels match training.
-    full_data["POI"] = pd.Categorical(full_data["POI"]).codes
+    # For live detection, load a single test file.
+    data_file = r"content/test_data/00003/MM231106W5_A1_40P_3rd.csv"
+    poi_file = r"content/test_data/00003/MM231106W5_A1_40P_3rd_poi.csv"
+    df = pd.read_csv(data_file)
+    max_time = df['Relative_time'].max()
+    delay = max_time / len(df)
+    combined_data, scaler = load_and_preprocess_single(data_file, poi_file)
 
-    # Scale the sensor features in full_data.
-    full_data_scaled = full_data.copy()
-    full_data_scaled[["Relative_time", "Resonance_Frequency", "Dissipation"]] = scaler_features.transform(
-        full_data[["Relative_time", "Resonance_Frequency", "Dissipation"]])
+    # Run live detection on slices of data.
+    run_live_detection(best_model, combined_data,
+                       window_size=SLICE_SIZE, slice_size=SLICE_SIZE, delay=delay)
 
-    # Initialize live monitoring plot for predictions.
-    fig, ax = plt.subplots()
-    ax.set_xlim(0, len(full_data))
-    ax.set_ylim(-0.5, n_classes - 0.5)  # y-axis shows categorical indices
-    line_actual, = ax.plot([], [], label='Actual POI', color='blue')
-    line_predicted, = ax.plot(
-        [], [], label='Predicted POI', color='orange', linestyle='dashed')
-    ax.legend()
-    ax.set_title("Live Monitoring: Predicted vs Actual POI")
-    ax.set_xlabel("Time (index)")
-    ax.set_ylabel("POI Class")
 
-    x_data, y_actual, y_predicted = [], [], []
-
-    def update(frame):
-        if frame > SEQUENCE_LEN:
-            # Use all rows up to the current frame.
-            current_data = full_data_scaled.iloc[:frame]
-            predicted_poi = predict_future_cnn_lstm(
-                model, scaler_features, current_data, sequence_length=SEQUENCE_LEN)
-            actual_poi = full_data.iloc[frame]["POI"]
-
-            x_data.append(frame)
-            y_actual.append(actual_poi)
-            y_predicted.append(predicted_poi)
-
-            line_actual.set_data(x_data, y_actual)
-            line_predicted.set_data(x_data, y_predicted)
-
-            print(
-                f"Frame {frame}: Predicted POI = {predicted_poi}, Actual POI = {actual_poi}")
-        return line_actual, line_predicted
-
-    ani = FuncAnimation(fig, update, frames=range(
-        len(full_data)), blit=True, interval=50)
-    plt.show()
-
-    # Optionally, plot the full actual vs. predicted POI after the live demo.
-    all_predicted = []
-    for i in range(len(full_data)):
-        if i > SEQUENCE_LEN:
-            predicted = predict_future_cnn_lstm(
-                model, scaler_features, full_data_scaled.iloc[:i], sequence_length=SEQUENCE_LEN)
-            all_predicted.append(predicted)
-        else:
-            all_predicted.append(np.nan)
-
-    plt.figure()
-    plt.plot(full_data["POI"], color='grey', label="Actual POI")
-    plt.plot(all_predicted, color='black', label="Predicted POI")
-    plt.title("Forecasted POI vs Actual POI")
-    plt.xlabel("Time (index)")
-    plt.ylabel("POI Class")
-    plt.legend()
-    plt.show()
+if __name__ == "__main__":
+    main()

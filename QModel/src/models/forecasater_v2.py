@@ -1,32 +1,38 @@
 import keras_tuner as kt
 import keras
+from keras.models import Sequential
 from keras.layers import Conv1D, MaxPooling1D, BatchNormalization, Dropout, LSTM, Dense
 from keras.callbacks import EarlyStopping, ReduceLROnPlateau
 from keras.layers import Conv1D, MaxPooling1D, Dense, Dropout, BatchNormalization
 from keras.optimizers import Adam
 from collections import deque
-from keras.models import Sequential, Model
 import os
-import random
-
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-from tqdm import tqdm
-
-from sklearn.preprocessing import MinMaxScaler
-import os
-import random
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
-from sklearn.preprocessing import MinMaxScaler
 
 
-NUM_CLASSES = 5
+NUM_CLASSES = 2
+DATA_TO_LOAD = 100
+OVERWRITE_HYPERPARAMS = True
+TRAINING = False
 
-# Set this flag to True to train the model; otherwise the saved model is used.
-TRAINING = True
+# --- Reassign POI labels into 5 regions ---
+
+
+def reassign_region(poi):
+    if poi == 0:
+        return 0
+    elif poi in [1, 2, 3]:
+        return 0
+    elif poi == 4:
+        return 0
+    elif poi == 5:
+        return 1
+    elif poi == 6:
+        return 1
+    else:
+        return poi  # fallback if needed
 
 
 def load_content(data_dir: str) -> list:
@@ -72,7 +78,7 @@ def load_and_preprocess_data(data_dir: str):
     # Load data from files.
     all_data = []
     content = load_content(data_dir)
-    num_samples = 10  # or process all files available
+    num_samples = DATA_TO_LOAD  # or process all files available
     sampled_content = random.sample(content, k=min(num_samples, len(content)))
 
     for file, poi_path in sampled_content:
@@ -130,21 +136,6 @@ def load_and_preprocess_data(data_dir: str):
     print(combined_data_balanced.head())
     print("[INFO] Class distribution after balancing:")
     print(combined_data_balanced['POI'].value_counts())
-
-    # --- Reassign POI labels into 5 regions ---
-    def reassign_region(poi):
-        if poi == 0:
-            return 0
-        elif poi in [1, 2, 3]:
-            return 1
-        elif poi == 4:
-            return 2
-        elif poi == 5:
-            return 3
-        elif poi == 6:
-            return 4
-        else:
-            return poi  # fallback if needed
 
     combined_data['POI'] = combined_data['POI'].apply(
         reassign_region)
@@ -209,22 +200,6 @@ def load_and_preprocess_single(data_file: str, poi_file: str):
     # Scale only the sensor features.
     scaler = MinMaxScaler()
     df[required_cols] = scaler.fit_transform(df[required_cols])
-
-    # --- Reassign POI labels into 5 regions ---
-    def reassign_region(poi):
-        return poi
-        # if poi == 0:
-        #     return 0
-        # elif poi in [1, 2, 3]:
-        #     return 1
-        # elif poi == 4:
-        #     return 2
-        # elif poi == 5:
-        #     return 3
-        # elif poi == 6:
-        #     return 4
-        # else:
-        #     return poi  # fallback, though this should not occur
 
     df["POI"] = df["POI"].apply(reassign_region)
 
@@ -298,7 +273,7 @@ def train_with_tuning(combined_data, window_size=50, max_trials=10, executions_p
 
     # Define input shape and number of classes.
     input_shape = X_train.shape[1:]  # (window_size, 3)
-    num_classes = 5  # Assuming POI classes are 0 through 6.
+    num_classes = NUM_CLASSES  # Assuming POI classes are 0 through 6.
 
     # Define the tuner.
     tuner = kt.RandomSearch(
@@ -307,7 +282,8 @@ def train_with_tuning(combined_data, window_size=50, max_trials=10, executions_p
         max_trials=max_trials,
         executions_per_trial=executions_per_trial,
         directory=tuner_dir,
-        project_name='cnn_lstm_tuning'
+        project_name='cnn_lstm_tuning',
+        overwrite=OVERWRITE_HYPERPARAMS
     )
 
     # Define callbacks.
@@ -375,10 +351,10 @@ def run_live_detection(model, combined_data: pd.DataFrame, window_size: int = 50
     ax1.legend()
 
     # Bottom plot (ax2): predicted probabilities for each class.
-    predicted_prob_data = {i: [] for i in range(7)}
+    predicted_prob_data = {i: [] for i in range(NUM_CLASSES)}
     predicted_lines = []
     colors = ['red', 'blue', 'green', 'orange', 'purple', 'brown', 'pink']
-    for i in range(7):
+    for i in range(NUM_CLASSES):
         line, = ax2.plot([], [], label=f"Predicted Class {i}",
                          marker='x', linestyle='--', color=colors[i])
         predicted_lines.append(line)
@@ -422,7 +398,7 @@ def run_live_detection(model, combined_data: pd.DataFrame, window_size: int = 50
             features = np.expand_dims(features, axis=0)
             preds = model.predict(features)
             # Record all predicted probabilities.
-            for i in range(7):
+            for i in range(NUM_CLASSES):
                 predicted_prob_data[i].append(preds[0][i])
             # Check for change in the maximum probability (argmax).
             new_prediction = int(np.argmax(preds, axis=1)[0])
@@ -435,13 +411,13 @@ def run_live_detection(model, combined_data: pd.DataFrame, window_size: int = 50
                 previous_prediction = new_prediction
         else:
             # Buffer not full yet; append NaN for each class.
-            for i in range(7):
+            for i in range(NUM_CLASSES):
                 predicted_prob_data[i].append(np.nan)
 
         # Update the sensor dissipation line.
         line_diss.set_data(x_data, diss_data)
         # Update each predicted probability line.
-        for i in range(7):
+        for i in range(NUM_CLASSES):
             predicted_lines[i].set_data(x_data, predicted_prob_data[i])
         # Update the actual POI line.
         line_actual.set_data(x_data, actual_poi_data)
@@ -480,8 +456,8 @@ def main():
         print(f"[INFO] Loaded TensorFlow model from {model_save_path}")
 
     # Now load a single file for live detection simulation.
-    data_file = r"content/test_data/00002/DD240125W1_C8_60P_3rd.csv"
-    poi_file = r"content/test_data/00002/DD240125W1_C8_60P_3rd_poi.csv"
+    data_file = r"content/test_data/00003/MM231106W5_A1_40P_3rd.csv"
+    poi_file = r"content/test_data/00003/MM231106W5_A1_40P_3rd_poi.csv"
     df = pd.read_csv(data_file)
     max_time = df['Relative_time'].max()
     delay = max_time / len(df)
@@ -489,6 +465,46 @@ def main():
     combined_data, scaler = load_and_preprocess_single(data_file, poi_file)
 
     window_size = 50  # adjust based on the temporal resolution you need
+    # x_data = []
+    # diss_data = []
+    # data_buffer = deque(maxlen=window_size)
+    # previous_prediction = None
+    # current_prediction = None
+    # predicted_prob_data = {i: [] for i in range(NUM_CLASSES)}
+    # actual_poi_data = []
+    # for idx, row in combined_data.iterrows():
+    #     # Append the current sensor sample to the sliding window buffer.
+    #     sample = {
+    #         "Relative_time": row["Relative_time"],
+    #         "Resonance_Frequency": row["Resonance_Frequency"],
+    #         "Dissipation": row["Dissipation"]
+    #     }
+    #     data_buffer.append(sample)
+
+    #     # Update plotting lists.
+    #     x_data.append(idx)
+    #     diss_data.append(row["Dissipation"])
+    #     actual_poi_data.append(row["POI"])
+    #     if len(data_buffer) == window_size:
+    #         window_df = pd.DataFrame(list(data_buffer))
+    #         # For CNN-LSTM, keep the window as a 2D array with shape (window_size, num_features)
+    #         features = window_df[["Relative_time",
+    #                               "Resonance_Frequency", "Dissipation"]].to_numpy()
+    #         # Expand dims to have shape (1, window_size, 3)
+    #         features = np.expand_dims(features, axis=0)
+    #         preds = best_model.predict(features)
+    #         # Record all predicted probabilities.
+    #         for i in range(NUM_CLASSES):
+    #             predicted_prob_data[i].append(preds[0][i])
+    #         # Check for change in the maximum probability (argmax).
+    #         new_prediction = int(np.argmax(preds, axis=1)[0])
+    #         current_prediction = new_prediction
+    #         if previous_prediction is None:
+    #             previous_prediction = new_prediction
+    #         if new_prediction != previous_prediction:
+    #             print(
+    #                 f"[Live] At index {idx}: Action transition detected -> New POI: {new_prediction}")
+    #             previous_prediction = new_prediction
     # Run the live detection simulation.
     run_live_detection(best_model, combined_data,
                        window_size=window_size, delay=delay)
