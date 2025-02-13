@@ -1,40 +1,39 @@
-import keras_tuner as kt
-import keras
-from keras.models import Sequential
-from keras.layers import Conv1D, MaxPooling1D, BatchNormalization, Dropout, LSTM, Dense
-from keras.callbacks import EarlyStopping, ReduceLROnPlateau
-from keras.optimizers import Adam
-from collections import deque
+from hyperopt import fmin, tpe, hp, STATUS_OK, Trials
+import xgboost as xgb
 import os
-import pandas as pd
+import random
+import time
 import numpy as np
+import pandas as pd
 from tqdm import tqdm
+import matplotlib.pyplot as plt
+from q_constants import *
+from hyperopt.early_stop import no_progress_loss
 
-# Set constants
-NUM_CLASSES = 2  # Adjust as needed for your application
-DATA_TO_LOAD = 100
-OVERWRITE_HYPERPARAMS = True
-TRAINING = True
+# ---------------------------
+# Training Data Handling
+# ---------------------------
 
-# New constant for slice size (every 100 data points)
-SLICE_SIZE = 2
+DATA_TO_LOAD = 100  # adjust as needed
 
-# --- Reassign POI labels into 5 regions ---
+# For example, define a transition matrix that gives high probability to remaining in the same state,
+# and a small probability to moving to the next state.
+transition_matrix = None
 
 
-def reassign_region(poi):
-    if poi == 0:
-        return 0
-    elif poi in [1, 2, 3]:
-        return 0
-    elif poi == 4:
-        return 0
-    elif poi == 5:
-        return 0
-    elif poi == 6:
-        return 1
+def reassign_region(Fill):
+    if Fill == 0:
+        return 'no_fill'
+    elif Fill in [1, 2, 3]:
+        return 'init_fill'
+    elif Fill == 4:
+        return 'ch_1'
+    elif Fill == 5:
+        return 'ch_2'
+    elif Fill == 6:
+        return 'full_fill'
     else:
-        return poi  # fallback if needed
+        return Fill  # fallback if needed
 
 
 def load_content(data_dir: str) -> list:
@@ -58,35 +57,29 @@ def load_content(data_dir: str) -> list:
 
 def load_and_preprocess_data(data_dir: str):
     """
-    Load sensor features and associated POI information from multiple files.
-    After merging and concatenating the data, ensure the POI column has exactly 7
-    unique values (0–6). The sensor features are scaled.
-    Additionally, correct any class imbalances by oversampling the minority classes.
-    Finally, reassign the 7 POI labels into 5 regions.
+    Load sensor features and associated Fill information from multiple files.
+    After merging, the 7 Fill labels are reassigned into 5 regions,
+    and class imbalances are corrected via oversampling.
     """
-    import random
-    from sklearn.preprocessing import MinMaxScaler
-
-    # Load data from files.
     all_data = []
     content = load_content(data_dir)
-    num_samples = DATA_TO_LOAD  # or process all files available
+    num_samples = DATA_TO_LOAD
     sampled_content = random.sample(content, k=min(num_samples, len(content)))
 
     for file, poi_path in sampled_content:
         df = pd.read_csv(file)
         if not df.empty and all(col in df.columns for col in ["Relative_time", "Resonance_Frequency", "Dissipation"]):
             df = df[["Relative_time", "Resonance_Frequency", "Dissipation"]]
-            poi_df = pd.read_csv(poi_path, header=None)
-            if "POI" in poi_df.columns:
-                df["POI"] = poi_df["POI"]
+            Fill_df = pd.read_csv(poi_path, header=None)
+            if "Fill" in Fill_df.columns:
+                df["Fill"] = Fill_df["Fill"]
             else:
                 # Start with 0 everywhere.
-                df["POI"] = 0
-                change_indices = sorted(poi_df.iloc[:, 0].values)
+                df["Fill"] = 0
+                change_indices = sorted(Fill_df.iloc[:, 0].values)
                 for idx in change_indices:
-                    df.loc[idx:, "POI"] += 1
-            df["POI"] = pd.Categorical(df["POI"]).codes
+                    df.loc[idx:, "Fill"] += 1
+            df["Fill"] = pd.Categorical(df["Fill"]).codes
             all_data.append(df)
 
     if all_data:
@@ -94,22 +87,27 @@ def load_and_preprocess_data(data_dir: str):
     else:
         raise ValueError("No valid data found in the specified directory.")
 
-    # --- Ensure exactly 7 unique POI values ---
-    unique_poi = sorted(combined_data["POI"].unique())
-    if len(unique_poi) != 7:
+    # --- Ensure exactly 7 unique Fill values ---
+    unique_Fill = sorted(combined_data["Fill"].unique())
+    if len(unique_Fill) != 7:
         raise ValueError(
-            f"Expected 7 unique POI values in combined data, but found {len(unique_poi)}: {unique_poi}")
+            f"Expected 7 unique Fill values in combined data, but found {len(unique_Fill)}: {unique_Fill}")
 
-    scaler_features = MinMaxScaler()
-    combined_data[["Relative_time", "Resonance_Frequency", "Dissipation"]] = scaler_features.fit_transform(
-        combined_data[["Relative_time", "Resonance_Frequency", "Dissipation"]]
-    )
-    combined_data['POI'] = combined_data['POI'].apply(reassign_region)
+    # >>> Scaling step removed <<<
+
+     # After concatenating and sorting:
+    combined_data['Fill'] = combined_data['Fill'].apply(reassign_region)
+
+    # Map string labels to numeric values
+    mapping = {'no_fill': 0, 'init_fill': 1,
+               'ch_1': 2, 'ch_2': 3, 'full_fill': 4}
+    combined_data['Fill'] = combined_data['Fill'].map(mapping)
+
     # --- Correct Class Imbalances via Oversampling ---
-    class_counts = combined_data['POI'].value_counts()
+    class_counts = combined_data['Fill'].value_counts()
     max_count = class_counts.max()
     balanced_dfs = []
-    for label, group in combined_data.groupby('POI'):
+    for label, group in combined_data.groupby('Fill'):
         if len(group) < max_count:
             group_balanced = group.sample(
                 max_count, replace=True, random_state=42)
@@ -122,22 +120,294 @@ def load_and_preprocess_data(data_dir: str):
     print("[INFO] Combined balanced data sample:")
     print(combined_data_balanced.head())
     print("[INFO] Class distribution after balancing:")
-    print(combined_data_balanced['POI'].value_counts())
+    print(combined_data_balanced['Fill'].value_counts())
 
-    print("[INFO] Class distribution after reassigning regions:")
-    print(combined_data_balanced['POI'].value_counts())
+    return combined_data_balanced
 
-    return combined_data_balanced, scaler_features
+
+def tune_model_xgb(X, y):
+    """
+    Perform hyperparameter tuning using hyperopt to minimize mlogloss
+    via xgb.cv and then train the final booster.
+    """
+    dtrain = xgb.DMatrix(X, label=y)
+
+    def objective(params):
+        params_copy = params.copy()
+        params_copy.update({
+            "objective": "multi:softprob",
+            "num_class": 5,  # Add this line
+            "eval_metric": "mlogloss",
+            "eta": 0.175,
+            "max_depth": 5,
+            "min_child_weight": 4.0,
+            "subsample": 0.6,
+            "colsample_bytree": 0.75,
+            "gamma": 0.8,
+            "nthread": NUM_THREADS,
+            "booster": "gbtree",
+            "device": "cuda",
+            "tree_method": "auto",
+            "sampling_method": "gradient_based",
+            "seed": SEED,
+        })
+
+        cv_results = xgb.cv(
+            params_copy,
+            dtrain,
+            num_boost_round=1000,
+            nfold=3,
+            metrics='auc',
+            seed=42,
+            early_stopping_rounds=10,
+            verbose_eval=False
+        )
+        best_iteration = len(cv_results)
+        best_loss = cv_results['test-auc-mean'].max()
+        return {'loss': -best_loss, 'status': STATUS_OK, 'best_iteration': best_iteration, 'params': params_copy}
+
+    space = {
+        "max_depth": hp.choice("max_depth", np.arange(1, 20, 1, dtype=int)),
+        "eta": hp.uniform("eta", 0, 1),
+        "gamma": hp.uniform("gamma", 0, 10e1),
+        "reg_alpha": hp.uniform("reg_alpha", 10e-7, 10),
+        "reg_lambda": hp.uniform("reg_lambda", 0, 1),
+        "colsample_bytree": hp.uniform("colsample_bytree", 0.5, 1),
+        "colsample_bynode": hp.uniform("colsample_bynode", 0.5, 1),
+        "colsample_bylevel": hp.uniform("colsample_bylevel", 0.5, 1),
+        "min_child_weight": hp.choice(
+            "min_child_weight", np.arange(1, 10, 1, dtype="int")
+        ),
+        "max_delta_step": hp.choice(
+            "max_delta_step", np.arange(1, 10, 1, dtype="int")
+        ),
+        "subsample": hp.uniform("subsample", 0.5, 1),
+        "eval_metric": "auc",
+        "objective": "multi:softprob",
+        "nthread": NUM_THREADS,
+        "booster": "gbtree",
+        "device": "cuda",
+        "tree_method": "auto",
+        "sampling_method": "gradient_based",
+        "seed": SEED,
+    }
+
+    trials = Trials()
+    rng = np.random.default_rng(SEED)  # Use the new NumPy random generator
+
+    best_result = fmin(
+        fn=objective,
+        space=space,
+        algo=tpe.suggest,
+        max_evals=10,
+        trials=trials,
+        rstate=rng,
+        early_stop_fn=no_progress_loss(10, percent_increase=0.1),
+    )
+
+    best_trial = trials.best_trial['result']
+    best_params = best_trial['params']
+    best_num_round = best_trial['best_iteration']
+
+    print("Best hyperparameters found:", best_params)
+    print("Best cross-validation mlogloss:", best_trial['loss'])
+
+    final_model = xgb.train(best_params, dtrain,
+                            num_boost_round=best_num_round)
+    return final_model
+
+
+def train_model(training_data):
+    """
+    Train the XGBoost model using the learning API.
+    """
+    features = ["Relative_time", "Resonance_Frequency", "Dissipation"]
+    X = training_data[features]
+    y = training_data["Fill"]
+
+    # Use the custom tuning function to get a Booster model.
+    model = tune_model_xgb(X, y)
+    return model
+
+
+# ---------------------------
+# Live Monitor Plotting Function
+# ---------------------------
+
+
+def update_live_monitor(accumulated_data, predictions, axes, delay):
+    """
+    Update the live monitor plots:
+      - Left: Predicted vs Actual fill values (numeric).
+      - Right: Dissipation curve over the accumulated data.
+    """
+    # Now predictions and actual values are already numeric.
+    indices = np.arange(len(accumulated_data))
+
+    axes[0].cla()  # Clear previous plot
+    axes[0].plot(indices, accumulated_data["Fill"], label="Actual", color='blue', marker='o',
+                 linestyle='--', markersize=3)
+    axes[0].plot(indices, predictions, label="Predicted", color='red', marker='x',
+                 linestyle='-', markersize=3)
+    axes[0].set_title("Predicted vs Actual Fill")
+    axes[0].set_xlabel("Data Point Index")
+    axes[0].set_ylabel("Fill Category (numeric)")
+    axes[0].legend()
+    axes[0].set_ylim(-0.5, 4.5)
+
+    axes[1].cla()
+    axes[1].plot(indices, accumulated_data["Dissipation"],
+                 label="Dissipation", color='green')
+    axes[1].set_title("Dissipation Curve")
+    axes[1].set_xlabel("Data Point Index")
+    axes[1].set_ylabel("Dissipation")
+    axes[1].legend()
+
+    plt.pause(delay)
+
+
+def simulate_serial_stream_from_loaded(loaded_data, batch_size=100):
+    """
+    Simulate a serial stream by yielding successive batches from the loaded single data.
+    """
+    num_rows = len(loaded_data)
+    for start_idx in range(0, num_rows, batch_size):
+        yield loaded_data.iloc[start_idx:start_idx+batch_size]
+
+
+def viterbi_decode(prob_matrix, transition_matrix):
+    """
+    Decodes the most likely sequence of states given a probability matrix and a transition matrix.
+
+    prob_matrix: shape (T, N) -- probability for each of the N states for each time step T.
+    transition_matrix: shape (N, N) with allowed transitions.
+       For our case, only transitions from state i to i or i+1 are allowed.
+    """
+    T, N = prob_matrix.shape
+    dp = np.full((T, N), -np.inf)  # dynamic programming table (in log space)
+    backpointer = np.zeros((T, N), dtype=int)
+
+    # Initialization: assume the first sample is in state 0 (no_fill)
+    dp[0, 0] = np.log(prob_matrix[0, 0])
+
+    for t in range(1, T):
+        for j in range(N):
+            # Allowed transitions: for j==0, only state 0; otherwise, only from state j-1 and j.
+            if j == 0:
+                allowed_prev = [0]
+            else:
+                allowed_prev = [j - 1, j]
+
+            # Initialize best_score and best_state with the first candidate.
+            best_state = allowed_prev[0]
+            best_score = dp[t - 1, best_state] + \
+                np.log(transition_matrix[best_state, j])
+
+            for i in allowed_prev:
+                # Check if transition probability is positive to avoid log(0)
+                if transition_matrix[i, j] <= 0:
+                    continue
+                score = dp[t - 1, i] + np.log(transition_matrix[i, j])
+                if score > best_score:
+                    best_score = score
+                    best_state = i
+
+            dp[t, j] = np.log(prob_matrix[t, j]) + best_score
+            backpointer[t, j] = best_state
+
+    # Backtracking to retrieve the best state sequence.
+    best_path = np.zeros(T, dtype=int)
+    best_path[T - 1] = np.argmax(dp[T - 1])
+    for t in range(T - 2, -1, -1):
+        best_path[t] = backpointer[t + 1, best_path[t + 1]]
+
+    return best_path
+
+
+def live_prediction_loop_from_loaded_data(model, loaded_data, batch_size=100, delay=0.1):
+    """
+    Simulate live predictions by streaming data from the loaded data in batches.
+    This version uses the model's probability outputs and applies Viterbi decoding
+    to enforce the sequential constraints.
+    """
+    accumulated_data = pd.DataFrame(columns=loaded_data.columns)
+    predictions_history = []
+
+    # Setup live monitor figure with two subplots.
+    plt.ion()
+    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+
+    stream_generator = simulate_serial_stream_from_loaded(
+        loaded_data, batch_size=batch_size)
+    batch_num = 0
+    for batch in stream_generator:
+        batch_num += 1
+        print(
+            f"\n[INFO] Streaming batch {batch_num} with {len(batch)} data points...")
+        time.sleep(delay)  # Simulate delay between batches
+
+        # Accumulate data
+        accumulated_data = pd.concat(
+            [accumulated_data, batch], ignore_index=True)
+        features = ["Relative_time", "Resonance_Frequency", "Dissipation"]
+        X_live = accumulated_data[features]
+
+        # Instead of directly predicting the class, get the probability estimates.
+        f_names = model.feature_names
+        df = X_live[f_names]
+        d_data = xgb.DMatrix(df)
+        prob_matrix = model.predict(d_data)  # shape: (num_points, 5)
+        # Use Viterbi decoding to enforce that the state sequence only moves forward.
+        predicted_sequence = viterbi_decode(prob_matrix, transition_matrix)
+        predictions_history.append(predicted_sequence)
+
+        # Update live monitor plots.
+        update_live_monitor(accumulated_data, predicted_sequence, axes, delay)
+        print(
+            f"[INFO] Updated live monitor after batch {batch_num}. Total points: {len(accumulated_data)}")
+
+    plt.ioff()
+    plt.show()
+    return predictions_history
+
+
+def compute_dynamic_transition_matrix(training_data, num_states=5, smoothing=1e-6):
+    """
+    Compute the transition matrix from training data by counting transitions between states.
+
+    Parameters:
+      training_data : DataFrame
+          Your training data containing a 'Fill' column with state labels (0 to num_states-1).
+      num_states : int
+          The number of unique states.
+      smoothing : float
+          A small value added to counts to avoid zero probabilities (Laplace smoothing).
+
+    Returns:
+      transition_matrix : np.ndarray
+          A (num_states x num_states) transition probability matrix.
+    """
+    # Extract the state sequence from the 'Fill' column
+    states = training_data["Fill"].values
+    # Initialize the transition count matrix with smoothing
+    transition_counts = np.full((num_states, num_states), smoothing)
+
+    # Count transitions between consecutive states.
+    for i in range(len(states) - 1):
+        current_state = states[i]
+        next_state = states[i + 1]
+        # If you have domain constraints (e.g., only allow same state or move to next state),
+        # you can enforce that here. Otherwise, count all transitions.
+        if next_state == current_state or next_state == current_state + 1:
+            transition_counts[current_state, next_state] += 1
+
+    # Normalize each row so that the probabilities sum to 1.
+    transition_matrix = transition_counts / \
+        transition_counts.sum(axis=1, keepdims=True)
+    return transition_matrix
 
 
 def load_and_preprocess_single(data_file: str, poi_file: str):
-    """
-    Load sensor data from a given CSV file and merge in POI information
-    from the associated POI file. Then scale the sensor features and reassign
-    the POI values into 5 regions.
-    """
-    from sklearn.preprocessing import MinMaxScaler
-
     df = pd.read_csv(data_file)
     required_cols = ["Relative_time", "Resonance_Frequency", "Dissipation"]
     if df.empty or not all(col in df.columns for col in required_cols):
@@ -146,247 +416,60 @@ def load_and_preprocess_single(data_file: str, poi_file: str):
 
     df = df[required_cols]
     poi_df = pd.read_csv(poi_file, header=None)
-    if "POI" in poi_df.columns:
-        df["POI"] = poi_df["POI"]
+    if "Fill" in poi_df.columns:
+        df["Fill"] = poi_df["Fill"]
     else:
-        df["POI"] = 0
+        df["Fill"] = 0
         change_indices = sorted(poi_df.iloc[:, 0].values)
         for idx in change_indices:
-            df.loc[idx:, "POI"] += 1
+            df.loc[idx:, "Fill"] += 1
 
-    df["POI"] = pd.Categorical(df["POI"]).codes
-    unique_poi = sorted(df["POI"].unique())
-    if len(unique_poi) != 7:
-        raise ValueError(
-            f"Expected 7 unique POI values in file {data_file}, but found {len(unique_poi)}: {unique_poi}")
+    df["Fill"] = pd.Categorical(df["Fill"]).codes
 
-    scaler = MinMaxScaler()
-    df[required_cols] = scaler.fit_transform(df[required_cols])
-    df["POI"] = df["POI"].apply(reassign_region)
+    # Reassign regions
+    df["Fill"] = df["Fill"].apply(reassign_region)
+
+    # Map string labels to numeric values
+    mapping = {'no_fill': 0, 'init_fill': 1,
+               'ch_1': 2, 'ch_2': 3, 'full_fill': 4}
+    df["Fill"] = df["Fill"].map(mapping)
 
     print("[INFO] Preprocessed single-file data sample:")
     print(df.head())
-    return df, scaler
+    return df
 
-
-def extract_window_features(window_df):
-    """
-    Given a window (DataFrame) of sensor samples, extract a feature vector.
-    Here we simply flatten the three sensor channels.
-    """
-    features = window_df[[
-        "Relative_time", "Resonance_Frequency", "Dissipation"]].to_numpy().flatten()
-    return features
-
-
-def build_model(hp, input_shape, num_classes):
-    model = Sequential()
-    # --- Convolutional Block ---
-    model.add(Conv1D(
-        filters=hp.Int('conv_filters', min_value=32, max_value=128, step=32),
-        kernel_size=hp.Choice('kernel_size', values=[3, 5]),
-        activation='relu',
-        input_shape=input_shape))
-    model.add(BatchNormalization())
-    model.add(MaxPooling1D(pool_size=hp.Choice('pool_size', values=[2, 3])))
-    model.add(Dropout(rate=hp.Float('conv_dropout',
-              min_value=0.2, max_value=0.5, step=0.1)))
-    # --- LSTM Layer ---
-    model.add(LSTM(units=hp.Int('lstm_units', min_value=32,
-              max_value=128, step=32), return_sequences=False))
-    # --- Dense Layers ---
-    model.add(Dense(units=hp.Int('dense_units', min_value=50,
-              max_value=150, step=25), activation='relu'))
-    model.add(Dropout(rate=hp.Float('dense_dropout',
-              min_value=0.2, max_value=0.5, step=0.1)))
-    model.add(Dense(num_classes, activation='softmax'))
-
-    optimizer = Adam(learning_rate=hp.Choice(
-        'learning_rate', values=[1e-2, 1e-3, 1e-4]))
-    model.compile(optimizer=optimizer,
-                  loss='sparse_categorical_crossentropy', metrics=['accuracy'])
-    return model
-
-
-def train_with_tuning(combined_data, window_size=SLICE_SIZE, slice_size=SLICE_SIZE,
-                      max_trials=5, executions_per_trial=1, tuner_dir='tuner_dir'):
-    """
-    Instead of building sliding windows at every single sample, we now take
-    non-overlapping slices (of length 'slice_size') from the combined data.
-    Each slice (of length 'window_size') becomes one training sample.
-    """
-    feature_list = []
-    label_list = []
-
-    # Use non-overlapping slices every 'slice_size' data points.
-    for start in range(0, len(combined_data) - window_size + 1, slice_size):
-        window = combined_data.iloc[start:start+window_size]
-        # Sensor features as a 2D array: shape (window_size, 3)
-        features = window[["Relative_time",
-                           "Resonance_Frequency", "Dissipation"]].to_numpy()
-        feature_list.append(features)
-        # Use the last point in the slice as the label.
-        label_list.append(window.iloc[-1]["POI"])
-
-    X_train = np.array(feature_list)
-    y_train = np.array(label_list)
-
-    input_shape = X_train.shape[1:]  # (window_size, 3)
-    num_classes = NUM_CLASSES
-
-    # Define the tuner.
-    tuner = kt.RandomSearch(
-        hypermodel=lambda hp: build_model(hp, input_shape, num_classes),
-        objective='val_accuracy',
-        max_trials=max_trials,
-        executions_per_trial=executions_per_trial,
-        directory=tuner_dir,
-        project_name='cnn_lstm_tuning',
-        overwrite=OVERWRITE_HYPERPARAMS
-    )
-
-    early_stopping = EarlyStopping(
-        monitor='val_loss', patience=5, restore_best_weights=True)
-    reduce_lr = ReduceLROnPlateau(
-        monitor='val_loss', factor=0.5, patience=3, min_lr=1e-6)
-
-    tuner.search(X_train, y_train,
-                 epochs=50,
-                 batch_size=64,
-                 validation_split=0.2,
-                 callbacks=[early_stopping, reduce_lr],
-                 verbose=1)
-
-    best_model = tuner.get_best_models(num_models=1)[0]
-    best_hp = tuner.get_best_hyperparameters(num_trials=1)[0]
-    print("Best hyperparameters:")
-    print(best_hp.values)
-
-    best_model.save(
-        'QModel/SavedModels/live_classifier_tf_tuned.h5', include_optimizer=False)
-    print("[INFO] Best TensorFlow CNN-LSTM model trained and saved to 'QModel/SavedModels/live_classifier_tf_tuned.h5'")
-    return best_model
-
-
-def run_live_detection(model, combined_data: pd.DataFrame, window_size=SLICE_SIZE, slice_size=SLICE_SIZE, delay: float = 0.01):
-    """
-    Simulate live detection by processing the data in chunks (slices) of 'slice_size'
-    data points. For each slice (when at least 'window_size' rows are available),
-    we take the last 'window_size' rows and run a prediction.
-    The predictions and ground-truth are plotted as the simulation progresses.
-    """
-    import matplotlib.pyplot as plt
-
-    # Prepare plotting elements.
-    plt.ion()
-    fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(12, 10))
-    line_diss, = ax1.plot([], [], label="Dissipation", color='blue')
-    ax1.set_ylabel("Dissipation")
-    ax1.legend()
-
-    predicted_prob_data = {i: [] for i in range(NUM_CLASSES)}
-    predicted_lines = []
-    colors = ['red', 'blue', 'green', 'orange', 'purple', 'brown', 'pink']
-    for i in range(NUM_CLASSES):
-        line, = ax2.plot(
-            [], [], label=f"Predicted Class {i}", marker='x', linestyle='--', color=colors[i])
-        predicted_lines.append(line)
-    ax2.set_ylabel("Predicted Probability")
-    ax2.legend(loc="upper left")
-
-    ax2_actual = ax2.twinx()
-    line_actual, = ax2_actual.plot(
-        [], [], label="Actual POI", marker='o', linestyle='-', color='green')
-    ax2_actual.set_ylabel("Actual POI")
-    ax2_actual.legend(loc="upper right")
-
-    # Lists for x-axis and data.
-    x_data = []
-    diss_data = []
-    actual_poi_data = []
-    # Initialize predicted probability lists.
-    for i in range(NUM_CLASSES):
-        predicted_prob_data[i] = []
-
-    print("[INFO] Starting live action detection simulation in slices...")
-
-    # Process the data in slices of 'slice_size' rows.
-    for slice_start in range(0, len(combined_data), slice_size):
-        data_slice = combined_data.iloc[slice_start: slice_start + slice_size]
-        # Update plotting lists for the entire slice.
-        for idx, row in data_slice.iterrows():
-            x_data.append(idx)
-            diss_data.append(row["Dissipation"])
-            actual_poi_data.append(row["POI"])
-        # If there are enough points, take the last 'window_size' rows for prediction.
-        if len(data_slice) >= window_size:
-            window_df = data_slice.iloc[-window_size:]
-            features = window_df[["Relative_time",
-                                  "Resonance_Frequency", "Dissipation"]].to_numpy()
-            # Shape: (1, window_size, 3)
-            features = np.expand_dims(features, axis=0)
-            preds = model.predict(features)
-            new_prediction = int(np.argmax(preds, axis=1)[0])
-            print(
-                f"[Live] Data slice ending at index {slice_start + slice_size - 1}: Predicted POI = {new_prediction}")
-
-            # For plotting, extend each predicted probability line by repeating the prediction value
-            for i_class in range(NUM_CLASSES):
-                predicted_prob_data[i_class].extend(
-                    [preds[0][i_class]] * len(data_slice))
-        else:
-            # Not enough data for prediction; extend with NaN.
-            for i_class in range(NUM_CLASSES):
-                predicted_prob_data[i_class].extend([np.nan] * len(data_slice))
-
-        # Update plot data.
-        line_diss.set_data(x_data, diss_data)
-        for i_class in range(NUM_CLASSES):
-            predicted_lines[i_class].set_data(
-                x_data, predicted_prob_data[i_class])
-        line_actual.set_data(x_data, actual_poi_data)
-        ax1.relim()
-        ax1.autoscale_view()
-        ax2.relim()
-        ax2.autoscale_view()
-        ax2_actual.relim()
-        ax2_actual.autoscale_view()
-        plt.draw()
-        plt.pause(delay)
-
-    plt.ioff()
-    plt.show()
-
-
-def main():
-    # Path to your training data directory.
-    data_dir = "content/training_data/full_fill"  # update with your data directory
-    model_save_path = 'QModel/SavedModels/live_classifier_tf_tuned.h5'
-
-    if TRAINING:
-        # Load and preprocess training data.
-        combined_data, scaler = load_and_preprocess_data(data_dir)
-        # Train the classifier using data slices of 100 data points.
-        best_model = train_with_tuning(
-            combined_data, window_size=SLICE_SIZE, slice_size=SLICE_SIZE)
-        keras.models.save_model(best_model, model_save_path)
-    else:
-        # Load the trained model.
-        best_model = keras.models.load_model(model_save_path)
-        print(f"[INFO] Loaded TensorFlow model from {model_save_path}")
-
-    # For live detection, load a single test file.
-    data_file = r"content/test_data/00003/MM231106W5_A1_40P_3rd.csv"
-    poi_file = r"content/test_data/00003/MM231106W5_A1_40P_3rd_poi.csv"
-    df = pd.read_csv(data_file)
-    max_time = df['Relative_time'].max()
-    delay = max_time / len(df)
-    combined_data, scaler = load_and_preprocess_single(data_file, poi_file)
-
-    # Run live detection on slices of data.
-    run_live_detection(best_model, combined_data,
-                       window_size=SLICE_SIZE, slice_size=SLICE_SIZE, delay=delay)
+# ---------------------------
+# Main Execution
+# ---------------------------
 
 
 if __name__ == "__main__":
-    main()
+    save_path = r"QModel\SavedModels\xgb_forecaster.json"
+    test_dir = r"content\training_data\channel_1"
+    # 1. Load and preprocess training data from multiple files:
+    data_dir = "content/training_data/full_fill"  # <<< Update this path as needed
+    training_data = load_and_preprocess_data(data_dir)
+    transition_matrix = compute_dynamic_transition_matrix(training_data)
+    if TRAINING:
+        # 2. Train the classifier on the balanced training data using XGBoost
+        model = train_model(training_data)
+        print("[INFO] Model training complete.\n")
+        model.save_model(save_path)
+    if TESTING:
+        model = xgb.Booster()
+        model.load_model(save_path)
+        # 3. Load a single run from test CSV files instead of using mock data.
+        test_content = load_content(test_dir)
+        for data_file, poi_file in test_content:
+            df_test = pd.read_csv(data_file)
+            delay = df_test['Relative_time'].max(
+            ) / len(df_test["Relative_time"].values)
+            loaded_data = load_and_preprocess_single(data_file, poi_file)
+            print(
+                f"[INFO] Loaded single run data with {len(loaded_data)} data points.\n")
+
+            # 4. Simulate live predictions by streaming the loaded data in batches:
+            predictions_history = live_prediction_loop_from_loaded_data(
+                model, loaded_data, batch_size=100, delay=delay/2)
+
+            print("\n[INFO] Live prediction simulation complete.")
