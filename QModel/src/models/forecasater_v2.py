@@ -175,9 +175,6 @@ def load_and_preprocess_single(data_file: str, poi_file: str):
             "Data file is empty or missing required sensor columns.")
 
     df = df[required_cols]
-    # Apply downsampling based on time delta before further processing.
-    df = downsample_before_time_delta(df, factor=20, threshold=0.032)
-
     poi_df = pd.read_csv(poi_file, header=None)
     if "Fill" in poi_df.columns:
         df["Fill"] = poi_df["Fill"]
@@ -496,7 +493,7 @@ def compute_dynamic_transition_matrix(training_data, num_states=5, smoothing=1e-
 
 if __name__ == "__main__":
     save_path = r"QModel\SavedModels\xgb_forecaster.json"
-    test_dir = r"content\training_data\channel_1"
+    test_dir = r"content\test_data"
     # 1. Load and preprocess training data from multiple files:
     data_dir = "content/training_data/full_fill"  # <<< Update this path as needed
     training_data = load_and_preprocess_data(data_dir)

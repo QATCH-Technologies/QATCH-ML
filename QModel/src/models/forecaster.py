@@ -9,12 +9,54 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 from q_constants import *
 from hyperopt.early_stop import no_progress_loss
+from scipy.signal import savgol_filter
+
+# ---------------------------
+# Helper: Smoothing Function
+# ---------------------------
+
+
+def apply_smoothing(df, smoothing=0.01):
+    """
+    Applies Savitzky–Golay smoothing to the 'Resonance_Frequency' and 'Dissipation' columns.
+
+    Parameters:
+        df (pd.DataFrame): DataFrame containing the data.
+        smoothing (float): Proportion of the data length to use as the window length.
+                           For example, 0.01 corresponds to 1% of the data length.
+
+    Returns:
+        pd.DataFrame: DataFrame with smoothed columns.
+    """
+    for col in ["Resonance_Frequency", "Dissipation"]:
+        data = df[col].values
+        n_points = len(data)
+
+        # Calculate window_length as 1% of data length; ensure at least 5 points.
+        window_length = max(5, int(n_points * smoothing))
+
+        # Window length must be odd for savgol_filter.
+        if window_length % 2 == 0:
+            window_length += 1
+
+        # Set the polynomial order (must be less than window_length).
+        polyorder = 2
+        if window_length <= polyorder:
+            window_length = polyorder + 2
+            if window_length % 2 == 0:
+                window_length += 1
+
+        df[col] = savgol_filter(
+            data, window_length=window_length, polyorder=polyorder)
+
+    return df
 
 # ---------------------------
 # Training Data Handling
 # ---------------------------
 
-DATA_TO_LOAD = 100  # adjust as needed
+
+DATA_TO_LOAD = np.inf  # adjust as needed
 
 # For example, define a transition matrix that gives high probability to remaining in the same state,
 # and a small probability to moving to the next state.
@@ -70,6 +112,10 @@ def load_and_preprocess_data(data_dir: str):
         df = pd.read_csv(file)
         if not df.empty and all(col in df.columns for col in ["Relative_time", "Resonance_Frequency", "Dissipation"]):
             df = df[["Relative_time", "Resonance_Frequency", "Dissipation"]]
+
+            # --- Apply smoothing ---
+            df = apply_smoothing(df, smoothing=0.01)
+
             Fill_df = pd.read_csv(poi_path, header=None)
             if "Fill" in Fill_df.columns:
                 df["Fill"] = Fill_df["Fill"]
@@ -95,7 +141,7 @@ def load_and_preprocess_data(data_dir: str):
 
     # >>> Scaling step removed <<<
 
-     # After concatenating and sorting:
+    # After concatenating and sorting:
     combined_data['Fill'] = combined_data['Fill'].apply(reassign_region)
 
     # Map string labels to numeric values
@@ -234,7 +280,6 @@ def train_model(training_data):
 # Live Monitor Plotting Function
 # ---------------------------
 
-
 def update_live_monitor(accumulated_data, predictions, axes, delay):
     """
     Update the live monitor plots:
@@ -328,7 +373,8 @@ def live_prediction_loop_from_loaded_data(model, loaded_data, batch_size=100, de
     """
     Simulate live predictions by streaming data from the loaded data in batches.
     This version uses the model's probability outputs and applies Viterbi decoding
-    to enforce the sequential constraints.
+    to enforce sequential constraints. Smoothing is applied on the accumulated data
+    using a Savitzky–Golay filter with a window length of 1% of the available data.
     """
     accumulated_data = pd.DataFrame(columns=loaded_data.columns)
     predictions_history = []
@@ -349,15 +395,33 @@ def live_prediction_loop_from_loaded_data(model, loaded_data, batch_size=100, de
         # Accumulate data
         accumulated_data = pd.concat(
             [accumulated_data, batch], ignore_index=True)
+
+        # Apply Savitzky–Golay smoothing to the sensor columns on the accumulated data
+        for col in ["Resonance_Frequency", "Dissipation"]:
+            data = accumulated_data[col].values
+            n = len(data)
+            # Calculate window length as 1% of the available data length (at least 3)
+            window_length = int(np.ceil(0.01 * n))
+            window_length = max(window_length, 3)
+            # Ensure the window length is odd
+            if window_length % 2 == 0:
+                window_length += 1
+            # Ensure window length does not exceed the number of data points
+            if window_length > n:
+                window_length = n if n % 2 == 1 else n - 1
+            accumulated_data[col] = savgol_filter(
+                data, window_length=window_length, polyorder=2)
+
         features = ["Relative_time", "Resonance_Frequency", "Dissipation"]
         X_live = accumulated_data[features]
 
-        # Instead of directly predicting the class, get the probability estimates.
+        # Get probability estimates from the model
         f_names = model.feature_names
         df = X_live[f_names]
         d_data = xgb.DMatrix(df)
         prob_matrix = model.predict(d_data)  # shape: (num_points, 5)
-        # Use Viterbi decoding to enforce that the state sequence only moves forward.
+
+        # Apply Viterbi decoding to enforce sequential constraints.
         predicted_sequence = viterbi_decode(prob_matrix, transition_matrix)
         predictions_history.append(predicted_sequence)
 
@@ -415,6 +479,7 @@ def load_and_preprocess_single(data_file: str, poi_file: str):
             "Data file is empty or missing required sensor columns.")
 
     df = df[required_cols]
+
     poi_df = pd.read_csv(poi_file, header=None)
     if "Fill" in poi_df.columns:
         df["Fill"] = poi_df["Fill"]
@@ -445,7 +510,7 @@ def load_and_preprocess_single(data_file: str, poi_file: str):
 
 if __name__ == "__main__":
     save_path = r"QModel\SavedModels\xgb_forecaster.json"
-    test_dir = r"content\training_data\channel_1"
+    test_dir = r"content\test_data"
     # 1. Load and preprocess training data from multiple files:
     data_dir = "content/training_data/full_fill"  # <<< Update this path as needed
     training_data = load_and_preprocess_data(data_dir)
