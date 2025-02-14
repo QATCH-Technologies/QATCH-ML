@@ -245,10 +245,10 @@ def tune_model_xgb(X, y):
         fn=objective,
         space=space,
         algo=tpe.suggest,
-        max_evals=10,
+        max_evals=50,
         trials=trials,
         rstate=rng,
-        early_stop_fn=no_progress_loss(10, percent_increase=0.1),
+        early_stop_fn=no_progress_loss(10),
     )
 
     best_trial = trials.best_trial['result']
