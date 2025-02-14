@@ -399,6 +399,165 @@ class XGBForecaster:
         for t in range(T - 2, -1, -1):
             best_path[t] = backpointer[t + 1, best_path[t + 1]]
         return best_path
+    import numpy as np
+
+    @staticmethod
+    def greedy_decode(prob_matrix: np.ndarray,
+                      transition_matrix: np.ndarray,
+                      smooth_window: int = 3,
+                      initial_state: int = None) -> np.ndarray:
+        """
+        Applies Greedy decoding with an optional initial state.
+        Allowed transitions: from state i, the next state can be i or i+1.
+        """
+        # Optionally smooth the probabilities.
+        if smooth_window > 1:
+            prob_matrix = uniform_filter1d(
+                prob_matrix, size=smooth_window, axis=0, mode='nearest')
+
+        T, N = prob_matrix.shape
+        best_path = np.zeros(T, dtype=int)
+
+        # Initialize the first state.
+        if initial_state is not None:
+            # Pick the best state at time 0 using the provided initial state's transitions.
+            first_scores = np.log(prob_matrix[0]) + \
+                np.log(transition_matrix[initial_state])
+            best_path[0] = int(np.argmax(first_scores))
+        else:
+            best_path[0] = 0  # default starting state
+
+        # Greedily choose the next state.
+        for t in range(1, T):
+            current_state = best_path[t - 1]
+            # Allowed next states: stay in the current state or advance by one (if possible).
+            allowed_next = [current_state]
+            if current_state + 1 < N:
+                allowed_next.append(current_state + 1)
+
+            best_score = -np.inf
+            best_next = current_state
+            for j in allowed_next:
+                if transition_matrix[current_state, j] <= 0:
+                    continue
+                score = np.log(prob_matrix[t, j]) + \
+                    np.log(transition_matrix[current_state, j])
+                if score > best_score:
+                    best_score = score
+                    best_next = j
+            best_path[t] = best_next
+
+        return best_path
+
+    @staticmethod
+    def beam_search_decode(prob_matrix: np.ndarray,
+                           transition_matrix: np.ndarray,
+                           beam_width: int = 3,
+                           smooth_window: int = 3,
+                           initial_state: int = None) -> np.ndarray:
+        """
+        Applies Beam Search decoding with an optional initial state.
+        Allowed transitions: from state i, next state can be i or i+1.
+        """
+        if smooth_window > 1:
+            prob_matrix = uniform_filter1d(
+                prob_matrix, size=smooth_window, axis=0, mode='nearest')
+
+        T, N = prob_matrix.shape
+        beams = []  # Each beam is a tuple (score, path)
+
+        # Initialize beams.
+        if initial_state is not None:
+            initial_beams = []
+            for j in range(N):
+                score = np.log(prob_matrix[0, j]) + \
+                    np.log(transition_matrix[initial_state, j])
+                initial_beams.append((score, [j]))
+            beams = sorted(initial_beams, key=lambda x: x[0], reverse=True)[
+                :beam_width]
+        else:
+            beams = [(np.log(prob_matrix[0, 0]), [0])]
+
+        # Process each time step.
+        for t in range(1, T):
+            new_beams = []
+            for score, path in beams:
+                current_state = path[-1]
+                # Allowed transitions: current_state or current_state+1 (if within bounds).
+                allowed_next = [current_state]
+                if current_state + 1 < N:
+                    allowed_next.append(current_state + 1)
+                for j in allowed_next:
+                    if transition_matrix[current_state, j] <= 0:
+                        continue
+                    new_score = score + \
+                        np.log(transition_matrix[current_state, j]
+                               ) + np.log(prob_matrix[t, j])
+                    new_path = path + [j]
+                    new_beams.append((new_score, new_path))
+            # Keep only the top beam_width paths.
+            beams = sorted(new_beams, key=lambda x: x[0], reverse=True)[
+                :beam_width]
+
+        # Return the best beam’s path.
+        best_path = max(beams, key=lambda x: x[0])[1]
+        return np.array(best_path)
+
+    @staticmethod
+    def posterior_decode(prob_matrix: np.ndarray,
+                         transition_matrix: np.ndarray,
+                         smooth_window: int = 3,
+                         initial_state: int = None) -> np.ndarray:
+        """
+        Applies Posterior decoding using the forward-backward algorithm.
+        Allowed transitions (for the forward/backward passes):
+        - For time t, state j: if j==0, allowed previous state is [0];
+            else, allowed previous states are [j-1, j].
+        - In the backward pass, from state j the allowed next states are:
+            [j] (and [j+1] if j+1 exists).
+        """
+        if smooth_window > 1:
+            prob_matrix = uniform_filter1d(
+                prob_matrix, size=smooth_window, axis=0, mode='nearest')
+        T, N = prob_matrix.shape
+
+        # Forward pass.
+        alpha = np.zeros((T, N))
+        if initial_state is not None:
+            for j in range(N):
+                alpha[0, j] = prob_matrix[0, j] * \
+                    transition_matrix[initial_state, j]
+        else:
+            alpha[0, 0] = prob_matrix[0, 0]
+            alpha[0, 1:] = 0.0
+
+        for t in range(1, T):
+            for j in range(N):
+                allowed_prev = [0] if j == 0 else [j - 1, j]
+                sum_val = 0.0
+                for i in allowed_prev:
+                    sum_val += alpha[t - 1, i] * transition_matrix[i, j]
+                alpha[t, j] = prob_matrix[t, j] * sum_val
+
+        # Backward pass.
+        beta = np.zeros((T, N))
+        beta[T - 1, :] = 1.0
+        for t in range(T - 2, -1, -1):
+            for j in range(N):
+                # Allowed next states: from state j, if j < N-1 then allowed are [j, j+1]; else [j].
+                allowed_next = [j] if j == N - 1 else [j, j + 1]
+                sum_val = 0.0
+                for k in allowed_next:
+                    sum_val += transition_matrix[j, k] * \
+                        prob_matrix[t + 1, k] * beta[t + 1, k]
+                beta[t, j] = sum_val
+
+        # Compute posterior marginals and select the state with maximum probability at each time step.
+        best_path = np.zeros(T, dtype=int)
+        for t in range(T):
+            gamma = alpha[t, :] * beta[t, :]
+            best_path[t] = int(np.argmax(gamma))
+        return best_path
 
     @staticmethod
     def simulate_stream(loaded_data: pd.DataFrame, batch_size: int = 200):
@@ -468,7 +627,7 @@ class XGBForecaster:
                 if window_length > n:
                     window_length = n if n % 2 == 1 else n - 1
                 batch[col] = savgol_filter(
-                    data, window_length=window_length, polyorder=2)
+                    data, window_length=window_length, polyorder=1)
 
             features = ["Relative_time", "Resonance_Frequency", "Dissipation"]
             X_live_batch = batch[features]
@@ -476,12 +635,20 @@ class XGBForecaster:
                 X_live_batch)  # shape: (batch_size, 5)
 
             # Decode the new batch using the last predicted state as initial condition.
-            predicted_batch = self.viterbi_decode(
-                prob_matrix_batch,
-                transition_matrix,
-                smooth_window=5,   # adjust as needed
-                initial_state=last_state
-            )
+            # predicted_batch = self.viterbi_decode(
+            #     prob_matrix_batch,
+            #     transition_matrix,
+            #     smooth_window=5,   # adjust as needed
+            #     initial_state=last_state
+            # )
+            # predicted_batch = self.greedy_decode(prob_matrix_batch,
+            #                                      transition_matrix,
+            #                                      smooth_window=5,   # adjust as needed
+            #                                      initial_state=last_state)
+            predicted_batch = self.posterior_decode(prob_matrix_batch,
+                                                    transition_matrix,
+                                                    smooth_window=5,   # adjust as needed
+                                                    initial_state=last_state)
             # Update last_state for next batch
             last_state = predicted_batch[-1]
             # Append new predictions to full list
