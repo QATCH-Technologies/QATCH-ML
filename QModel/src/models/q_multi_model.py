@@ -571,7 +571,7 @@ class QPredictor:
 
         return regions
 
-    def adjustment_poi_1(self, initial_guess, dissipation_data):
+    def adjustment_poi_1(self, initial_guess, dissipation_data, md_guess):
         """Adjusts the point of interest (POI) based on the nearest zero-slope region or peak.
 
         This method refines the initial guess of the point of interest by finding
@@ -621,7 +621,12 @@ class QPredictor:
             nearest_peak = all_peaks[np.argmin(distances_to_peaks)]
             adjusted_guess = nearest_peak
 
-        return adjusted_guess
+        if md_guess is not None:
+            # Define the maximum allowable deviation (adjust as needed)
+            MAX_DEVIATION = 50
+            if abs(adjusted_guess - md_guess) > MAX_DEVIATION:
+                adjusted_guess = md_guess
+            return adjusted_guess
 
     def adjustment_poi_2(self, initial_guess, dissipation_data, bounds, poi_1_estimate):
         """Adjusts the point of interest (POI) within specified bounds, influenced by another POI.
@@ -1141,8 +1146,14 @@ class QPredictor:
             start_5 = emp_points[4]
             start_6 = emp_points[5]
         adj_1 = start_1
-        poi_1 = self.adjustment_poi_1(
-            initial_guess=start_1, dissipation_data=diss_raw)
+        if len(emp_points) > 0:
+
+            poi_1 = self.adjustment_poi_1(
+                initial_guess=start_1, dissipation_data=diss_raw, md_guess=emp_points[0])
+        else:
+            poi_1 = self.adjustment_poi_1(
+                initial_guess=start_1, dissipation_data=diss_raw, md_guess=None)
+            adj_6 = extracted_results[6]
         adj_6 = extracted_results[6]
         candidates_6 = self.find_and_sort_peaks(adj_6)
         if diff_raw.mean() < 0:

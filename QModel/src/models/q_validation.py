@@ -16,7 +16,7 @@ from q_model import QModelPredict
 from q_multi_model import QPredictor
 from q_image_clusterer import QClusterer
 
-TEST_BATCH_SIZE = 0.99
+TEST_BATCH_SIZE = 0.50
 VALIDATION_DATASETS_PATH = "content/test_data/test"
 S_PREDICTOR = QModelPredict(
     "QModel/SavedModels/QModel_1.json",
@@ -67,11 +67,14 @@ def test_md_on_file(filename, act_poi):
 def test_mm_on_file(filename, act_poi):
     label = qcr.predict_label(filename)
     if label == 0:
-        candidates = M_PREDICTOR_0.predict(filename, run_type=label, act=act_poi)
+        candidates = M_PREDICTOR_0.predict(
+            filename, run_type=label, act=act_poi)
     elif label == 1:
-        candidates = M_PREDICTOR_1.predict(filename, run_type=label, act=act_poi)
+        candidates = M_PREDICTOR_1.predict(
+            filename, run_type=label, act=act_poi)
     elif label == 2:
-        candidates = M_PREDICTOR_2.predict(filename, run_type=label, act=act_poi)
+        candidates = M_PREDICTOR_2.predict(
+            filename, run_type=label, act=act_poi)
     else:
         raise ValueError(f"Invalid predicted label was: {label}")
     good = []
@@ -274,7 +277,8 @@ def metrics_view(
         edgecolor="black",
     )
 
-    plt.title(f"Comparison of {test_name} Scores for {model_1_name} and {model_2_name}")
+    plt.title(
+        f"Comparison of {test_name} Scores for {model_1_name} and {model_2_name}")
     plt.xlabel("POI #")
     plt.ylabel(f"{test_name} Score")
     plt.xticks(points)  # Set x-ticks to be the point indices
@@ -455,7 +459,8 @@ def run():
                 ):
                     long_runs.append(test_file)
                     if max(test_df["Relative_time"]) > longest_run[0]:
-                        longest_run = (max(test_df["Relative_time"]), test_file)
+                        longest_run = (
+                            max(test_df["Relative_time"]), test_file)
                         continue
 
                 mm_results, good, bad = test_mm_on_file(test_file, act_poi)
