@@ -1,16 +1,19 @@
+from sklearn.model_selection import GridSearchCV
+from xgboost import XGBClassifier
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+import seaborn as sns
 import os
 import random
 import time
 import numpy as np
 import pandas as pd
-import seaborn as sns
-import matplotlib.pyplot as plt
 from tqdm import tqdm
+import matplotlib.pyplot as plt
+from xgboost import XGBClassifier  # Replacing RandomForestClassifier
 
-import xgboost as xgb
-from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.compose import ColumnTransformer
 # NEW IMPORTS for scaling
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
@@ -24,7 +27,7 @@ transition_matrix = None
 DATA_TO_LOAD = 200  # adjust as needed
 
 FEATURES = [
-    # 'Relative_time',
+    'Relative_time',
     'Dissipation',
     'Dissipation_rolling_mean',
     'Dissipation_rolling_median',
@@ -203,106 +206,90 @@ def load_and_preprocess_data(data_dir: str):
     return combined_data_balanced
 
 
-def train_model_native(training_data, numerical_features=FEATURES, categorical_features=None, target='Fill'):
+def train_model(training_data, numerical_features=FEATURES, categorical_features=None, target='Fill'):
     """
-    Train an XGBoost model using the native API.
-    Performs manual preprocessing (imputation and scaling) and then trains using xgb.train.
-    Determines the optimal number of boosting rounds via cross-validation.
-    Returns both the trained model and a dictionary of preprocessing objects.
+    Train a classifier on the preprocessed training data using XGBoost with GPU acceleration.
+    The pipeline includes imputation and scaling for numerical features and one-hot encoding for categorical features.
+    Hyperparameter tuning is performed using GridSearchCV.
+
+    Parameters:
+        training_data (pd.DataFrame): The training dataset.
+        numerical_features (list): List of numerical feature column names.
+        categorical_features (list, optional): List of categorical feature column names.
+        target (str): Name of the target column (default is 'Fill').
+
+    Returns:
+        Pipeline: The best fitted pipeline model.
     """
+
+    from sklearn.pipeline import Pipeline
+    from sklearn.impute import SimpleImputer
+    from sklearn.preprocessing import StandardScaler, OneHotEncoder
+    from sklearn.compose import ColumnTransformer
+    from sklearn.model_selection import GridSearchCV
+    from xgboost import XGBClassifier
+
+    # Define preprocessing for numerical data
+    num_pipeline = Pipeline(steps=[
+        ('imputer', SimpleImputer(strategy='mean')),
+        ('scaler', StandardScaler())
+    ])
+
+    # Define preprocessing for categorical data if provided
+    if categorical_features:
+        cat_pipeline = Pipeline(steps=[
+            ('imputer', SimpleImputer(strategy='most_frequent')),
+            ('onehot', OneHotEncoder(handle_unknown='ignore'))
+        ])
+
+        preprocessor = ColumnTransformer(
+            transformers=[
+                ('num', num_pipeline, numerical_features),
+                ('cat', cat_pipeline, categorical_features)
+            ]
+        )
+    else:
+        preprocessor = num_pipeline
+
+    # Configure XGBClassifier to use GPU acceleration
+    classifier = XGBClassifier(
+        eval_metric='mlogloss',
+        device='cuda',     # Enables GPU acceleration
+        random_state=42
+    )
+
+    # Create the full pipeline with the classifier
+    pipeline = Pipeline(steps=[
+        ('preprocessor', preprocessor),
+        ('classifier', classifier)
+    ])
+
+    # Define hyperparameter grid for tuning
+    param_grid = {
+        'classifier__n_estimators': [100, 200],
+        'classifier__max_depth': [3, 5, 7],
+        'classifier__learning_rate': [0.1, 0.01]
+    }
+
     # Separate features and target
     features = numerical_features + \
         (categorical_features if categorical_features else [])
-    X = training_data[features].copy()
-    y = training_data[target].values
+    X = training_data[features]
 
-    # --- Preprocessing for numerical features ---
-    num_imputer = SimpleImputer(strategy='mean')
-    X_num = num_imputer.fit_transform(X[numerical_features])
+    y = training_data[target]
 
-    scaler = StandardScaler()
-    X_num = scaler.fit_transform(X_num)
+    # Perform grid search with 5-fold cross-validation (n_jobs=-1 uses all CPU cores for parallel CV)
+    grid_search = GridSearchCV(
+        pipeline, param_grid, cv=5, scoring='accuracy', n_jobs=-1)
+    grid_search.fit(X, y)
 
-    # --- Preprocessing for categorical features, if provided ---
-    if categorical_features:
-        cat_imputer = SimpleImputer(strategy='most_frequent')
-        X_cat = cat_imputer.fit_transform(X[categorical_features])
-        encoder = OneHotEncoder(handle_unknown='ignore', sparse=False)
-        X_cat = encoder.fit_transform(X_cat)
-        # Combine numerical and categorical features
-        X_processed = np.hstack([X_num, X_cat])
-    else:
-        X_processed = X_num
+    print("Best parameters:", grid_search.best_params_)
+    print("Best CV accuracy:", grid_search.best_score_)
 
-    # Create a DMatrix for XGBoost training
-    dtrain = xgb.DMatrix(X_processed, label=y)
-
-    # Set parameters for multi-class classification.
-    params = {
-        'objective': 'multi:softprob',
-        'num_class': 5,            # We have 5 classes: 0 to 4
-        'eval_metric': 'mlogloss',
-        'max_depth': 5,            # Example parameter; tune as needed
-        'learning_rate': 0.1,      # Example learning rate
-        'seed': 42
-    }
-
-    # Determine the optimal number of boosting rounds using cross-validation
-    cv_results = xgb.cv(
-        params,
-        dtrain,
-        num_boost_round=200,      # maximum number of boosting rounds to try
-        nfold=5,                  # 5-fold cross-validation
-        metrics={'mlogloss'},
-        early_stopping_rounds=10,  # stop if no improvement for 10 rounds
-        seed=42,
-        verbose_eval=True
-    )
-
-    optimal_rounds = len(cv_results)
-
-    # Train the model using the optimal number of rounds
-    model = xgb.train(params, dtrain, num_boost_round=optimal_rounds)
-
-    # Save the preprocessing objects so they can be reused at prediction time.
-    preprocessors = {
-        'num_imputer': num_imputer,
-        'scaler': scaler
-    }
-    if categorical_features:
-        preprocessors.update({
-            'cat_imputer': cat_imputer,
-            'encoder': encoder
-        })
-
-    return model, preprocessors
-
-# ---------------------------
-# NEW: Prediction Helper Function
-# ---------------------------
+    # Return the best estimator found by grid search
+    return grid_search.best_estimator_
 
 
-def predict_native(model, preprocessors, X, numerical_features=FEATURES, categorical_features=None):
-    """
-    Preprocess the input dataframe X using the saved preprocessors and return
-    the predicted probabilities from the native XGBoost model.
-    """
-    X = X.copy()
-    # Process numerical features
-    X_num = preprocessors['num_imputer'].transform(X[numerical_features])
-    X_num = preprocessors['scaler'].transform(X_num)
-
-    # Process categorical features if provided
-    if categorical_features:
-        X_cat = preprocessors['cat_imputer'].transform(X[categorical_features])
-        X_cat = preprocessors['encoder'].transform(X_cat)
-        X_processed = np.hstack([X_num, X_cat])
-    else:
-        X_processed = X_num
-
-    dmatrix = xgb.DMatrix(X_processed)
-    prob_matrix = model.predict(dmatrix)  # Shape: (n_samples, num_class)
-    return prob_matrix
 # ---------------------------
 # Live Monitor Plotting Function
 # ---------------------------
@@ -397,10 +384,11 @@ def viterbi_decode(prob_matrix, transition_matrix):
     return best_path
 
 
-def live_prediction_loop_from_loaded_data_native(model, preprocessors, loaded_data, batch_size=100, delay=0.1):
+def live_prediction_loop_from_loaded_data(model, loaded_data, batch_size=100, delay=0.1):
     """
     Simulate live predictions by streaming data from the loaded data in batches.
-    Uses the native XGBoost model and applies Viterbi decoding.
+    This version uses the model's probability outputs and applies Viterbi decoding
+    to enforce the sequential constraints.
     """
     accumulated_data = pd.DataFrame(columns=loaded_data.columns)
     predictions_history = []
@@ -418,16 +406,15 @@ def live_prediction_loop_from_loaded_data_native(model, preprocessors, loaded_da
             f"\n[INFO] Streaming batch {batch_num} with {len(batch)} data points...")
         time.sleep(delay)  # Simulate delay between batches
 
-        # Accumulate data and (re)compute additional features
+        # Accumulate data
         accumulated_data = pd.concat(
             [accumulated_data, batch], ignore_index=True)
         accumulated_data = compute_additional_features(accumulated_data)
 
         X_live = accumulated_data[FEATURES]
-        # Get probability matrix using the native prediction function
-        prob_matrix = predict_native(
-            model, preprocessors, X_live, numerical_features=FEATURES)
-        # Use Viterbi decoding to enforce sequential constraints
+        # The pipeline inside the model automatically scales X_live before prediction.
+        prob_matrix = model.predict_proba(X_live)  # shape: (num_points, 5)
+        # Use Viterbi decoding to enforce that the state sequence only moves forward.
         predicted_sequence = viterbi_decode(prob_matrix, transition_matrix)
         predictions_history.append(predicted_sequence)
 
@@ -513,30 +500,34 @@ def load_and_preprocess_single(data_file: str, poi_file: str):
 # ---------------------------
 
 
-# ---------------------------
-# Main Execution (Modified for Native XGBoost API)
-# ---------------------------
 if __name__ == "__main__":
     # 1. Load and preprocess training data from multiple files:
+    save_path = r"QModel\SavedModels\xgb_forecaster.json"
+    test_dir = r"content\test_data"
     training_data_dir = r"content\training_data\full_fill"  # Update as needed
     training_data = load_and_preprocess_data(training_data_dir)
     transition_matrix = compute_dynamic_transition_matrix(training_data)
-
-    # 2. Train the classifier using the XGBoost native API.
-    model, preprocessors = train_model_native(training_data)
+    # 2. Train the classifier on the balanced training data using XGBoost with scaling.
+    model = train_model(training_data)
     print("[INFO] Model training complete.\n")
 
-    # 3. Load a single run from test CSV files.
-    test_dir = r"content\test_data"
+    # 3. Load a single run from test CSV files instead of using mock data.
+    data_file = r"content/test_data/00003/MM231106W5_A1_40P_3rd.csv"
+    poi_file = r"content/test_data/00003/MM231106W5_A1_40P_3rd_poi.csv"
+    df_test = pd.read_csv(data_file)
+    delay = df_test['Relative_time'].max(
+    ) / len(df_test["Relative_time"].values)
+
+    # 4. Simulate live predictions by streaming the loaded data in batches:
     test_content = load_content(test_dir)
     random.shuffle(test_content)
     for data_file, poi_file in test_content:
         df_test = pd.read_csv(data_file)
         delay = df_test['Relative_time'].max(
         ) / len(df_test["Relative_time"].values)
-        loaded_data = load_and_preprocess_single(data_file, poi_file)
-        # 4. Simulate live predictions using the native model.
-        live_prediction_loop_from_loaded_data_native(
-            model, preprocessors, loaded_data, batch_size=100, delay=delay/2)
+        loaded_data = load_and_preprocess_single(
+            data_file, poi_file)
+        live_prediction_loop_from_loaded_data(
+            model, loaded_data, batch_size=100, delay=delay/2)
         print("\n[INFO] Live prediction simulation complete.")
-    print("\n[INFO] All live prediction simulations complete.")
+    print("\n[INFO] Live prediction simulation complete.")
