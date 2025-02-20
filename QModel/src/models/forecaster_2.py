@@ -1,3 +1,4 @@
+from scipy.signal import hilbert
 from sklearn.model_selection import GridSearchCV
 from xgboost import XGBClassifier
 from sklearn.impute import SimpleImputer
@@ -24,7 +25,7 @@ from sklearn.preprocessing import StandardScaler
 # For example, define a transition matrix that gives high probability to remaining in the same state,
 # and a small probability to moving to the next state.
 transition_matrix = None
-DATA_TO_LOAD = 200  # adjust as needed
+DATA_TO_LOAD = 20  # adjust as needed
 
 FEATURES = [
     'Relative_time',
@@ -33,6 +34,12 @@ FEATURES = [
     'Dissipation_rolling_median',
     'Dissipation_ewm',
     'Dissipation_rolling_std',
+    'Dissipation_diff',
+    'Dissipation_pct_change',
+    'Dissipation_rate',
+    'Dissipation_ratio_to_mean',
+    'Dissipation_ratio_to_ewm',
+    'Dissipation_envelope',
 ]
 
 
@@ -54,6 +61,7 @@ def compute_additional_features(df: pd.DataFrame) -> pd.DataFrame:
       - 'Dissipation_rate': Rate of change (Dissipation_diff / time difference).
       - 'Dissipation_ratio_to_mean': Ratio of Dissipation to its rolling mean.
       - 'Dissipation_ratio_to_ewm': Ratio of Dissipation to its EWMA.
+      - 'Dissipation_envelope': Envelope of the Dissipation signal via the Hilbert transform.
 
     Parameters:
         df (pd.DataFrame): Input DataFrame containing at least 'Dissipation' and 'Relative_time' columns.
@@ -78,15 +86,28 @@ def compute_additional_features(df: pd.DataFrame) -> pd.DataFrame:
         window=window, min_periods=1).median()
     df['Dissipation_ewm'] = df['Dissipation'].ewm(
         span=span, adjust=False).mean()
-
     df['Dissipation_rolling_std'] = df['Dissipation'].rolling(
         window=window, min_periods=1).std()
 
-    # (Optional) If you don't need the intermediate 'Relative_time_diff' feature, you can drop it:
-    df.drop(columns=['Resonance_Frequency'], inplace=True)
+    # Compute additional features
+    df['Dissipation_diff'] = df['Dissipation'].diff()
+    df['Dissipation_pct_change'] = df['Dissipation'].pct_change()
 
-    # Optionally, return only the selected features:
-    # return df[FEATURES]
+    # Compute time difference for rate calculation (assuming Relative_time is numeric)
+    df['Relative_time_diff'] = df['Relative_time'].diff().replace(0, np.nan)
+    df['Dissipation_rate'] = df['Dissipation_diff'] / df['Relative_time_diff']
+    df['Dissipation_ratio_to_mean'] = df['Dissipation'] / \
+        df['Dissipation_rolling_mean']
+    df['Dissipation_ratio_to_ewm'] = df['Dissipation'] / df['Dissipation_ewm']
+
+    # Compute the envelope using the Hilbert transform.
+    # Note: This computes the envelope over the entire signal, so it assumes you have access to all the data.
+    df['Dissipation_envelope'] = np.abs(hilbert(df['Dissipation'].values))
+
+    # Optionally, drop any intermediate columns if not needed
+    if 'Resonance_Frequency' in df.columns:
+        df.drop(columns=['Resonance_Frequency'], inplace=True)
+
     return df
 
 

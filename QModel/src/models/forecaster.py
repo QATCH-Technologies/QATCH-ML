@@ -1,89 +1,78 @@
+from scipy.signal import hilbert
+from sklearn.model_selection import GridSearchCV
+from xgboost import XGBClassifier
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+import seaborn as sns
 import os
 import random
 import time
 import numpy as np
 import pandas as pd
-import seaborn as sns
-import matplotlib.pyplot as plt
 from tqdm import tqdm
+import matplotlib.pyplot as plt
+import xgboost as xgb  # Replacing RandomForestClassifier
 
-import xgboost as xgb
-from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.compose import ColumnTransformer
 # NEW IMPORTS for scaling
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
 # ---------------------------
-# Training Data Handling
+# Training Data Handling and Feature Computation
 # ---------------------------
-# For example, define a transition matrix that gives high probability to remaining in the same state,
-# and a small probability to moving to the next state.
-transition_matrix = None
-DATA_TO_LOAD = 200  # adjust as needed
-
+DATA_TO_LOAD = 20  # adjust as needed
+IGNORE_BEFORE = 50
 FEATURES = [
-    # 'Relative_time',
+    'Relative_time',
     'Dissipation',
     'Dissipation_rolling_mean',
     'Dissipation_rolling_median',
     'Dissipation_ewm',
     'Dissipation_rolling_std',
+    'Dissipation_diff',
+    'Dissipation_pct_change',
+    'Dissipation_rate',
+    'Dissipation_ratio_to_mean',
+    'Dissipation_ratio_to_ewm',
+    'Dissipation_envelope',
+    'Time_shift'
 ]
 
 
 def compute_additional_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Compute live features based on Dissipation.
-
-    Existing features:
-      - 'Dissipation': raw sensor reading.
-      - 'Relative_time': time stamp.
-      - 'Dissipation_rolling_mean': rolling average of Dissipation.
-      - 'Dissipation_rolling_median': rolling median of Dissipation.
-      - 'Dissipation_ewm': Exponential Weighted Moving Average (EWMA) of Dissipation.
-
-    Additional features:
-      - 'Dissipation_diff': First order difference of Dissipation.
-      - 'Dissipation_pct_change': Percentage change of Dissipation.
-      - 'Dissipation_rolling_std': Rolling standard deviation of Dissipation.
-      - 'Dissipation_rate': Rate of change (Dissipation_diff / time difference).
-      - 'Dissipation_ratio_to_mean': Ratio of Dissipation to its rolling mean.
-      - 'Dissipation_ratio_to_ewm': Ratio of Dissipation to its EWMA.
-
-    Parameters:
-        df (pd.DataFrame): Input DataFrame containing at least 'Dissipation' and 'Relative_time' columns.
-
-    Returns:
-        pd.DataFrame: DataFrame with additional features added.
-    """
-
-    # Ensure required columns are present
-    required_cols = ['Dissipation', 'Relative_time']
-    if not all(col in df.columns for col in required_cols):
-        raise ValueError(f"DataFrame must contain columns: {required_cols}")
-
     # Define parameters for rolling and EWMA calculations
-    window = 10  # Adjust the window size if needed
-    span = 10    # Adjust the span for the EWMA as required
+    window = 10
+    span = 10
 
-    # Compute rolling statistics and EWMA for Dissipation
     df['Dissipation_rolling_mean'] = df['Dissipation'].rolling(
         window=window, min_periods=1).mean()
     df['Dissipation_rolling_median'] = df['Dissipation'].rolling(
         window=window, min_periods=1).median()
     df['Dissipation_ewm'] = df['Dissipation'].ewm(
         span=span, adjust=False).mean()
-
     df['Dissipation_rolling_std'] = df['Dissipation'].rolling(
         window=window, min_periods=1).std()
 
-    # (Optional) If you don't need the intermediate 'Relative_time_diff' feature, you can drop it:
-    df.drop(columns=['Resonance_Frequency'], inplace=True)
+    df['Dissipation_diff'] = df['Dissipation'].diff()
+    df['Dissipation_pct_change'] = df['Dissipation'].pct_change()
+    df['Relative_time_diff'] = df['Relative_time'].diff().replace(0, np.nan)
+    df['Dissipation_rate'] = df['Dissipation_diff'] / df['Relative_time_diff']
+    df['Dissipation_ratio_to_mean'] = df['Dissipation'] / \
+        df['Dissipation_rolling_mean']
+    df['Dissipation_ratio_to_ewm'] = df['Dissipation'] / df['Dissipation_ewm']
+    df['Dissipation_envelope'] = np.abs(hilbert(df['Dissipation'].values))
 
-    # Optionally, return only the selected features:
-    # return df[FEATURES]
+    if 'Resonance_Frequency' in df.columns:
+        df.drop(columns=['Resonance_Frequency'], inplace=True)
+
+    t_delta = find_time_delta(df)
+    if t_delta == -1:
+        df['Time_shift'] = 0
+    else:
+        df.loc[t_delta:, 'Time_shift'] = 1
+
     return df
 
 
@@ -107,221 +96,174 @@ def load_content(data_dir: str) -> list:
     loaded_content = []
     for data_root, _, data_files in tqdm(os.walk(data_dir), desc='Loading files...'):
         for f in data_files:
-            # Only process CSV files that are not already POI or lower threshold files
-            if (
-                f.endswith(".csv")
-                and not f.endswith("_poi.csv")
-                and not f.endswith("_lower.csv")
-            ):
+            if f.endswith(".csv") and not f.endswith("_poi.csv") and not f.endswith("_lower.csv"):
                 matched_poi_file = f.replace(".csv", "_poi.csv")
                 loaded_content.append(
-                    (os.path.join(data_root, f), os.path.join(
-                        data_root, matched_poi_file))
-                )
+                    (os.path.join(data_root, f), os.path.join(data_root, matched_poi_file)))
     return loaded_content
 
+# ---------------------------
+# Split Training Data by Run Type
+# ---------------------------
 
-def load_and_preprocess_data(data_dir: str):
+
+def load_and_preprocess_data_split(data_dir: str, required_runs=20):
     """
-    Load sensor features and associated Fill information from multiple files.
-    After merging, the 7 Fill labels are reassigned into 5 regions,
-    and class imbalances are corrected via oversampling.
+    Load each CSV (run) separately and split into two groups based on find_time_delta:
+      - short_runs: runs where find_time_delta returns an index (i.e. != -1)
+      - long_runs: runs where find_time_delta returns -1
+    Continue loading data until exactly 'required_runs' are collected for each group.
     """
-    all_data = []
+    short_runs = []
+    long_runs = []
     content = load_content(data_dir)
-    num_samples = DATA_TO_LOAD
-    sampled_content = random.sample(content, k=min(num_samples, len(content)))
+    # Shuffle the list for random ordering.
+    random.shuffle(content)
 
-    for file, Fill_path in sampled_content:
+    for file, poi_file in content:
+        # Break early if both groups have reached the required number of runs.
+        if len(short_runs) >= required_runs and len(long_runs) >= required_runs:
+            break
+
         df = pd.read_csv(file)
-        if not df.empty and all(col in df.columns for col in ["Relative_time", "Resonance_Frequency", "Dissipation"]):
-            df = df[["Relative_time", "Resonance_Frequency", "Dissipation"]]
-            df = compute_additional_features(df)
+        if df.empty or not all(col in df.columns for col in ["Relative_time", "Resonance_Frequency", "Dissipation"]):
+            continue  # Skip files missing required columns
 
-            Fill_df = pd.read_csv(Fill_path, header=None)
-            if "Fill" in Fill_df.columns:
-                df["Fill"] = Fill_df["Fill"]
-            else:
-                # Start with 0 everywhere.
-                df["Fill"] = 0
-                change_indices = sorted(Fill_df.iloc[:, 0].values)
-                for idx in change_indices:
-                    df.loc[idx:, "Fill"] += 1
-            df["Fill"] = pd.Categorical(df["Fill"]).codes
-            all_data.append(df)
+        df = df[["Relative_time", "Resonance_Frequency", "Dissipation"]]
+        df = compute_additional_features(df)
 
-    if all_data:
-        combined_data = pd.concat(all_data).sort_values(by='Relative_time')
-    else:
-        raise ValueError("No valid data found in the specified directory.")
-
-    # --- Ensure exactly 7 unique Fill values ---
-    unique_Fill = sorted(combined_data["Fill"].unique())
-    if len(unique_Fill) != 7:
-        raise ValueError(
-            f"Expected 7 unique Fill values in combined data, but found {len(unique_Fill)}: {unique_Fill}")
-
-    # >>> Scaling step removed <<<
-    # After concatenating and sorting:
-    combined_data['Fill'] = combined_data['Fill'].apply(reassign_region)
-
-    # Map string labels to numeric values
-    mapping = {'no_fill': 0, 'init_fill': 1,
-               'ch_1': 2, 'ch_2': 3, 'full_fill': 4}
-    combined_data['Fill'] = combined_data['Fill'].map(mapping)
-
-    # --- Correct Class Imbalances via Oversampling ---
-    class_counts = combined_data['Fill'].value_counts()
-    max_count = class_counts.max()
-    balanced_dfs = []
-    for label, group in combined_data.groupby('Fill'):
-        if len(group) < max_count:
-            group_balanced = group.sample(
-                max_count, replace=True, random_state=42)
+        Fill_df = pd.read_csv(poi_file, header=None)
+        if "Fill" in Fill_df.columns:
+            df["Fill"] = Fill_df["Fill"]
         else:
-            group_balanced = group
-        balanced_dfs.append(group_balanced)
-    combined_data_balanced = pd.concat(balanced_dfs).sort_values(
-        by='Relative_time').reset_index(drop=True)
+            # If the Fill information is not in a header, initialize with 0 and update using indices.
+            df["Fill"] = 0
+            change_indices = sorted(Fill_df.iloc[:, 0].values)
+            for idx in change_indices:
+                df.loc[idx:, "Fill"] += 1
 
-    print("[INFO] Combined balanced data sample:")
-    print(combined_data_balanced.head())
-    print("[INFO] Class distribution after balancing:")
-    print(combined_data_balanced['Fill'].value_counts())
+        df["Fill"] = pd.Categorical(df["Fill"]).codes
+        unique_Fill = sorted(df["Fill"].unique())
+        if len(unique_Fill) != 7:
+            print(
+                f"[WARNING] File {file} does not have 7 unique Fill values; skipping.")
+            continue
 
-    # --- Compute correlation matrix ---
-    correlation_matrix = combined_data_balanced.corr()
-    print("[INFO] Correlation matrix:")
-    print(correlation_matrix)
+        # Reassign regions and map to numeric values.
+        df['Fill'] = df['Fill'].apply(reassign_region)
+        mapping = {'no_fill': 0, 'init_fill': 1,
+                   'ch_1': 2, 'ch_2': 3, 'full_fill': 4}
+        df['Fill'] = df['Fill'].map(mapping)
 
-    # --- Plot correlation heatmap ---
-    plt.figure(figsize=(12, 10))
-    sns.heatmap(correlation_matrix, annot=True, cmap="coolwarm", fmt=".2f")
-    plt.title("Correlation Matrix of Features and Fill")
-    plt.show()
+        # Determine if the run is short (time delta detected) or long.
+        delta_idx = find_time_delta(df)
+        if delta_idx == -1:
+            if len(short_runs) < required_runs:
+                short_runs.append(df)
+        else:
+            if len(long_runs) < required_runs:
+                long_runs.append(df)
 
-    return combined_data_balanced
+        if len(df) > IGNORE_BEFORE:
+            df = df.iloc[IGNORE_BEFORE:]
+
+    if len(short_runs) < required_runs or len(long_runs) < required_runs:
+        raise ValueError(
+            f"Not enough runs found. Required: {required_runs} short and {required_runs} long, found: {len(short_runs)} short and {len(long_runs)} long.")
+
+    training_data_short = pd.concat(short_runs).sort_values(
+        "Relative_time").reset_index(drop=True)
+    training_data_long = pd.concat(long_runs).sort_values(
+        "Relative_time").reset_index(drop=True)
+    return training_data_short, training_data_long
+
+# ---------------------------
+# Train the Model (unchanged)
+# ---------------------------
 
 
 def train_model_native(training_data, numerical_features=FEATURES, categorical_features=None, target='Fill'):
-    """
-    Train an XGBoost model using the native API.
-    Performs manual preprocessing (imputation and scaling) and then trains using xgb.train.
-    Determines the optimal number of boosting rounds via cross-validation.
-    Returns both the trained model and a dictionary of preprocessing objects.
-    """
     # Separate features and target
     features = numerical_features + \
         (categorical_features if categorical_features else [])
     X = training_data[features].copy()
     y = training_data[target].values
 
-    # --- Preprocessing for numerical features ---
     num_imputer = SimpleImputer(strategy='mean')
     X_num = num_imputer.fit_transform(X[numerical_features])
-
     scaler = StandardScaler()
     X_num = scaler.fit_transform(X_num)
 
-    # --- Preprocessing for categorical features, if provided ---
     if categorical_features:
         cat_imputer = SimpleImputer(strategy='most_frequent')
         X_cat = cat_imputer.fit_transform(X[categorical_features])
         encoder = OneHotEncoder(handle_unknown='ignore', sparse=False)
         X_cat = encoder.fit_transform(X_cat)
-        # Combine numerical and categorical features
         X_processed = np.hstack([X_num, X_cat])
     else:
         X_processed = X_num
 
-    # Create a DMatrix for XGBoost training
     dtrain = xgb.DMatrix(X_processed, label=y)
-
-    # Set parameters for multi-class classification.
     params = {
         'objective': 'multi:softprob',
-        'num_class': 5,            # We have 5 classes: 0 to 4
-        'eval_metric': 'mlogloss',
-        'max_depth': 5,            # Example parameter; tune as needed
-        'learning_rate': 0.1,      # Example learning rate
+        'num_class': 5,
+        'eval_metric': 'aucpr',
+        'max_depth': 5,
+        'learning_rate': 0.1,
         'seed': 42
     }
-
-    # Determine the optimal number of boosting rounds using cross-validation
     cv_results = xgb.cv(
         params,
         dtrain,
-        num_boost_round=200,      # maximum number of boosting rounds to try
-        nfold=5,                  # 5-fold cross-validation
-        metrics={'mlogloss'},
-        early_stopping_rounds=10,  # stop if no improvement for 10 rounds
+        num_boost_round=200,
+        nfold=5,
+        metrics={'aucpr'},
+        early_stopping_rounds=10,
         seed=42,
         verbose_eval=True
     )
-
     optimal_rounds = len(cv_results)
-
-    # Train the model using the optimal number of rounds
     model = xgb.train(params, dtrain, num_boost_round=optimal_rounds)
-
-    # Save the preprocessing objects so they can be reused at prediction time.
-    preprocessors = {
-        'num_imputer': num_imputer,
-        'scaler': scaler
-    }
+    preprocessors = {'num_imputer': num_imputer, 'scaler': scaler}
     if categorical_features:
-        preprocessors.update({
-            'cat_imputer': cat_imputer,
-            'encoder': encoder
-        })
-
+        preprocessors.update({'cat_imputer': cat_imputer, 'encoder': encoder})
     return model, preprocessors
-
-# ---------------------------
-# NEW: Prediction Helper Function
-# ---------------------------
 
 
 def predict_native(model, preprocessors, X, numerical_features=FEATURES, categorical_features=None):
-    """
-    Preprocess the input dataframe X using the saved preprocessors and return
-    the predicted probabilities from the native XGBoost model.
-    """
     X = X.copy()
-    # Process numerical features
     X_num = preprocessors['num_imputer'].transform(X[numerical_features])
     X_num = preprocessors['scaler'].transform(X_num)
-
-    # Process categorical features if provided
     if categorical_features:
         X_cat = preprocessors['cat_imputer'].transform(X[categorical_features])
         X_cat = preprocessors['encoder'].transform(X_cat)
         X_processed = np.hstack([X_num, X_cat])
     else:
         X_processed = X_num
-
     dmatrix = xgb.DMatrix(X_processed)
-    prob_matrix = model.predict(dmatrix)  # Shape: (n_samples, num_class)
+    prob_matrix = model.predict(dmatrix)
     return prob_matrix
+
 # ---------------------------
-# Live Monitor Plotting Function
+# Live Monitor Plotting Functions
 # ---------------------------
 
 
-def update_live_monitor(accumulated_data, predictions, axes, delay):
+def update_live_monitor_two_models(accumulated_data, pred_short, pred_long, delta_idx, axes, delay):
     """
-    Update the live monitor plots:
-      - Left: Predicted vs Actual fill values (numeric).
-      - Right: Dissipation curve over the accumulated data.
+    Update live plots with predictions from both models and an indicator for time delta.
     """
-    # Now predictions and actual values are already numeric.
     indices = np.arange(len(accumulated_data))
-
-    axes[0].cla()  # Clear previous plot
-    axes[0].plot(indices, accumulated_data["Fill"], label="Actual", color='blue', marker='o',
-                 linestyle='--', markersize=3)
-    axes[0].plot(indices, predictions, label="Predicted", color='red', marker='x',
-                 linestyle='-', markersize=3)
+    axes[0].cla()
+    axes[0].plot(indices, accumulated_data["Fill"], label="Actual",
+                 color='blue', marker='o', linestyle='--', markersize=3)
+    axes[0].plot(indices, pred_short, label="Short Model",
+                 color='red', marker='x', linestyle='-', markersize=3)
+    axes[0].plot(indices, pred_long, label="Long Model",
+                 color='green', marker='^', linestyle='-.', markersize=3)
+    if delta_idx != -1:
+        axes[0].axvline(x=delta_idx, color='purple',
+                        linestyle=':', label="Time Delta Detected")
     axes[0].set_title("Predicted vs Actual Fill")
     axes[0].set_xlabel("Data Point Index")
     axes[0].set_ylabel("Fill Category (numeric)")
@@ -331,6 +273,9 @@ def update_live_monitor(accumulated_data, predictions, axes, delay):
     axes[1].cla()
     axes[1].plot(indices, accumulated_data["Dissipation"],
                  label="Dissipation", color='green')
+    if delta_idx != -1:
+        axes[1].axvline(x=delta_idx, color='purple',
+                        linestyle=':', label="Time Delta")
     axes[1].set_title("Dissipation Curve")
     axes[1].set_xlabel("Data Point Index")
     axes[1].set_ylabel("Dissipation")
@@ -340,137 +285,102 @@ def update_live_monitor(accumulated_data, predictions, axes, delay):
 
 
 def simulate_serial_stream_from_loaded(loaded_data, batch_size=100):
-    """
-    Simulate a serial stream by yielding successive batches from the loaded single data.
-    """
     num_rows = len(loaded_data)
     for start_idx in range(0, num_rows, batch_size):
         yield loaded_data.iloc[start_idx:start_idx+batch_size]
 
 
 def viterbi_decode(prob_matrix, transition_matrix):
-    """
-    Decodes the most likely sequence of states given a probability matrix and a transition matrix.
-
-    prob_matrix: shape (T, N) -- probability for each of the N states for each time step T.
-    transition_matrix: shape (N, N) with allowed transitions.
-       For our case, only transitions from state i to i or i+1 are allowed.
-    """
     T, N = prob_matrix.shape
-    dp = np.full((T, N), -np.inf)  # dynamic programming table (in log space)
+    dp = np.full((T, N), -np.inf)
     backpointer = np.zeros((T, N), dtype=int)
-
-    # Initialization: assume the first sample is in state 0 (no_fill)
     dp[0, 0] = np.log(prob_matrix[0, 0])
-
     for t in range(1, T):
         for j in range(N):
-            # Allowed transitions: for j==0, only state 0; otherwise, only from state j-1 and j.
-            if j == 0:
-                allowed_prev = [0]
-            else:
-                allowed_prev = [j - 1, j]
-
-            # Initialize best_score and best_state with the first candidate.
+            allowed_prev = [0] if j == 0 else [j-1, j]
             best_state = allowed_prev[0]
-            best_score = dp[t - 1, best_state] + \
+            best_score = dp[t-1, best_state] + \
                 np.log(transition_matrix[best_state, j])
-
             for i in allowed_prev:
-                # Check if transition probability is positive to avoid log(0)
                 if transition_matrix[i, j] <= 0:
                     continue
-                score = dp[t - 1, i] + np.log(transition_matrix[i, j])
+                score = dp[t-1, i] + np.log(transition_matrix[i, j])
                 if score > best_score:
                     best_score = score
                     best_state = i
-
             dp[t, j] = np.log(prob_matrix[t, j]) + best_score
             backpointer[t, j] = best_state
-
-    # Backtracking to retrieve the best state sequence.
     best_path = np.zeros(T, dtype=int)
-    best_path[T - 1] = np.argmax(dp[T - 1])
-    for t in range(T - 2, -1, -1):
-        best_path[t] = backpointer[t + 1, best_path[t + 1]]
-
+    best_path[T-1] = np.argmax(dp[T-1])
+    for t in range(T-2, -1, -1):
+        best_path[t] = backpointer[t+1, best_path[t+1]]
     return best_path
 
+# ---------------------------
+# Live Prediction Loop for Two Models
+# ---------------------------
 
-def live_prediction_loop_from_loaded_data_native(model, preprocessors, loaded_data, batch_size=100, delay=0.1):
+
+def live_prediction_loop_two_models(model_short, preprocessors_short, model_long, preprocessors_long,
+                                    transition_matrix_short, transition_matrix_long,
+                                    loaded_data, batch_size=100, delay=0.1):
     """
-    Simulate live predictions by streaming data from the loaded data in batches.
-    Uses the native XGBoost model and applies Viterbi decoding.
+    Simulate live predictions by streaming data from loaded_data in batches.
+    Both the short-run and long-run models are applied and plotted.
+    Each uses its corresponding transition matrix for Viterbi decoding.
     """
     accumulated_data = pd.DataFrame(columns=loaded_data.columns)
-    predictions_history = []
-
-    # Setup live monitor figure with two subplots.
     plt.ion()
     fig, axes = plt.subplots(1, 2, figsize=(12, 6))
-
     stream_generator = simulate_serial_stream_from_loaded(
         loaded_data, batch_size=batch_size)
     batch_num = 0
+
     for batch in stream_generator:
         batch_num += 1
         print(
             f"\n[INFO] Streaming batch {batch_num} with {len(batch)} data points...")
-        time.sleep(delay)  # Simulate delay between batches
-
-        # Accumulate data and (re)compute additional features
+        time.sleep(delay)
         accumulated_data = pd.concat(
             [accumulated_data, batch], ignore_index=True)
         accumulated_data = compute_additional_features(accumulated_data)
-
+        if len(accumulated_data) > IGNORE_BEFORE and batch_num == 1:
+            accumulated_data = accumulated_data.iloc[IGNORE_BEFORE:]
         X_live = accumulated_data[FEATURES]
-        # Get probability matrix using the native prediction function
-        prob_matrix = predict_native(
-            model, preprocessors, X_live, numerical_features=FEATURES)
-        # Use Viterbi decoding to enforce sequential constraints
-        predicted_sequence = viterbi_decode(prob_matrix, transition_matrix)
-        predictions_history.append(predicted_sequence)
-
-        # Update live monitor plots.
-        update_live_monitor(accumulated_data, predicted_sequence, axes, delay)
+        # Get predictions from both models
+        prob_matrix_short = predict_native(
+            model_short, preprocessors_short, X_live, numerical_features=FEATURES)
+        pred_short = viterbi_decode(prob_matrix_short, transition_matrix_short)
+        prob_matrix_long = predict_native(
+            model_long, preprocessors_long, X_live, numerical_features=FEATURES)
+        pred_long = viterbi_decode(prob_matrix_long, transition_matrix_long)
+        # Check for a time delta in the accumulated data
+        delta_idx = find_time_delta(accumulated_data)
+        update_live_monitor_two_models(
+            accumulated_data, pred_short, pred_long, delta_idx, axes, delay)
         print(
             f"[INFO] Updated live monitor after batch {batch_num}. Total points: {len(accumulated_data)}")
-
     plt.ioff()
     plt.show()
-    return predictions_history
+
+# ---------------------------
+# The Original find_time_delta Function (unchanged)
+# ---------------------------
 
 
-def compute_dynamic_transition_matrix(training_data, num_states=5, smoothing=1e-6):
-    # Extract the state sequence from the 'Fill' column
-    states = training_data["Fill"].values
+def find_time_delta(df) -> int:
+    time_df = pd.DataFrame()
+    time_df["Delta"] = df["Relative_time"].diff()
+    threshold = 0.032
+    rolling_avg = time_df["Delta"].expanding(min_periods=2).mean()
+    time_df["Significant_change"] = (
+        time_df["Delta"] - rolling_avg).abs() > threshold
+    change_indices = time_df.index[time_df["Significant_change"]].tolist()
+    return change_indices[0] if change_indices else -1
 
-    # Initialize the transition count matrix with zeros.
-    # Only allowed transitions will be updated.
-    transition_counts = np.zeros((num_states, num_states))
-
-    # Apply smoothing only for the allowed transitions: same state and next state.
-    for i in range(num_states):
-        transition_counts[i, i] = smoothing  # self-transition
-        if i + 1 < num_states:
-            # transition to next state
-            transition_counts[i, i+1] = smoothing
-
-    # Count transitions between consecutive states.
-    for i in range(len(states) - 1):
-        current_state = states[i]
-        next_state = states[i + 1]
-        # Only count transitions that are allowed (same state or next state)
-        if next_state == current_state or next_state == current_state + 1:
-            transition_counts[current_state, next_state] += 1
-
-    # Normalize each row so that the probabilities sum to 1.
-    row_sums = transition_counts.sum(axis=1, keepdims=True)
-    # To avoid division by zero in case a row has zero sum, we can set such rows to 1.
-    row_sums[row_sums == 0] = 1
-    transition_matrix = transition_counts / row_sums
-
-    return transition_matrix
+# ---------------------------
+# Helper Function: load_and_preprocess_single remains unchanged
+# ---------------------------
 
 
 def load_and_preprocess_single(data_file: str, poi_file: str):
@@ -479,7 +389,6 @@ def load_and_preprocess_single(data_file: str, poi_file: str):
     if df.empty or not all(col in df.columns for col in required_cols):
         raise ValueError(
             "Data file is empty or missing required sensor columns.")
-
     df = df[required_cols]
     poi_df = pd.read_csv(poi_file, header=None)
     if "Fill" in poi_df.columns:
@@ -489,44 +398,58 @@ def load_and_preprocess_single(data_file: str, poi_file: str):
         change_indices = sorted(poi_df.iloc[:, 0].values)
         for idx in change_indices:
             df.loc[idx:, "Fill"] += 1
-
     df["Fill"] = pd.Categorical(df["Fill"]).codes
     unique_Fill = sorted(df["Fill"].unique())
-    if len(unique_Fill) != 7:
-        raise ValueError(
-            f"Expected 7 unique Fill values in file {data_file}, but found {len(unique_Fill)}: {unique_Fill}")
-
-    # Reassign regions
+    # if len(unique_Fill) != 7:
+    #     raise ValueError(
+    #         f"Expected 7 unique Fill values in file {data_file}, but found {len(unique_Fill)}: {unique_Fill}")
     df["Fill"] = df["Fill"].apply(reassign_region)
-
-    # Map string labels to numeric values
     mapping = {'no_fill': 0, 'init_fill': 1,
                'ch_1': 2, 'ch_2': 3, 'full_fill': 4}
     df["Fill"] = df["Fill"].map(mapping)
-
     print("[INFO] Preprocessed single-file data sample:")
     print(df.head())
     return df
 
-# ---------------------------
-# Main Execution
-# ---------------------------
+
+def compute_dynamic_transition_matrix(training_data, num_states=5, smoothing=1e-6):
+    states = training_data["Fill"].values
+    transition_counts = np.zeros((num_states, num_states))
+    for i in range(num_states):
+        transition_counts[i, i] = smoothing
+        if i + 1 < num_states:
+            transition_counts[i, i+1] = smoothing
+    for i in range(len(states) - 1):
+        current_state = states[i]
+        next_state = states[i + 1]
+        if next_state == current_state or next_state == current_state + 1:
+            transition_counts[current_state, next_state] += 1
+    row_sums = transition_counts.sum(axis=1, keepdims=True)
+    row_sums[row_sums == 0] = 1
+    return transition_counts / row_sums
 
 
 # ---------------------------
-# Main Execution (Modified for Native XGBoost API)
+# Main Execution: Train Two Models and Run Live Predictions
 # ---------------------------
 if __name__ == "__main__":
-    # 1. Load and preprocess training data from multiple files:
+    # 1. Load and split training data from multiple files:
     training_data_dir = r"content\training_data\full_fill"  # Update as needed
-    training_data = load_and_preprocess_data(training_data_dir)
-    transition_matrix = compute_dynamic_transition_matrix(training_data)
+    training_data_short, training_data_long = load_and_preprocess_data_split(
+        training_data_dir)
 
-    # 2. Train the classifier using the XGBoost native API.
-    model, preprocessors = train_model_native(training_data)
+    # 2. Compute separate dynamic transition matrices.
+    transition_matrix_short = compute_dynamic_transition_matrix(
+        training_data_short)
+    transition_matrix_long = compute_dynamic_transition_matrix(
+        training_data_long)
+
+    # 3. Train two separate models.
+    model_short, preprocessors_short = train_model_native(training_data_short)
+    model_long, preprocessors_long = train_model_native(training_data_long)
     print("[INFO] Model training complete.\n")
 
-    # 3. Load a single run from test CSV files.
+    # 4. For each test run, simulate live predictions using both models.
     test_dir = r"content\test_data"
     test_content = load_content(test_dir)
     random.shuffle(test_content)
@@ -535,8 +458,8 @@ if __name__ == "__main__":
         delay = df_test['Relative_time'].max(
         ) / len(df_test["Relative_time"].values)
         loaded_data = load_and_preprocess_single(data_file, poi_file)
-        # 4. Simulate live predictions using the native model.
-        live_prediction_loop_from_loaded_data_native(
-            model, preprocessors, loaded_data, batch_size=100, delay=delay/2)
-        print("\n[INFO] Live prediction simulation complete.")
+        live_prediction_loop_two_models(model_short, preprocessors_short, model_long, preprocessors_long,
+                                        transition_matrix_short, transition_matrix_long,
+                                        loaded_data, batch_size=100, delay=delay/2)
+        print("\n[INFO] Live prediction simulation complete for one test run.")
     print("\n[INFO] All live prediction simulations complete.")
