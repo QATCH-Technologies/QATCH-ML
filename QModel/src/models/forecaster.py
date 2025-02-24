@@ -14,7 +14,7 @@ import pandas as pd
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import xgboost as xgb  # Replacing RandomForestClassifier
-
+from hyperopt import fmin, tpe, hp, Trials, STATUS_OK
 # NEW IMPORTS for scaling
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
@@ -22,7 +22,7 @@ from sklearn.preprocessing import StandardScaler
 # ---------------------------
 # Training Data Handling and Feature Computation
 # ---------------------------
-DATA_TO_LOAD = 20  # adjust as needed
+DATA_TO_LOAD = 50  # adjust as needed
 IGNORE_BEFORE = 50
 FEATURES = [
     'Relative_time',
@@ -182,18 +182,20 @@ def load_and_preprocess_data_split(data_dir: str, required_runs=20):
 # ---------------------------
 
 
-def train_model_native(training_data, numerical_features=FEATURES, categorical_features=None, target='Fill'):
+def train_model_native(training_data, numerical_features=FEATURES, categorical_features=None, target='Fill', tune=True):
     # Separate features and target
     features = numerical_features + \
         (categorical_features if categorical_features else [])
     X = training_data[features].copy()
     y = training_data[target].values
 
+    # Preprocess numerical features
     num_imputer = SimpleImputer(strategy='mean')
     X_num = num_imputer.fit_transform(X[numerical_features])
     scaler = StandardScaler()
     X_num = scaler.fit_transform(X_num)
 
+    # Preprocess categorical features if provided
     if categorical_features:
         cat_imputer = SimpleImputer(strategy='most_frequent')
         X_cat = cat_imputer.fit_transform(X[categorical_features])
@@ -203,31 +205,90 @@ def train_model_native(training_data, numerical_features=FEATURES, categorical_f
     else:
         X_processed = X_num
 
+    # Create XGBoost DMatrix
     dtrain = xgb.DMatrix(X_processed, label=y)
-    params = {
+
+    # Base parameters that remain constant
+    base_params = {
         'objective': 'multi:softprob',
         'num_class': 5,
         'eval_metric': 'aucpr',
-        'max_depth': 5,
-        'learning_rate': 0.1,
         'seed': 42
     }
-    cv_results = xgb.cv(
-        params,
-        dtrain,
-        num_boost_round=200,
-        nfold=5,
-        metrics={'aucpr'},
-        early_stopping_rounds=10,
-        seed=42,
-        verbose_eval=True
-    )
-    optimal_rounds = len(cv_results)
+
+    if tune:
+        # Define search space for hyperparameters
+        space = {
+            'max_depth': hp.quniform('max_depth', 3, 10, 1),
+            'learning_rate': hp.uniform('learning_rate', 0.01, 0.2),
+            'subsample': hp.uniform('subsample', 0.5, 1.0),
+            'colsample_bytree': hp.uniform('colsample_bytree', 0.5, 1.0),
+            'min_child_weight': hp.quniform('min_child_weight', 1, 10, 1)
+        }
+
+        # Objective function to minimize (we negate aucpr since we want to maximize it)
+        def objective(hyperparams):
+            params = base_params.copy()
+            # Cast hyperparameters that require integer values
+            params['max_depth'] = int(hyperparams['max_depth'])
+            params['min_child_weight'] = int(hyperparams['min_child_weight'])
+            # For other parameters, use the values directly
+            params['learning_rate'] = hyperparams['learning_rate']
+            params['subsample'] = hyperparams['subsample']
+            params['colsample_bytree'] = hyperparams['colsample_bytree']
+
+            cv_results = xgb.cv(
+                params,
+                dtrain,
+                num_boost_round=200,
+                nfold=5,
+                metrics={'aucpr'},
+                early_stopping_rounds=10,
+                seed=42,
+                verbose_eval=False
+            )
+            best_score = cv_results['test-aucpr-mean'].max()
+            best_rounds = len(cv_results)
+            return {'loss': -best_score, 'status': STATUS_OK, 'num_rounds': best_rounds}
+
+        # Run hyperparameter tuning
+        trials = Trials()
+        best = fmin(fn=objective, space=space, algo=tpe.suggest,
+                    max_evals=10, trials=trials)
+        # Ensure integer hyperparameters are cast correctly
+        best['max_depth'] = int(best['max_depth'])
+        best['min_child_weight'] = int(best['min_child_weight'])
+        # Update parameters with the best found values
+        params = base_params.copy()
+        params.update(best)
+        # Retrieve the optimal number of boosting rounds from the best trial
+        best_trial = min(trials.results, key=lambda x: x['loss'])
+        optimal_rounds = best_trial['num_rounds']
+    else:
+        # Use fixed hyperparameters if not tuning
+        params = base_params.copy()
+        params.update({
+            'max_depth': 5,
+            'learning_rate': 0.1
+        })
+        cv_results = xgb.cv(
+            params,
+            dtrain,
+            num_boost_round=200,
+            nfold=5,
+            metrics={'aucpr'},
+            early_stopping_rounds=10,
+            seed=42,
+            verbose_eval=False
+        )
+        optimal_rounds = len(cv_results)
+
+    # Train final model with determined parameters and boosting rounds
     model = xgb.train(params, dtrain, num_boost_round=optimal_rounds)
     preprocessors = {'num_imputer': num_imputer, 'scaler': scaler}
     if categorical_features:
         preprocessors.update({'cat_imputer': cat_imputer, 'encoder': encoder})
-    return model, preprocessors
+    return model, preprocessors, params
 
 
 def predict_native(model, preprocessors, X, numerical_features=FEATURES, categorical_features=None):
@@ -429,6 +490,86 @@ def compute_dynamic_transition_matrix(training_data, num_states=5, smoothing=1e-
     return transition_counts / row_sums
 
 
+def save_params(params, filename):
+    import json
+
+    def convert(item):
+        if isinstance(item, np.ndarray):
+            return item.tolist()
+        if isinstance(item, np.generic):
+            return item.item()
+        return item
+    serializable = {k: convert(v) for k, v in params.items()}
+    with open(filename, "w") as f:
+        json.dump(serializable, f)
+
+
+def save_preprocessors(preprocessors, filename):
+    processors_serialized = {}
+
+    for name, processor in preprocessors.items():
+        proc_dict = {}
+        # Save the type so we know how to reconstruct later.
+        proc_dict["type"] = type(processor).__name__
+        # Save the initialization parameters.
+        proc_dict["init_params"] = processor.get_params()
+
+        # Save fitted attributes for known types.
+        if hasattr(processor, "mean_"):
+            proc_dict["mean_"] = processor.mean_.tolist()
+        if hasattr(processor, "scale_"):
+            proc_dict["scale_"] = processor.scale_.tolist()
+        if hasattr(processor, "var_"):
+            proc_dict["var_"] = processor.var_.tolist()
+        if hasattr(processor, "n_samples_seen_"):
+            proc_dict["n_samples_seen_"] = processor.n_samples_seen_
+        if hasattr(processor, "statistics_"):
+            proc_dict["statistics_"] = processor.statistics_.tolist(
+            ) if processor.statistics_ is not None else None
+        if hasattr(processor, "categories_"):
+            # OneHotEncoder stores categories_ as a list of numpy arrays.
+            proc_dict["categories_"] = [cat.tolist()
+                                        for cat in processor.categories_]
+
+        processors_serialized[name] = proc_dict
+
+
+def load_preprocessors(filename):
+    import json
+    with open(filename, "r") as f:
+        processors_serialized = json.load(f)
+
+    processors = {}
+    for name, proc_dict in processors_serialized.items():
+        proc_type = proc_dict["type"]
+        init_params = proc_dict["init_params"]
+
+        if proc_type == "StandardScaler":
+            processor = StandardScaler(**init_params)
+            processor.mean_ = np.array(proc_dict.get("mean_"))
+            processor.scale_ = np.array(proc_dict.get("scale_"))
+            processor.var_ = np.array(proc_dict.get("var_"))
+            processor.n_samples_seen_ = proc_dict.get("n_samples_seen_")
+
+        elif proc_type == "SimpleImputer":
+            processor = SimpleImputer(**init_params)
+            stats = proc_dict.get("statistics_")
+            processor.statistics_ = np.array(
+                stats) if stats is not None else None
+
+        elif proc_type == "OneHotEncoder":
+            processor = OneHotEncoder(**init_params)
+            cats = proc_dict.get("categories_")
+            processor.categories_ = [
+                np.array(cat) for cat in cats] if cats is not None else None
+
+        else:
+            raise ValueError(f"Unknown processor type: {proc_type}")
+
+        processors[name] = processor
+    return processors
+
+
 # ---------------------------
 # Main Execution: Train Two Models and Run Live Predictions
 # ---------------------------
@@ -445,8 +586,20 @@ if __name__ == "__main__":
         training_data_long)
 
     # 3. Train two separate models.
-    model_short, preprocessors_short = train_model_native(training_data_short)
-    model_long, preprocessors_long = train_model_native(training_data_long)
+    model_short, preprocessors_short, params_short = train_model_native(
+        training_data_short)
+    model_long, preprocessors_long, params_long = train_model_native(
+        training_data_long)
+    # Save the short model using XGBoost's native method
+    model_short.save_model('model_short.json')
+    # Save the long model similarly
+    model_long.save_model('model_long.json')
+
+    save_params(params_short, "params_short.json")
+    save_params(params_long, "params_long.json")
+    save_preprocessors(preprocessors_short, "preprocessors_short.json")
+    save_preprocessors(preprocessors_long, "preprocessors_long.json")
+
     print("[INFO] Model training complete.\n")
 
     # 4. For each test run, simulate live predictions using both models.

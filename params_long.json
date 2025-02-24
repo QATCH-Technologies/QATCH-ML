@@ -1,0 +1,1 @@
+{"objective": "multi:softprob", "num_class": 5, "eval_metric": "aucpr", "seed": 42, "colsample_bytree": 0.8781335374420189, "learning_rate": 0.12154130232693866, "max_depth": 10, "min_child_weight": 8, "subsample": 0.8306232959062753}
