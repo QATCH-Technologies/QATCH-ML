@@ -1,10 +1,15 @@
-from scipy.signal import hilbert
-from sklearn.model_selection import GridSearchCV
+#!/usr/bin/env python
+"""
+Integrated System: Dual Fill Prediction Models with Additional Run-Type Classification
+"""
+
+from scipy.signal import hilbert, savgol_filter
+from sklearn.model_selection import GridSearchCV, train_test_split
 from xgboost import XGBClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
+from sklearn.pipeline import Pipeline, make_pipeline
 import seaborn as sns
 import os
 import random
@@ -15,18 +20,21 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 import xgboost as xgb  # Replacing RandomForestClassifier
 from hyperopt import fmin, tpe, hp, Trials, STATUS_OK
-# NEW IMPORTS for scaling
-from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import StandardScaler
+import pickle
+
 
 # ---------------------------
-# Training Data Handling and Feature Computation
+# Global Settings
 # ---------------------------
+TRAINING = True
+TESTING = True
+
 DATA_TO_LOAD = 50  # adjust as needed
 IGNORE_BEFORE = 50
 FEATURES = [
     'Relative_time',
     'Dissipation',
+    # 'Dissipation_savgol',  # Newly added feature
     'Dissipation_rolling_mean',
     'Dissipation_rolling_median',
     'Dissipation_ewm',
@@ -40,70 +48,8 @@ FEATURES = [
     'Time_shift'
 ]
 
-
-def compute_additional_features(df: pd.DataFrame) -> pd.DataFrame:
-    # Define parameters for rolling and EWMA calculations
-    window = 10
-    span = 10
-
-    df['Dissipation_rolling_mean'] = df['Dissipation'].rolling(
-        window=window, min_periods=1).mean()
-    df['Dissipation_rolling_median'] = df['Dissipation'].rolling(
-        window=window, min_periods=1).median()
-    df['Dissipation_ewm'] = df['Dissipation'].ewm(
-        span=span, adjust=False).mean()
-    df['Dissipation_rolling_std'] = df['Dissipation'].rolling(
-        window=window, min_periods=1).std()
-
-    df['Dissipation_diff'] = df['Dissipation'].diff()
-    df['Dissipation_pct_change'] = df['Dissipation'].pct_change()
-    df['Relative_time_diff'] = df['Relative_time'].diff().replace(0, np.nan)
-    df['Dissipation_rate'] = df['Dissipation_diff'] / df['Relative_time_diff']
-    df['Dissipation_ratio_to_mean'] = df['Dissipation'] / \
-        df['Dissipation_rolling_mean']
-    df['Dissipation_ratio_to_ewm'] = df['Dissipation'] / df['Dissipation_ewm']
-    df['Dissipation_envelope'] = np.abs(hilbert(df['Dissipation'].values))
-
-    if 'Resonance_Frequency' in df.columns:
-        df.drop(columns=['Resonance_Frequency'], inplace=True)
-
-    t_delta = find_time_delta(df)
-    if t_delta == -1:
-        df['Time_shift'] = 0
-    else:
-        df.loc[t_delta:, 'Time_shift'] = 1
-
-    return df
-
-
-def reassign_region(Fill):
-    if Fill == 0:
-        return 'no_fill'
-    elif Fill in [1, 2, 3]:
-        return 'init_fill'
-    elif Fill == 4:
-        return 'ch_1'
-    elif Fill == 5:
-        return 'ch_2'
-    elif Fill == 6:
-        return 'full_fill'
-    else:
-        return Fill  # fallback if needed
-
-
-def load_content(data_dir: str) -> list:
-    print(f"[INFO] Loading content from {data_dir}")
-    loaded_content = []
-    for data_root, _, data_files in tqdm(os.walk(data_dir), desc='Loading files...'):
-        for f in data_files:
-            if f.endswith(".csv") and not f.endswith("_poi.csv") and not f.endswith("_lower.csv"):
-                matched_poi_file = f.replace(".csv", "_poi.csv")
-                loaded_content.append(
-                    (os.path.join(data_root, f), os.path.join(data_root, matched_poi_file)))
-    return loaded_content
-
 # ---------------------------
-# Split Training Data by Run Type
+# Helper Functions: Feature Computation and Data Loading
 # ---------------------------
 
 
@@ -177,25 +123,233 @@ def load_and_preprocess_data_split(data_dir: str, required_runs=20):
         "Relative_time").reset_index(drop=True)
     return training_data_short, training_data_long
 
+
+def compute_additional_features(df: pd.DataFrame) -> pd.DataFrame:
+    # Define parameters for rolling and EWMA calculations
+    window = 10
+    span = 10
+    run_length = len(df)
+    window_length = int(np.ceil(0.01 * run_length))
+    # Ensure the window length is odd and at least 3
+    if window_length % 2 == 0:
+        window_length += 1
+    if window_length < 3:
+        window_length = 3
+    polyorder = 2 if window_length > 2 else 1
+
+    df['Dissipation'] = savgol_filter(
+        df['Dissipation'].values, window_length=window_length, polyorder=polyorder)
+    df['Dissipation_rolling_mean'] = df['Dissipation'].rolling(
+        window=window, min_periods=1).mean()
+    df['Dissipation_rolling_median'] = df['Dissipation'].rolling(
+        window=window, min_periods=1).median()
+    df['Dissipation_ewm'] = df['Dissipation'].ewm(
+        span=span, adjust=False).mean()
+    df['Dissipation_rolling_std'] = df['Dissipation'].rolling(
+        window=window, min_periods=1).std()
+    df['Dissipation_diff'] = df['Dissipation'].diff()
+    df['Dissipation_pct_change'] = df['Dissipation'].pct_change()
+    df['Relative_time_diff'] = df['Relative_time'].diff().replace(0, np.nan)
+    df['Dissipation_rate'] = df['Dissipation_diff'] / df['Relative_time_diff']
+    df['Dissipation_ratio_to_mean'] = df['Dissipation'] / \
+        df['Dissipation_rolling_mean']
+    df['Dissipation_ratio_to_ewm'] = df['Dissipation'] / df['Dissipation_ewm']
+    df['Dissipation_envelope'] = np.abs(hilbert(df['Dissipation'].values))
+
+    if 'Resonance_Frequency' in df.columns:
+        df.drop(columns=['Resonance_Frequency'], inplace=True)
+
+    t_delta = find_time_delta(df)
+    if t_delta == -1:
+        df['Time_shift'] = 0
+    else:
+        df.loc[t_delta:, 'Time_shift'] = 1
+
+    return df
+
+
+def reassign_region(Fill):
+    if Fill == 0:
+        return 'no_fill'
+    elif Fill in [1, 2, 3]:
+        return 'init_fill'
+    elif Fill == 4:
+        return 'ch_1'
+    elif Fill == 5:
+        return 'ch_2'
+    elif Fill == 6:
+        return 'full_fill'
+    else:
+        return Fill  # fallback if needed
+
+
+def load_content(data_dir: str) -> list:
+    print(f"[INFO] Loading content from {data_dir}")
+    loaded_content = []
+    for data_root, _, data_files in tqdm(os.walk(data_dir), desc='Loading files...'):
+        for f in data_files:
+            if f.endswith(".csv") and not f.endswith("_poi.csv") and not f.endswith("_lower.csv"):
+                matched_poi_file = f.replace(".csv", "_poi.csv")
+                loaded_content.append(
+                    (os.path.join(data_root, f), os.path.join(data_root, matched_poi_file)))
+    return loaded_content
+
+
+def find_time_delta(df) -> int:
+    time_df = pd.DataFrame()
+    time_df["Delta"] = df["Relative_time"].diff()
+    threshold = 0.032
+    rolling_avg = time_df["Delta"].expanding(min_periods=2).mean()
+    time_df["Significant_change"] = (
+        time_df["Delta"] - rolling_avg).abs() > threshold
+    change_indices = time_df.index[time_df["Significant_change"]].tolist()
+    return change_indices[0] if change_indices else -1
+
+
+def load_and_preprocess_single(data_file: str, poi_file: str):
+    df = pd.read_csv(data_file)
+    required_cols = ["Relative_time", "Resonance_Frequency", "Dissipation"]
+    if df.empty or not all(col in df.columns for col in required_cols):
+        raise ValueError(
+            "Data file is empty or missing required sensor columns.")
+    df = df[required_cols]
+    poi_df = pd.read_csv(poi_file, header=None)
+    if "Fill" in poi_df.columns:
+        df["Fill"] = poi_df["Fill"]
+    else:
+        df["Fill"] = 0
+        change_indices = sorted(poi_df.iloc[:, 0].values)
+        for idx in change_indices:
+            df.loc[idx:, "Fill"] += 1
+    df["Fill"] = pd.Categorical(df["Fill"]).codes
+    unique_Fill = sorted(df["Fill"].unique())
+    df["Fill"] = df["Fill"].apply(reassign_region)
+    mapping = {'no_fill': 0, 'init_fill': 1,
+               'ch_1': 2, 'ch_2': 3, 'full_fill': 4}
+    df["Fill"] = df["Fill"].map(mapping)
+    print("[INFO] Preprocessed single-file data sample:")
+    print(df.head())
+    return df
+
 # ---------------------------
-# Train the Model (unchanged)
+# New Functions for Run-Type Classification
+# ---------------------------
+
+
+def extract_run_features(df: pd.DataFrame) -> dict:
+    """Extract summary features for run-level classification."""
+    features = {
+        'mean_dissipation': df['Dissipation'].mean(),
+        'std_dissipation': df['Dissipation'].std(),
+        'max_dissipation': df['Dissipation'].max(),
+        'min_dissipation': df['Dissipation'].min(),
+        'run_length': len(df)
+    }
+    return features
+
+
+def prepare_run_classification_data(short_runs: list, long_runs: list) -> tuple:
+    feature_list = []
+    labels = []
+    # Label short runs as 0 and long runs as 1
+    for run in short_runs:
+        run = compute_additional_features(run)
+        feature_list.append(extract_run_features(run))
+        labels.append(0)
+    for run in long_runs:
+        run = compute_additional_features(run)
+        feature_list.append(extract_run_features(run))
+        labels.append(1)
+    X = pd.DataFrame(feature_list)
+    y = np.array(labels)
+    return X, y
+
+
+def train_run_length_classifier(short_runs: list, long_runs: list) -> XGBClassifier:
+    X, y = prepare_run_classification_data(short_runs, long_runs)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42)
+    clf = XGBClassifier(
+        random_state=42, use_label_encoder=False, eval_metric='logloss')
+    clf.fit(X_train, y_train)
+    from sklearn.metrics import accuracy_score
+    y_pred = clf.predict(X_test)
+    print("Run type classification accuracy:", accuracy_score(y_test, y_pred))
+    return clf
+
+
+def predict_run_type(clf: XGBClassifier, accumulated_df: pd.DataFrame) -> tuple:
+    """Predict run type based on accumulated live data.
+       Returns: label (0: short, 1: long) and probability distribution.
+    """
+    accumulated_df = compute_additional_features(accumulated_df)
+    features = extract_run_features(accumulated_df)
+    X_live = pd.DataFrame([features])
+    pred = clf.predict(X_live)[0]
+    prob = clf.predict_proba(X_live)[0]
+    return pred, prob
+
+
+def load_runs_for_classification(data_dir: str, required_runs=20) -> tuple:
+    """
+    Load individual runs from the training directory and return lists of short and long runs.
+    """
+    short_runs = []
+    long_runs = []
+    content = load_content(data_dir)
+    random.shuffle(content)
+    for file, poi_file in content:
+        if len(short_runs) >= required_runs and len(long_runs) >= required_runs:
+            break
+        df = pd.read_csv(file)
+        if df.empty or not all(col in df.columns for col in ["Relative_time", "Resonance_Frequency", "Dissipation"]):
+            continue
+        df = df[["Relative_time", "Resonance_Frequency", "Dissipation"]]
+        df = compute_additional_features(df)
+
+        Fill_df = pd.read_csv(poi_file, header=None)
+        if "Fill" in Fill_df.columns:
+            df["Fill"] = Fill_df["Fill"]
+        else:
+            df["Fill"] = 0
+            change_indices = sorted(Fill_df.iloc[:, 0].values)
+            for idx in change_indices:
+                df.loc[idx:, "Fill"] += 1
+        df["Fill"] = pd.Categorical(df["Fill"]).codes
+        unique_Fill = sorted(df["Fill"].unique())
+        if len(unique_Fill) != 7:
+            print(
+                f"[WARNING] File {file} does not have 7 unique Fill values; skipping.")
+            continue
+        df['Fill'] = df['Fill'].apply(reassign_region)
+        mapping = {'no_fill': 0, 'init_fill': 1,
+                   'ch_1': 2, 'ch_2': 3, 'full_fill': 4}
+        df['Fill'] = df['Fill'].map(mapping)
+        delta_idx = find_time_delta(df)
+        if delta_idx == -1:
+            if len(short_runs) < required_runs:
+                short_runs.append(df)
+        else:
+            if len(long_runs) < required_runs:
+                long_runs.append(df)
+    return short_runs, long_runs
+
+# ---------------------------
+# Model Training and Prediction for Fill
 # ---------------------------
 
 
 def train_model_native(training_data, numerical_features=FEATURES, categorical_features=None, target='Fill', tune=True):
-    # Separate features and target
     features = numerical_features + \
         (categorical_features if categorical_features else [])
     X = training_data[features].copy()
     y = training_data[target].values
 
-    # Preprocess numerical features
     num_imputer = SimpleImputer(strategy='mean')
     X_num = num_imputer.fit_transform(X[numerical_features])
     scaler = StandardScaler()
     X_num = scaler.fit_transform(X_num)
 
-    # Preprocess categorical features if provided
     if categorical_features:
         cat_imputer = SimpleImputer(strategy='most_frequent')
         X_cat = cat_imputer.fit_transform(X[categorical_features])
@@ -205,19 +359,16 @@ def train_model_native(training_data, numerical_features=FEATURES, categorical_f
     else:
         X_processed = X_num
 
-    # Create XGBoost DMatrix
     dtrain = xgb.DMatrix(X_processed, label=y)
-
-    # Base parameters that remain constant
     base_params = {
         'objective': 'multi:softprob',
         'num_class': 5,
         'eval_metric': 'aucpr',
-        'seed': 42
+        'seed': 42,
+        'device': 'cuda',
     }
 
     if tune:
-        # Define search space for hyperparameters
         space = {
             'max_depth': hp.quniform('max_depth', 3, 10, 1),
             'learning_rate': hp.uniform('learning_rate', 0.01, 0.2),
@@ -226,13 +377,10 @@ def train_model_native(training_data, numerical_features=FEATURES, categorical_f
             'min_child_weight': hp.quniform('min_child_weight', 1, 10, 1)
         }
 
-        # Objective function to minimize (we negate aucpr since we want to maximize it)
         def objective(hyperparams):
             params = base_params.copy()
-            # Cast hyperparameters that require integer values
             params['max_depth'] = int(hyperparams['max_depth'])
             params['min_child_weight'] = int(hyperparams['min_child_weight'])
-            # For other parameters, use the values directly
             params['learning_rate'] = hyperparams['learning_rate']
             params['subsample'] = hyperparams['subsample']
             params['colsample_bytree'] = hyperparams['colsample_bytree']
@@ -251,26 +399,18 @@ def train_model_native(training_data, numerical_features=FEATURES, categorical_f
             best_rounds = len(cv_results)
             return {'loss': -best_score, 'status': STATUS_OK, 'num_rounds': best_rounds}
 
-        # Run hyperparameter tuning
         trials = Trials()
         best = fmin(fn=objective, space=space, algo=tpe.suggest,
                     max_evals=10, trials=trials)
-        # Ensure integer hyperparameters are cast correctly
         best['max_depth'] = int(best['max_depth'])
         best['min_child_weight'] = int(best['min_child_weight'])
-        # Update parameters with the best found values
         params = base_params.copy()
         params.update(best)
-        # Retrieve the optimal number of boosting rounds from the best trial
         best_trial = min(trials.results, key=lambda x: x['loss'])
         optimal_rounds = best_trial['num_rounds']
     else:
-        # Use fixed hyperparameters if not tuning
         params = base_params.copy()
-        params.update({
-            'max_depth': 5,
-            'learning_rate': 0.1
-        })
+        params.update({'max_depth': 5, 'learning_rate': 0.1})
         cv_results = xgb.cv(
             params,
             dtrain,
@@ -283,7 +423,6 @@ def train_model_native(training_data, numerical_features=FEATURES, categorical_f
         )
         optimal_rounds = len(cv_results)
 
-    # Train final model with determined parameters and boosting rounds
     model = xgb.train(params, dtrain, num_boost_round=optimal_rounds)
     preprocessors = {'num_imputer': num_imputer, 'scaler': scaler}
     if categorical_features:
@@ -306,14 +445,11 @@ def predict_native(model, preprocessors, X, numerical_features=FEATURES, categor
     return prob_matrix
 
 # ---------------------------
-# Live Monitor Plotting Functions
+# Live Monitor Plotting and Prediction Loop
 # ---------------------------
 
 
-def update_live_monitor_two_models(accumulated_data, pred_short, pred_long, delta_idx, axes, delay):
-    """
-    Update live plots with predictions from both models and an indicator for time delta.
-    """
+def update_live_monitor_two_models(accumulated_data, pred_short, pred_long, conf_short, conf_long, delta_idx, axes, delay, run_type_info=None):
     indices = np.arange(len(accumulated_data))
     axes[0].cla()
     axes[0].plot(indices, accumulated_data["Fill"], label="Actual",
@@ -325,6 +461,30 @@ def update_live_monitor_two_models(accumulated_data, pred_short, pred_long, delt
     if delta_idx != -1:
         axes[0].axvline(x=delta_idx, color='purple',
                         linestyle=':', label="Time Delta Detected")
+
+    change_indices_short = np.where(np.diff(pred_short) != 0)[0] + 1
+    for idx in change_indices_short:
+        conf_percent = conf_short[idx] * 100
+        y_val = pred_short[idx]
+        axes[0].annotate(f"S: {conf_percent:.0f}%", (idx, y_val),
+                         textcoords="offset points", xytext=(0, 10),
+                         ha='center', fontsize=8, color='red')
+
+    change_indices_long = np.where(np.diff(pred_long) != 0)[0] + 1
+    for idx in change_indices_long:
+        conf_percent = conf_long[idx] * 100
+        y_val = pred_long[idx]
+        axes[0].annotate(f"L: {conf_percent:.0f}%", (idx, y_val),
+                         textcoords="offset points", xytext=(0, -15),
+                         ha='center', fontsize=8, color='green')
+
+    # Annotate run type prediction if available
+    if run_type_info is not None:
+        run_label, confidence = run_type_info
+        label_str = "short" if run_label == 0 else "long"
+        axes[0].text(0.02, 0.95, f"Run type: {label_str} ({confidence*100:.1f}%)",
+                     transform=axes[0].transAxes, fontsize=10, color='black', bbox=dict(facecolor='white', alpha=0.6))
+
     axes[0].set_title("Predicted vs Actual Fill")
     axes[0].set_xlabel("Data Point Index")
     axes[0].set_ylabel("Fill Category (numeric)")
@@ -343,6 +503,60 @@ def update_live_monitor_two_models(accumulated_data, pred_short, pred_long, delt
     axes[1].legend()
 
     plt.pause(delay)
+
+
+def live_prediction_loop_two_models(model_short, preprocessors_short, model_long, preprocessors_long,
+                                    transition_matrix_short, transition_matrix_long,
+                                    loaded_data, run_type_classifier, batch_size=100, delay=0.1):
+    accumulated_data = pd.DataFrame(columns=loaded_data.columns)
+    plt.ion()
+    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+    stream_generator = simulate_serial_stream_from_loaded(
+        loaded_data, batch_size=batch_size)
+    batch_num = 0
+
+    for batch in stream_generator:
+        batch_num += 1
+        print(
+            f"\n[INFO] Streaming batch {batch_num} with {len(batch)} data points...")
+        time.sleep(delay)
+        accumulated_data = pd.concat(
+            [accumulated_data, batch], ignore_index=True)
+        accumulated_data = compute_additional_features(accumulated_data)
+        if len(accumulated_data) > IGNORE_BEFORE and batch_num == 1:
+            accumulated_data = accumulated_data.iloc[IGNORE_BEFORE:]
+        X_live = accumulated_data[FEATURES]
+
+        prob_matrix_short = predict_native(
+            model_short, preprocessors_short, X_live, numerical_features=FEATURES)
+        pred_short = viterbi_decode(prob_matrix_short, transition_matrix_short)
+        prob_matrix_long = predict_native(
+            model_long, preprocessors_long, X_live, numerical_features=FEATURES)
+        pred_long = viterbi_decode(prob_matrix_long, transition_matrix_long)
+
+        conf_short = np.array([prob_matrix_short[i, pred_short[i]]
+                              for i in range(len(pred_short))])
+        conf_long = np.array([prob_matrix_long[i, pred_long[i]]
+                             for i in range(len(pred_long))])
+
+        delta_idx = find_time_delta(accumulated_data)
+
+        # Run-Type Prediction: if enough data has been accumulated, predict run type.
+        run_type_info = None
+        if len(accumulated_data) >= 100:
+            run_type, prob_distribution = predict_run_type(
+                run_type_classifier, accumulated_data)
+            run_type_info = (run_type, max(prob_distribution))
+            print(
+                f"[INFO] Live run type prediction: {'short' if run_type==0 else 'long'} (Confidence: {max(prob_distribution)*100:.1f}%)")
+
+        update_live_monitor_two_models(accumulated_data, pred_short, pred_long,
+                                       conf_short, conf_long,
+                                       delta_idx, axes, delay, run_type_info=run_type_info)
+        print(
+            f"[INFO] Updated live monitor after batch {batch_num}. Total points: {len(accumulated_data)}")
+    plt.ioff()
+    plt.show()
 
 
 def simulate_serial_stream_from_loaded(loaded_data, batch_size=100):
@@ -377,101 +591,6 @@ def viterbi_decode(prob_matrix, transition_matrix):
         best_path[t] = backpointer[t+1, best_path[t+1]]
     return best_path
 
-# ---------------------------
-# Live Prediction Loop for Two Models
-# ---------------------------
-
-
-def live_prediction_loop_two_models(model_short, preprocessors_short, model_long, preprocessors_long,
-                                    transition_matrix_short, transition_matrix_long,
-                                    loaded_data, batch_size=100, delay=0.1):
-    """
-    Simulate live predictions by streaming data from loaded_data in batches.
-    Both the short-run and long-run models are applied and plotted.
-    Each uses its corresponding transition matrix for Viterbi decoding.
-    """
-    accumulated_data = pd.DataFrame(columns=loaded_data.columns)
-    plt.ion()
-    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
-    stream_generator = simulate_serial_stream_from_loaded(
-        loaded_data, batch_size=batch_size)
-    batch_num = 0
-
-    for batch in stream_generator:
-        batch_num += 1
-        print(
-            f"\n[INFO] Streaming batch {batch_num} with {len(batch)} data points...")
-        time.sleep(delay)
-        accumulated_data = pd.concat(
-            [accumulated_data, batch], ignore_index=True)
-        accumulated_data = compute_additional_features(accumulated_data)
-        if len(accumulated_data) > IGNORE_BEFORE and batch_num == 1:
-            accumulated_data = accumulated_data.iloc[IGNORE_BEFORE:]
-        X_live = accumulated_data[FEATURES]
-        # Get predictions from both models
-        prob_matrix_short = predict_native(
-            model_short, preprocessors_short, X_live, numerical_features=FEATURES)
-        pred_short = viterbi_decode(prob_matrix_short, transition_matrix_short)
-        prob_matrix_long = predict_native(
-            model_long, preprocessors_long, X_live, numerical_features=FEATURES)
-        pred_long = viterbi_decode(prob_matrix_long, transition_matrix_long)
-        # Check for a time delta in the accumulated data
-        delta_idx = find_time_delta(accumulated_data)
-        update_live_monitor_two_models(
-            accumulated_data, pred_short, pred_long, delta_idx, axes, delay)
-        print(
-            f"[INFO] Updated live monitor after batch {batch_num}. Total points: {len(accumulated_data)}")
-    plt.ioff()
-    plt.show()
-
-# ---------------------------
-# The Original find_time_delta Function (unchanged)
-# ---------------------------
-
-
-def find_time_delta(df) -> int:
-    time_df = pd.DataFrame()
-    time_df["Delta"] = df["Relative_time"].diff()
-    threshold = 0.032
-    rolling_avg = time_df["Delta"].expanding(min_periods=2).mean()
-    time_df["Significant_change"] = (
-        time_df["Delta"] - rolling_avg).abs() > threshold
-    change_indices = time_df.index[time_df["Significant_change"]].tolist()
-    return change_indices[0] if change_indices else -1
-
-# ---------------------------
-# Helper Function: load_and_preprocess_single remains unchanged
-# ---------------------------
-
-
-def load_and_preprocess_single(data_file: str, poi_file: str):
-    df = pd.read_csv(data_file)
-    required_cols = ["Relative_time", "Resonance_Frequency", "Dissipation"]
-    if df.empty or not all(col in df.columns for col in required_cols):
-        raise ValueError(
-            "Data file is empty or missing required sensor columns.")
-    df = df[required_cols]
-    poi_df = pd.read_csv(poi_file, header=None)
-    if "Fill" in poi_df.columns:
-        df["Fill"] = poi_df["Fill"]
-    else:
-        df["Fill"] = 0
-        change_indices = sorted(poi_df.iloc[:, 0].values)
-        for idx in change_indices:
-            df.loc[idx:, "Fill"] += 1
-    df["Fill"] = pd.Categorical(df["Fill"]).codes
-    unique_Fill = sorted(df["Fill"].unique())
-    # if len(unique_Fill) != 7:
-    #     raise ValueError(
-    #         f"Expected 7 unique Fill values in file {data_file}, but found {len(unique_Fill)}: {unique_Fill}")
-    df["Fill"] = df["Fill"].apply(reassign_region)
-    mapping = {'no_fill': 0, 'init_fill': 1,
-               'ch_1': 2, 'ch_2': 3, 'full_fill': 4}
-    df["Fill"] = df["Fill"].map(mapping)
-    print("[INFO] Preprocessed single-file data sample:")
-    print(df.head())
-    return df
-
 
 def compute_dynamic_transition_matrix(training_data, num_states=5, smoothing=1e-6):
     states = training_data["Fill"].values
@@ -490,129 +609,290 @@ def compute_dynamic_transition_matrix(training_data, num_states=5, smoothing=1e-
     return transition_counts / row_sums
 
 
-def save_params(params, filename):
-    import json
+# ---------------------------
+# Main Execution: Training and Testing
+# ---------------------------
+# ---------------------------
+# Meta-Classifier Functions
+# ---------------------------
+def train_meta_classifier(training_data, model_short, preprocessors_short, model_long, preprocessors_long, meta_model_type='xgb'):
+    """
+    Train a meta-classifier that learns to combine the outputs of the short and long models.
+    It uses the predicted probability distributions (for each Fill class) as features.
+    """
+    # Use the same features as in the base models
+    X_input = training_data[FEATURES]
+    # Get probability predictions (each of shape [n_samples, 5])
+    prob_matrix_short = predict_native(
+        model_short, preprocessors_short, X_input, numerical_features=FEATURES)
+    prob_matrix_long = predict_native(
+        model_long, preprocessors_long, X_input, numerical_features=FEATURES)
+    # Concatenate along the feature axis (resulting in 10 features per sample)
+    X_meta = np.hstack([prob_matrix_short, prob_matrix_long])
+    y_meta = training_data['Fill'].values
 
-    def convert(item):
-        if isinstance(item, np.ndarray):
-            return item.tolist()
-        if isinstance(item, np.generic):
-            return item.item()
-        return item
-    serializable = {k: convert(v) for k, v in params.items()}
-    with open(filename, "w") as f:
-        json.dump(serializable, f)
+    if meta_model_type == 'xgb':
+        meta_clf = XGBClassifier(
+            random_state=42, use_label_encoder=False, eval_metric='auc')
+        meta_clf.fit(X_meta, y_meta)
+    elif meta_model_type == 'logistic':
+        from sklearn.linear_model import LogisticRegression
+        meta_clf = LogisticRegression(max_iter=1000, random_state=42)
+        meta_clf.fit(X_meta, y_meta)
+    else:
+        raise ValueError("Unsupported meta_model_type")
+    return meta_clf
 
-
-def save_preprocessors(preprocessors, filename):
-    processors_serialized = {}
-
-    for name, processor in preprocessors.items():
-        proc_dict = {}
-        # Save the type so we know how to reconstruct later.
-        proc_dict["type"] = type(processor).__name__
-        # Save the initialization parameters.
-        proc_dict["init_params"] = processor.get_params()
-
-        # Save fitted attributes for known types.
-        if hasattr(processor, "mean_"):
-            proc_dict["mean_"] = processor.mean_.tolist()
-        if hasattr(processor, "scale_"):
-            proc_dict["scale_"] = processor.scale_.tolist()
-        if hasattr(processor, "var_"):
-            proc_dict["var_"] = processor.var_.tolist()
-        if hasattr(processor, "n_samples_seen_"):
-            proc_dict["n_samples_seen_"] = processor.n_samples_seen_
-        if hasattr(processor, "statistics_"):
-            proc_dict["statistics_"] = processor.statistics_.tolist(
-            ) if processor.statistics_ is not None else None
-        if hasattr(processor, "categories_"):
-            # OneHotEncoder stores categories_ as a list of numpy arrays.
-            proc_dict["categories_"] = [cat.tolist()
-                                        for cat in processor.categories_]
-
-        processors_serialized[name] = proc_dict
+# ---------------------------
+# Update Live Monitor Plotting to Include Meta Prediction
+# ---------------------------
 
 
-def load_preprocessors(filename):
-    import json
-    with open(filename, "r") as f:
-        processors_serialized = json.load(f)
+def update_live_monitor_two_models(accumulated_data, pred_short, pred_long, final_preds, conf_short, conf_long, final_conf, delta_idx, axes, delay, run_type_info=None):
+    indices = np.arange(len(accumulated_data))
+    axes[0].cla()
+    axes[0].plot(indices, accumulated_data["Fill"], label="Actual",
+                 color='blue', marker='o', linestyle='--', markersize=3)
+    axes[0].plot(indices, pred_short, label="Short Model",
+                 color='red', marker='x', linestyle='-', markersize=3)
+    axes[0].plot(indices, pred_long, label="Long Model",
+                 color='green', marker='^', linestyle='-.', markersize=3)
+    axes[0].plot(indices, final_preds, label="Meta-Ensemble",
+                 color='black', marker='s', linestyle='-', markersize=3)
+    if delta_idx != -1:
+        axes[0].axvline(x=delta_idx, color='purple',
+                        linestyle=':', label="Time Delta Detected")
 
-    processors = {}
-    for name, proc_dict in processors_serialized.items():
-        proc_type = proc_dict["type"]
-        init_params = proc_dict["init_params"]
+    # Optionally annotate changes in meta predictions with confidence values
+    change_indices_meta = np.where(np.diff(final_preds) != 0)[0] + 1
+    for idx in change_indices_meta:
+        conf_percent = final_conf[idx] * 100
+        y_val = final_preds[idx]
+        axes[0].annotate(f"M: {conf_percent:.0f}%", (idx, y_val),
+                         textcoords="offset points", xytext=(0, -25),
+                         ha='center', fontsize=8, color='black')
 
-        if proc_type == "StandardScaler":
-            processor = StandardScaler(**init_params)
-            processor.mean_ = np.array(proc_dict.get("mean_"))
-            processor.scale_ = np.array(proc_dict.get("scale_"))
-            processor.var_ = np.array(proc_dict.get("var_"))
-            processor.n_samples_seen_ = proc_dict.get("n_samples_seen_")
+    axes[0].set_title("Predicted vs Actual Fill")
+    axes[0].set_xlabel("Data Point Index")
+    axes[0].set_ylabel("Fill Category (numeric)")
+    axes[0].legend()
+    axes[0].set_ylim(-0.5, 4.5)
 
-        elif proc_type == "SimpleImputer":
-            processor = SimpleImputer(**init_params)
-            stats = proc_dict.get("statistics_")
-            processor.statistics_ = np.array(
-                stats) if stats is not None else None
+    axes[1].cla()
+    axes[1].plot(indices, accumulated_data["Dissipation"],
+                 label="Dissipation", color='green')
+    if delta_idx != -1:
+        axes[1].axvline(x=delta_idx, color='purple',
+                        linestyle=':', label="Time Delta")
+    axes[1].set_title("Dissipation Curve")
+    axes[1].set_xlabel("Data Point Index")
+    axes[1].set_ylabel("Dissipation")
+    axes[1].legend()
 
-        elif proc_type == "OneHotEncoder":
-            processor = OneHotEncoder(**init_params)
-            cats = proc_dict.get("categories_")
-            processor.categories_ = [
-                np.array(cat) for cat in cats] if cats is not None else None
+    if run_type_info is not None:
+        run_label, confidence = run_type_info
+        label_str = "short" if run_label == 0 else "long"
+        axes[0].text(0.02, 0.85, f"Run type: {label_str} ({confidence*100:.1f}%)",
+                     transform=axes[0].transAxes, fontsize=10, color='black',
+                     bbox=dict(facecolor='white', alpha=0.6))
+    plt.pause(delay)
 
-        else:
-            raise ValueError(f"Unknown processor type: {proc_type}")
+# ---------------------------
+# Updated Live Prediction Loop Including the Meta-Classifier
+# ---------------------------
 
-        processors[name] = processor
-    return processors
+
+def live_prediction_loop_two_models(model_short, preprocessors_short, model_long, preprocessors_long,
+                                    transition_matrix_short, transition_matrix_long,
+                                    loaded_data, run_type_classifier, meta_clf, meta_transition_matrix,
+                                    batch_size=100, delay=0.1):
+    accumulated_data = pd.DataFrame(columns=loaded_data.columns)
+    plt.ion()
+    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+    stream_generator = simulate_serial_stream_from_loaded(
+        loaded_data, batch_size=batch_size)
+    batch_num = 0
+
+    for batch in stream_generator:
+        batch_num += 1
+        print(
+            f"\n[INFO] Streaming batch {batch_num} with {len(batch)} data points...")
+        time.sleep(delay)
+        accumulated_data = pd.concat(
+            [accumulated_data, batch], ignore_index=True)
+        accumulated_data = compute_additional_features(accumulated_data)
+        if len(accumulated_data) > IGNORE_BEFORE and batch_num == 1:
+            accumulated_data = accumulated_data.iloc[IGNORE_BEFORE:]
+        X_live = accumulated_data[FEATURES]
+
+        # Get probability predictions from both base models
+        prob_matrix_short = predict_native(
+            model_short, preprocessors_short, X_live, numerical_features=FEATURES)
+        pred_short = viterbi_decode(prob_matrix_short, transition_matrix_short)
+        prob_matrix_long = predict_native(
+            model_long, preprocessors_long, X_live, numerical_features=FEATURES)
+        pred_long = viterbi_decode(prob_matrix_long, transition_matrix_long)
+
+        conf_short = np.array([prob_matrix_short[i, pred_short[i]]
+                              for i in range(len(pred_short))])
+        conf_long = np.array([prob_matrix_long[i, pred_long[i]]
+                             for i in range(len(pred_long))])
+
+        # Combine the base model outputs to form meta features
+        meta_features = np.hstack([prob_matrix_short, prob_matrix_long])
+        # Get meta classifier probabilities
+        meta_prob_matrix = meta_clf.predict_proba(meta_features)
+        # Apply Viterbi decoding to the meta probabilities using the meta transition matrix
+        final_preds = viterbi_decode(meta_prob_matrix, meta_transition_matrix)
+        final_conf = np.array([meta_prob_matrix[i, final_preds[i]]
+                              for i in range(len(final_preds))])
+
+        delta_idx = find_time_delta(accumulated_data)
+
+        # Run-Type Prediction (as before)
+        run_type_info = None
+        if len(accumulated_data) >= 100:
+            run_type, prob_distribution = predict_run_type(
+                run_type_classifier, accumulated_data)
+            run_type_info = (run_type, max(prob_distribution))
+            print(
+                f"[INFO] Live run type prediction: {'short' if run_type==0 else 'long'} (Confidence: {max(prob_distribution)*100:.1f}%)")
+
+        # Updated monitor plot to include meta-decoded predictions
+        update_live_monitor_two_models(accumulated_data, pred_short, pred_long, final_preds,
+                                       conf_short, conf_long, final_conf,
+                                       delta_idx, axes, delay, run_type_info=run_type_info)
+        print(
+            f"[INFO] Updated live monitor after batch {batch_num}. Total points: {len(accumulated_data)}")
+    plt.ioff()
+    plt.show()
 
 
 # ---------------------------
-# Main Execution: Train Two Models and Run Live Predictions
+# Main Execution: Training and Testing (Modified Sections)
 # ---------------------------
 if __name__ == "__main__":
-    # 1. Load and split training data from multiple files:
+    save_dir = r"QModel\SavedModels\forecaster"
+    os.makedirs(save_dir, exist_ok=True)
     training_data_dir = r"content\training_data\full_fill"  # Update as needed
-    training_data_short, training_data_long = load_and_preprocess_data_split(
-        training_data_dir)
 
-    # 2. Compute separate dynamic transition matrices.
-    transition_matrix_short = compute_dynamic_transition_matrix(
-        training_data_short)
-    transition_matrix_long = compute_dynamic_transition_matrix(
-        training_data_long)
+    # Load individual runs for run-type classification
+    short_runs, long_runs = load_runs_for_classification(
+        training_data_dir, required_runs=200)
+    run_type_classifier = train_run_length_classifier(short_runs, long_runs)
+    # Save the run-type classifier
+    with open(os.path.join(save_dir, "run_type_classifier.pkl"), "wb") as f:
+        pickle.dump(run_type_classifier, f)
 
-    # 3. Train two separate models.
-    model_short, preprocessors_short, params_short = train_model_native(
-        training_data_short)
-    model_long, preprocessors_long, params_long = train_model_native(
-        training_data_long)
-    # Save the short model using XGBoost's native method
-    model_short.save_model('model_short.json')
-    # Save the long model similarly
-    model_long.save_model('model_long.json')
+    if TRAINING:
+        # Load and split training data into separate groups for fill prediction
+        training_data_short, training_data_long = load_and_preprocess_data_split(
+            training_data_dir, required_runs=20)
 
-    save_params(params_short, "params_short.json")
-    save_params(params_long, "params_long.json")
-    save_preprocessors(preprocessors_short, "preprocessors_short.json")
-    save_preprocessors(preprocessors_long, "preprocessors_long.json")
+        # Compute dynamic transition matrices
+        transition_matrix_short = compute_dynamic_transition_matrix(
+            training_data_short)
+        transition_matrix_long = compute_dynamic_transition_matrix(
+            training_data_long)
 
-    print("[INFO] Model training complete.\n")
+        # Train the two fill prediction models
+        model_short, preprocessors_short, params_short = train_model_native(
+            training_data_short)
+        model_long, preprocessors_long, params_long = train_model_native(
+            training_data_long)
+        # Combine training data from both groups to form meta training data.
 
-    # 4. For each test run, simulate live predictions using both models.
-    test_dir = r"content\test_data"
-    test_content = load_content(test_dir)
-    random.shuffle(test_content)
-    for data_file, poi_file in test_content:
-        df_test = pd.read_csv(data_file)
-        delay = df_test['Relative_time'].max(
-        ) / len(df_test["Relative_time"].values)
-        loaded_data = load_and_preprocess_single(data_file, poi_file)
-        live_prediction_loop_two_models(model_short, preprocessors_short, model_long, preprocessors_long,
-                                        transition_matrix_short, transition_matrix_long,
-                                        loaded_data, batch_size=100, delay=delay/2)
-        print("\n[INFO] Live prediction simulation complete for one test run.")
-    print("\n[INFO] All live prediction simulations complete.")
+        print("[INFO] Base model training complete.\n")
+        meta_training_data = pd.concat([training_data_short, training_data_long]).sort_values(
+            "Relative_time").reset_index(drop=True)
+
+        # Train the meta classifier.
+        meta_clf = train_meta_classifier(
+            meta_training_data, model_short, preprocessors_short, model_long, preprocessors_long, meta_model_type='xgb')
+
+        # Compute the meta transition matrix based on ground-truth Fill labels.
+        meta_transition_matrix = compute_dynamic_transition_matrix(
+            meta_training_data)
+
+        # Save the meta classifier and meta transition matrix.
+        with open(os.path.join(save_dir, "meta_classifier.pkl"), "wb") as f:
+            pickle.dump(meta_clf, f)
+        with open(os.path.join(save_dir, "meta_transition_matrix.pkl"), "wb") as f:
+            pickle.dump(meta_transition_matrix, f)
+
+        print("[INFO] Base models, transition matrices, run-type classifier, meta-classifier, and meta transition matrix have been saved successfully.")
+
+        # Save base models and associated objects (as before) ...
+        model_short.save_model(os.path.join(save_dir, "model_short.json"))
+        with open(os.path.join(save_dir, "preprocessors_short.pkl"), "wb") as f:
+            pickle.dump(preprocessors_short, f)
+        with open(os.path.join(save_dir, "params_short.pkl"), "wb") as f:
+            pickle.dump(params_short, f)
+        with open(os.path.join(save_dir, "transition_matrix_short.pkl"), "wb") as f:
+            pickle.dump(transition_matrix_short, f)
+
+        model_long.save_model(os.path.join(save_dir, "model_long.json"))
+        with open(os.path.join(save_dir, "preprocessors_long.pkl"), "wb") as f:
+            pickle.dump(preprocessors_long, f)
+        with open(os.path.join(save_dir, "params_long.pkl"), "wb") as f:
+            pickle.dump(params_long, f)
+        with open(os.path.join(save_dir, "transition_matrix_long.pkl"), "wb") as f:
+            pickle.dump(transition_matrix_long, f)
+
+        # ---------
+        # Train Meta-Classifier
+        # ---------
+        # Combine training data from both groups to form meta training data.
+        meta_training_data = pd.concat([training_data_short, training_data_long]).sort_values(
+            "Relative_time").reset_index(drop=True)
+        meta_clf = train_meta_classifier(
+            meta_training_data, model_short, preprocessors_short, model_long, preprocessors_long, meta_model_type='xgb')
+        with open(os.path.join(save_dir, "meta_classifier.pkl"), "wb") as f:
+            pickle.dump(meta_clf, f)
+
+        print("[INFO] Base models, transition matrices, run-type classifier, and meta-classifier have been saved successfully.")
+
+    if TESTING:
+        # Load fill prediction models and their objects (base models) ...
+        model_short = xgb.Booster()
+        model_short.load_model(os.path.join(save_dir, "model_short.json"))
+        with open(os.path.join(save_dir, "preprocessors_short.pkl"), "rb") as f:
+            preprocessors_short = pickle.load(f)
+        with open(os.path.join(save_dir, "params_short.pkl"), "rb") as f:
+            params_short = pickle.load(f)
+        with open(os.path.join(save_dir, "transition_matrix_short.pkl"), "rb") as f:
+            transition_matrix_short = pickle.load(f)
+
+        model_long = xgb.Booster()
+        model_long.load_model(os.path.join(save_dir, "model_long.json"))
+        with open(os.path.join(save_dir, "preprocessors_long.pkl"), "rb") as f:
+            preprocessors_long = pickle.load(f)
+        with open(os.path.join(save_dir, "params_long.pkl"), "rb") as f:
+            params_long = pickle.load(f)
+        with open(os.path.join(save_dir, "transition_matrix_long.pkl"), "rb") as f:
+            transition_matrix_long = pickle.load(f)
+
+        # Load the run-type classifier
+        with open(os.path.join(save_dir, "run_type_classifier.pkl"), "rb") as f:
+            run_type_classifier = pickle.load(f)
+        # Load the meta-classifier and meta transition matrix
+        with open(os.path.join(save_dir, "meta_classifier.pkl"), "rb") as f:
+            meta_clf = pickle.load(f)
+        with open(os.path.join(save_dir, "meta_transition_matrix.pkl"), "rb") as f:
+            meta_transition_matrix = pickle.load(f)
+
+        # Load test data and simulate live predictions
+        test_dir = r"content\test_data"
+        test_content = load_content(test_dir)
+        random.shuffle(test_content)
+        for data_file, poi_file in test_content:
+            df_test = pd.read_csv(data_file)
+            delay = df_test['Relative_time'].max(
+            ) / len(df_test["Relative_time"].values)
+            loaded_data = load_and_preprocess_single(data_file, poi_file)
+            live_prediction_loop_two_models(model_short, preprocessors_short, model_long, preprocessors_long,
+                                            transition_matrix_short, transition_matrix_long,
+                                            loaded_data, run_type_classifier, meta_clf, meta_transition_matrix,
+                                            batch_size=100, delay=delay/2)
+            print("\n[INFO] Live prediction simulation complete for one test run.")
+        print("\n[INFO] All live prediction simulations complete.")
