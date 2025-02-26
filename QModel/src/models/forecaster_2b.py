@@ -777,23 +777,23 @@ def simulate_serial_stream_from_loaded(loaded_data):
 
 
 class QForecasterSimulator:
-    def __init__(self, predictor: QForecasterPredictor, dataset: pd.DataFrame, ignore_before=0, delay=1.0):
+    def __init__(self, predictor: QForecasterPredictor, dataset: pd.DataFrame, poi_file: pd.DataFrame = None, ignore_before=0, delay=1.0):
         """
         Simulator class to stream data in random chunk sizes and update predictions live.
-
-        Args:
-            predictor (QForecasterPredictor): An instance of your predictor class.
-            dataset (pd.DataFrame): The full dataset to simulate the data stream.
-            ignore_before (int): Number of initial rows to ignore for stabilization.
-            delay (float): Delay in seconds between processing each batch.
         """
         self.predictor = predictor
         self.dataset = dataset
         self.ignore_before = ignore_before
         self.delay = delay
 
-        # Setup a live plot with two subplots: one for predictions and one for the dissipation curve.
-        self.fig, self.axes = plt.subplots(1, 2, figsize=(12, 6))
+        # If a POI file is provided, extract the actual indices.
+        if poi_file is not None:
+            self.actual_poi_indices = poi_file.values
+        else:
+            self.actual_poi_indices = np.array([])
+
+        # Setup a live plot with a single axis.
+        self.fig, self.ax = plt.subplots(figsize=(12, 6))
         plt.ion()  # Enable interactive mode.
         plt.show()
 
@@ -802,9 +802,7 @@ class QForecasterSimulator:
         Runs the simulation by iterating through the dataset in random chunk sizes,
         updating predictions, and plotting the current state.
         """
-        # Reset predictor's internal data accumulator.
         self.predictor.reset_accumulator()
-
         batch_number = 0
         for batch_data in simulate_serial_stream_from_loaded(self.dataset):
             batch_number += 1
@@ -826,69 +824,129 @@ class QForecasterSimulator:
 
     def plot_results(self, results, batch_number):
         """
-        Updates the live plots with the latest predictions and the dissipation curve.
-
-        The dissipation curve is plotted using the accumulated target values from the 
-        predictor's dataset up to the current batch.
-
-        Args:
-            results (dict): The dictionary output from update_predictions containing predictions and accumulated data.
-            batch_number (int): The current batch number for display purposes.
+        Updates the live plot with the normalized dissipation curve overlaid
+        with background shading corresponding to contiguous predicted class regions,
+        using channel fill names in the legend. The plot is styled with a clean,
+        minimalist aesthetic.
         """
-        # Clear the previous plots.
-        self.axes[0].cla()  # For predictions.
-        self.axes[1].cla()  # For dissipation curve.
+        self.ax.cla()  # Clear previous plot
 
-        # Assume that results["final_preds"] contains a prediction per data point.
-        x_preds = np.arange(len(results["final_preds"]))
-        self.axes[0].plot(x_preds, results["final_preds"],
-                          linestyle='-', label='Final Predictions')
-        self.axes[0].set_title(f'Predictions (Batch {batch_number})')
-        self.axes[0].set_xlabel('Data Index')
-        self.axes[0].set_ylabel('Predicted State')
-        self.axes[0].legend()
+        # Apply minimalist styling.
+        self.ax.set_facecolor('white')
+        self.fig.patch.set_facecolor('white')
+        self.ax.spines['top'].set_visible(False)
+        self.ax.spines['right'].set_visible(False)
 
-        # Plot the dissipation curve using the target column ("Fill") from accumulated data.
-        # This plots the target (e.g., "Fill") values from the start of the stream up to the current batch.
+        # Plot the dissipation curve with a clean dark line.
         accumulated_data = results["accumulated_data"]
         x_dissipation = np.arange(len(accumulated_data))
-        # dissipation_values = accumulated_data[self.predictor.target]
-        self.axes[1].plot(x_dissipation, accumulated_data["Dissipation"],
-                          linestyle='dotted', color='red', label='Dissipation Curve')
-        self.axes[1].set_title(
-            f'Dissipation Curve (up to Batch {batch_number})')
-        self.axes[1].set_xlabel('Accumulated Data Index')
-        self.axes[1].set_ylabel(self.predictor.target)
-        self.axes[1].legend()
+        self.ax.plot(x_dissipation, accumulated_data["Dissipation"],
+                     linestyle=':', color='#333333', linewidth=1.5, label='Dissipation Curve')
 
-        # Redraw the figure to update the plots.
+        # Define mappings for class IDs to names and colors.
+        class_names = {
+            0: "no_fill",
+            1: "initial_fill",
+            2: "channel_1",
+            3: "channel_2",
+            4: "full_fill"
+        }
+        class_colors = {
+            0: "#d3d3d3",    # light grey for no_fill
+            1: "#a6cee3",    # pastel blue for initial_fill
+            2: "#b2df8a",    # pastel green for channel_1
+            3: "#fdbf6f",    # pastel orange for channel_2
+            4: "#fb9a99"     # pastel red/pink for full_fill
+        }
+
+        # Overlay shaded regions for predicted class regions.
+        preds = np.array(results["final_preds"])
+        if len(preds) > 0:
+            already_labeled = {}
+            current_class = preds[0]
+            start_idx = 0
+            for i in range(1, len(preds)):
+                if preds[i] != current_class:
+                    end_idx = i - 1
+                    label = class_names[current_class] if current_class not in already_labeled else None
+                    already_labeled[current_class] = True
+                    self.ax.axvspan(start_idx, end_idx, color=class_colors.get(current_class, '#cccccc'),
+                                    alpha=0.3, label=label)
+                    current_class = preds[i]
+                    start_idx = i
+            # Shade the final segment.
+            end_idx = len(preds) - 1
+            label = class_names[current_class] if current_class not in already_labeled else None
+            self.ax.axvspan(start_idx, end_idx, color=class_colors.get(current_class, '#cccccc'),
+                            alpha=0.3, label=label)
+
+        # Scatter the actual POI indices on the dissipation curve.
+        if self.actual_poi_indices.size > 0:
+            valid_actual_indices = [
+                int(idx) for idx in self.actual_poi_indices if idx < len(accumulated_data)]
+            y_actual = accumulated_data["Dissipation"].iloc[valid_actual_indices]
+            self.ax.scatter(valid_actual_indices, y_actual,
+                            color='#2ca02c', marker='o', s=50, label='Actual POI')
+
+        # Compute average confidence per classification type.
+        if "final_conf" in results and len(results["final_conf"]) > 0:
+            preds = np.array(results["final_preds"])
+            confs = np.array(results["final_conf"])
+            avg_conf_per_class = {}
+            for cls in np.unique(preds):
+                avg_conf = np.mean(confs[preds == cls])
+                avg_conf_per_class[cls] = avg_conf
+
+            # Create a text block that summarizes the average confidence per class.
+            conf_text = "Avg Conf per Class:\n"
+            for cls, conf in avg_conf_per_class.items():
+                # Use class_names to show a friendly name if available.
+                conf_text += f"{class_names.get(cls, 'Unknown')}: {conf:.2f}\n"
+
+            # Display this text on the plot.
+            self.ax.text(0.05, 0.95, conf_text, transform=self.ax.transAxes,
+                         fontsize=12, verticalalignment='top', horizontalalignment='left',
+                         bbox=dict(facecolor='white', alpha=0.5))
+
+        self.ax.set_title(
+            f'Normalized Dissipation Curve (Batch {batch_number})', fontsize=14, weight='medium')
+        self.ax.set_xlabel('Data Index', fontsize=12)
+        self.ax.set_ylabel(self.predictor.target, fontsize=12)
+        self.ax.tick_params(axis='both', which='major', labelsize=10)
+        self.ax.legend(frameon=False, fontsize=10)
+
+        # Redraw the figure.
         self.fig.canvas.draw()
         self.fig.canvas.flush_events()
 
 
+# Main execution block.
 if __name__ == '__main__':
     # Load your dataset (update the path and parameters as needed).
-    dataset = pd.read_csv(
-        'content/training_data/channel_2/01104/MM231106W7_FV673_5X_K7_3rd.csv')
+    test_dir = r"content\test_data"
+    test_content = QForecasterDataprocessor.load_content(test_dir)
+    random.shuffle(test_content)
+    for data_file, poi_file in test_content:
+        dataset = pd.read_csv(data_file)
+        end = np.random.randint(0, len(dataset))
+        random_slice = dataset.iloc[0:end]
+        poi_file = pd.read_csv(poi_file, header=None)
 
-    # Define your feature lists.
-    numerical_features = ['feature1', 'feature2',
-                          'feature3']  # update with your feature names
+        # Create an instance of the predictor.
+        predictor = QForecasterPredictor(
+            FEATURES, target='Fill', save_dir='QModel/SavedModels/forecaster/')
+        predictor.load_models()  # Ensure models and preprocessors are loaded.
 
-    # Create an instance of the predictor.
-    predictor = QForecasterPredictor(
-        FEATURES, target='Fill', save_dir='QModel/SavedModels/forecaster/')
-    predictor.load_models()  # Ensure models and preprocessors are loaded.
-    delay = dataset['Relative_time'].max() / len(dataset)
-    # Create the simulator with desired parameters.
+        delay = dataset['Relative_time'].max() / len(random_slice)
 
-    # Create the simulator with desired parameters.
-    simulator = QForecasterSimulator(
-        predictor,
-        dataset,
-        ignore_before=50,
-        delay=delay
-    )
+        # Create the simulator, now passing the poi_file.
+        simulator = QForecasterSimulator(
+            predictor,
+            random_slice,
+            poi_file=poi_file,
+            ignore_before=50,
+            delay=delay
+        )
 
-    # Run the simulation.
-    simulator.run()
+        # Run the simulation.
+        simulator.run()
