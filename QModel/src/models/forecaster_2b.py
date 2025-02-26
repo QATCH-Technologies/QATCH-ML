@@ -289,28 +289,56 @@ class QForecasterDataprocessor:
         return transition_counts / row_sums
 
 
-class QForecaster:
-    def __init__(self, numerical_features, categorical_features=None, target='Fill'):
+# Assume these functions are defined in another module:
+# from some_module import (
+#     load_and_preprocess_data_split,
+#     compute_dynamic_transition_matrix,
+#     load_content,
+#     load_and_preprocess_single,
+#     live_prediction_loop_two_models,
+# )
+
+###############################################################################
+# Trainer Class: Handles model training, hyperparameter tuning, and saving.
+###############################################################################
+
+class QForecasterTrainer:
+    def __init__(self, numerical_features, categorical_features=None, target='Fill', save_dir=None):
         """
         Args:
-            numerical_features (list): List of names for numerical features.
-            categorical_features (list): List of names for categorical features.
-            target (str): Name of the target column.
+            numerical_features (list): List of numerical feature names.
+            categorical_features (list): List of categorical feature names.
+            target (str): Target column name.
+            save_dir (str): Directory to save trained objects.
         """
         self.numerical_features = numerical_features
         self.categorical_features = categorical_features if categorical_features is not None else []
         self.target = target
+        self.save_dir = save_dir
+
+        # Placeholders for trained objects.
+        self.model_short = None
+        self.model_long = None
+        self.meta_clf = None
+
+        self.preprocessors_short = None
+        self.preprocessors_long = None
+
+        self.params_short = None
+        self.params_long = None
+
+        self.transition_matrix_short = None
+        self.transition_matrix_long = None
+        self.meta_transition_matrix = None
 
     def _build_preprocessors(self, X):
-        """Create and fit preprocessors for numerical and categorical data."""
-        # Numerical preprocessors
+        """Fit and return preprocessors for numerical and categorical data."""
         num_imputer = SimpleImputer(strategy='mean')
         X_num = num_imputer.fit_transform(X[self.numerical_features])
         scaler = StandardScaler()
         X_num = scaler.fit_transform(X_num)
         preprocessors = {'num_imputer': num_imputer, 'scaler': scaler}
 
-        # Categorical preprocessors (if applicable)
         if self.categorical_features:
             cat_imputer = SimpleImputer(strategy='most_frequent')
             X_cat = cat_imputer.fit_transform(X[self.categorical_features])
@@ -324,23 +352,8 @@ class QForecaster:
 
         return X_processed, preprocessors
 
-    def _apply_preprocessors(self, X, preprocessors):
-        """Apply already fitted preprocessors to transform new data."""
-        X_num = preprocessors['num_imputer'].transform(
-            X[self.numerical_features])
-        X_num = preprocessors['scaler'].transform(X_num)
-
-        if self.categorical_features:
-            X_cat = preprocessors['cat_imputer'].transform(
-                X[self.categorical_features])
-            X_cat = preprocessors['encoder'].transform(X_cat)
-            X_processed = np.hstack([X_num, X_cat])
-        else:
-            X_processed = X_num
-        return X_processed
-
     def _tune_parameters(self, dtrain, base_params, max_evals=10):
-        """Tune hyperparameters using hyperopt and return best params and rounds."""
+        """Tune XGBoost hyperparameters using Hyperopt."""
         space = {
             'max_depth': hp.quniform('max_depth', 3, 10, 1),
             'learning_rate': hp.uniform('learning_rate', 0.01, 0.2),
@@ -374,7 +387,6 @@ class QForecaster:
         trials = Trials()
         best = fmin(fn=objective, space=space, algo=tpe.suggest,
                     max_evals=max_evals, trials=trials)
-        # Ensure parameters are integer where needed
         best['max_depth'] = int(best['max_depth'])
         best['min_child_weight'] = int(best['min_child_weight'])
         params = base_params.copy()
@@ -385,22 +397,17 @@ class QForecaster:
 
     def train_model_native(self, training_data, tune=True):
         """
-        Train the primary XGBoost model.
-
-        Args:
-            training_data (DataFrame): Data for training.
-            tune (bool): Whether to perform hyperparameter tuning.
+        Train an XGBoost model on the provided training data.
 
         Returns:
-            model: Trained xgboost model.
-            preprocessors (dict): Fitted preprocessors for later use.
-            params (dict): Parameters used for training.
+            model: Trained XGBoost model.
+            preprocessors (dict): Fitted preprocessors.
+            params (dict): Model parameters.
         """
         features = self.numerical_features + self.categorical_features
         X = training_data[features].copy()
         y = training_data[self.target].values
 
-        # Build and apply preprocessors
         X_processed, preprocessors = self._build_preprocessors(X)
         dtrain = xgb.DMatrix(X_processed, label=y)
 
@@ -434,46 +441,32 @@ class QForecaster:
 
     def predict_native(self, model, preprocessors, X):
         """
-        Generate predictions using the trained model.
-
-        Args:
-            model: Trained xgboost model.
-            preprocessors (dict): Preprocessors to transform the data.
-            X (DataFrame): Input features.
-
-        Returns:
-            np.ndarray: Predicted probabilities.
+        Helper method to generate predictions; used when training the meta-classifier.
         """
-        X_processed = self._apply_preprocessors(X.copy(), preprocessors)
+        X_copy = X.copy()
+        X_num = preprocessors['num_imputer'].transform(
+            X_copy[self.numerical_features])
+        X_num = preprocessors['scaler'].transform(X_num)
+        if self.categorical_features:
+            X_cat = preprocessors['cat_imputer'].transform(
+                X_copy[self.categorical_features])
+            X_cat = preprocessors['encoder'].transform(X_cat)
+            X_processed = np.hstack([X_num, X_cat])
+        else:
+            X_processed = X_num
         dmatrix = xgb.DMatrix(X_processed)
-        prob_matrix = model.predict(dmatrix)
-        return prob_matrix
+        return model.predict(dmatrix)
 
     def train_meta_classifier(self, training_data, model_short, preprocessors_short, model_long, preprocessors_long, meta_model_type='xgb'):
         """
-        Train a meta-classifier that learns to combine the outputs of two base models.
-        It uses the predicted probability distributions (for each Fill class) as features.
-
-        Args:
-            training_data (DataFrame): Data used to train the meta-classifier.
-            model_short: First base model.
-            preprocessors_short (dict): Preprocessors used with the first model.
-            model_long: Second base model.
-            preprocessors_long (dict): Preprocessors used with the second model.
-            meta_model_type (str): Either 'xgb' or 'logistic'.
-
-        Returns:
-            Trained meta-classifier.
+        Train a meta-classifier that combines outputs of two base models.
         """
         features = self.numerical_features + self.categorical_features
         X_input = training_data[features]
-
         prob_matrix_short = self.predict_native(
             model_short, preprocessors_short, X_input)
         prob_matrix_long = self.predict_native(
             model_long, preprocessors_long, X_input)
-
-        # Concatenate predictions to form meta-features
         X_meta = np.hstack([prob_matrix_short, prob_matrix_long])
         y_meta = training_data[self.target].values
 
@@ -484,14 +477,274 @@ class QForecaster:
             meta_clf = LogisticRegression(max_iter=1000, random_state=42)
         else:
             raise ValueError("Unsupported meta_model_type")
-
         meta_clf.fit(X_meta, y_meta)
         return meta_clf
 
+    def train_base_models(self, training_data_short, training_data_long, tune=True):
+        """
+        Train two base models (short and long) and compute their dynamic transition matrices.
+        """
+        self.transition_matrix_short = QForecasterDataprocessor.compute_dynamic_transition_matrix(
+            training_data_short)
+        self.transition_matrix_long = QForecasterDataprocessor.compute_dynamic_transition_matrix(
+            training_data_long)
+
+        self.model_short, self.preprocessors_short, self.params_short = self.train_model_native(
+            training_data_short, tune=tune)
+        self.model_long, self.preprocessors_long, self.params_long = self.train_model_native(
+            training_data_long, tune=tune)
+        print("[INFO] Base model training complete.")
+
+    def train_meta_model(self, meta_training_data, meta_model_type='xgb'):
+        """
+        Train the meta-classifier and compute its transition matrix.
+        """
+        self.meta_clf = self.train_meta_classifier(
+            meta_training_data,
+            self.model_short, self.preprocessors_short,
+            self.model_long, self.preprocessors_long,
+            meta_model_type=meta_model_type
+        )
+        self.meta_transition_matrix = QForecasterDataprocessor.compute_dynamic_transition_matrix(
+            meta_training_data)
+        print("[INFO] Meta model training complete.")
+
+    def save_models(self):
+        """
+        Save base models, meta-classifier, preprocessors, parameters, and transition matrices.
+        """
+        if not self.save_dir:
+            raise ValueError("Save directory not specified.")
+        os.makedirs(self.save_dir, exist_ok=True)
+
+        # Save meta objects.
+        with open(os.path.join(self.save_dir, "meta_classifier.pkl"), "wb") as f:
+            pickle.dump(self.meta_clf, f)
+        with open(os.path.join(self.save_dir, "meta_transition_matrix.pkl"), "wb") as f:
+            pickle.dump(self.meta_transition_matrix, f)
+
+        # Save short model and its objects.
+        self.model_short.save_model(os.path.join(
+            self.save_dir, "model_short.json"))
+        with open(os.path.join(self.save_dir, "preprocessors_short.pkl"), "wb") as f:
+            pickle.dump(self.preprocessors_short, f)
+        with open(os.path.join(self.save_dir, "params_short.pkl"), "wb") as f:
+            pickle.dump(self.params_short, f)
+        with open(os.path.join(self.save_dir, "transition_matrix_short.pkl"), "wb") as f:
+            pickle.dump(self.transition_matrix_short, f)
+
+        # Save long model and its objects.
+        self.model_long.save_model(os.path.join(
+            self.save_dir, "model_long.json"))
+        with open(os.path.join(self.save_dir, "preprocessors_long.pkl"), "wb") as f:
+            pickle.dump(self.preprocessors_long, f)
+        with open(os.path.join(self.save_dir, "params_long.pkl"), "wb") as f:
+            pickle.dump(self.params_long, f)
+        with open(os.path.join(self.save_dir, "transition_matrix_long.pkl"), "wb") as f:
+            pickle.dump(self.transition_matrix_long, f)
+
+        print("[INFO] All models and associated objects have been saved successfully.")
+
+    def load_models(self):
+        """
+        Optionally, the trainer can also load models from disk.
+        """
+        if not self.save_dir:
+            raise ValueError("Save directory not specified.")
+
+        self.model_short = xgb.Booster()
+        self.model_short.load_model(os.path.join(
+            self.save_dir, "model_short.json"))
+        with open(os.path.join(self.save_dir, "preprocessors_short.pkl"), "rb") as f:
+            self.preprocessors_short = pickle.load(f)
+        with open(os.path.join(self.save_dir, "params_short.pkl"), "rb") as f:
+            self.params_short = pickle.load(f)
+        with open(os.path.join(self.save_dir, "transition_matrix_short.pkl"), "rb") as f:
+            self.transition_matrix_short = pickle.load(f)
+
+        self.model_long = xgb.Booster()
+        self.model_long.load_model(os.path.join(
+            self.save_dir, "model_long.json"))
+        with open(os.path.join(self.save_dir, "preprocessors_long.pkl"), "rb") as f:
+            self.preprocessors_long = pickle.load(f)
+        with open(os.path.join(self.save_dir, "params_long.pkl"), "rb") as f:
+            self.params_long = pickle.load(f)
+        with open(os.path.join(self.save_dir, "transition_matrix_long.pkl"), "rb") as f:
+            self.transition_matrix_long = pickle.load(f)
+
+        with open(os.path.join(self.save_dir, "meta_classifier.pkl"), "rb") as f:
+            self.meta_clf = pickle.load(f)
+        with open(os.path.join(self.save_dir, "meta_transition_matrix.pkl"), "rb") as f:
+            self.meta_transition_matrix = pickle.load(f)
+
+        print("[INFO] All models and associated objects have been loaded successfully.")
+
+###############################################################################
+# Predictor Class: Handles generating predictions (including live predictions).
+###############################################################################
+
 
 class QForecasterPredictor:
-    def __init__(self):
-        pass
+    def __init__(self, numerical_features, categorical_features=None, target='Fill', save_dir=None):
+        """
+        Args:
+            numerical_features (list): List of numerical feature names.
+            categorical_features (list): List of categorical feature names.
+            target (str): Target column name.
+            save_dir (str): Directory from which to load saved objects.
+        """
+        self.numerical_features = numerical_features
+        self.categorical_features = categorical_features if categorical_features is not None else []
+        self.target = target
+        self.save_dir = save_dir
+
+        # Placeholders for loaded objects.
+        self.model_short = None
+        self.model_long = None
+        self.meta_clf = None
+        self.preprocessors_short = None
+        self.preprocessors_long = None
+        self.transition_matrix_short = None
+        self.transition_matrix_long = None
+        self.meta_transition_matrix = None
+
+        # Internal accumulator for live prediction updates.
+        self.accumulated_data = None
+        self.batch_num = 0
+        self.fig = None
+        self.axes = None
+
+    def load_models(self):
+        """
+        Load base models, meta-classifier, and associated objects from disk.
+        """
+        if not self.save_dir:
+            raise ValueError("Save directory not specified.")
+
+        self.model_short = xgb.Booster()
+        self.model_short.load_model(os.path.join(
+            self.save_dir, "model_short.json"))
+        with open(os.path.join(self.save_dir, "preprocessors_short.pkl"), "rb") as f:
+            self.preprocessors_short = pickle.load(f)
+        with open(os.path.join(self.save_dir, "transition_matrix_short.pkl"), "rb") as f:
+            self.transition_matrix_short = pickle.load(f)
+
+        self.model_long = xgb.Booster()
+        self.model_long.load_model(os.path.join(
+            self.save_dir, "model_long.json"))
+        with open(os.path.join(self.save_dir, "preprocessors_long.pkl"), "rb") as f:
+            self.preprocessors_long = pickle.load(f)
+        with open(os.path.join(self.save_dir, "transition_matrix_long.pkl"), "rb") as f:
+            self.transition_matrix_long = pickle.load(f)
+
+        with open(os.path.join(self.save_dir, "meta_classifier.pkl"), "rb") as f:
+            self.meta_clf = pickle.load(f)
+        with open(os.path.join(self.save_dir, "meta_transition_matrix.pkl"), "rb") as f:
+            self.meta_transition_matrix = pickle.load(f)
+
+        print("[INFO] All models and associated objects have been loaded successfully.")
+
+    def _apply_preprocessors(self, X, preprocessors):
+        """
+        Apply loaded preprocessors to input data.
+        """
+        X_copy = X.copy()
+        X_num = preprocessors['num_imputer'].transform(
+            X_copy[self.numerical_features])
+        X_num = preprocessors['scaler'].transform(X_num)
+        if self.categorical_features:
+            X_cat = preprocessors['cat_imputer'].transform(
+                X_copy[self.categorical_features])
+            X_cat = preprocessors['encoder'].transform(X_cat)
+            X_processed = np.hstack([X_num, X_cat])
+        else:
+            X_processed = X_num
+        return X_processed
+
+    def predict_native(self, model, preprocessors, X):
+        """
+        Generate predictions using a loaded XGBoost model.
+        """
+        X_processed = self._apply_preprocessors(X, preprocessors)
+        dmatrix = xgb.DMatrix(X_processed)
+        return model.predict(dmatrix)
+
+    def reset_accumulator(self):
+        """
+        Reset the internal accumulated dataframe and batch counter.
+        """
+        self.accumulated_data = None
+        self.batch_num = 0
+
+    def update_predictions(self, new_data, ignore_before=0):
+        """
+        Update internal accumulated data with a new batch of data and compute predictions.
+
+        Args:
+            new_data (DataFrame): New incoming batch of data.
+            delay (float): Delay (in seconds) to simulate processing time.
+            ignore_before (int): Number of initial rows to ignore (e.g., for stabilization).
+            update_monitor (bool): Whether to update a live-monitor plot.
+
+        Returns:
+            dict: A dictionary containing base and meta predictions and confidences.
+        """
+        # Initialize accumulator if needed.
+        if self.accumulated_data is None:
+            self.accumulated_data = pd.DataFrame(columns=new_data.columns)
+            self.batch_num = 0
+
+        self.batch_num += 1
+        print(
+            f"\n[INFO] Received batch {self.batch_num} with {len(new_data)} data points.")
+
+        # Append the new data.
+        self.accumulated_data = pd.concat(
+            [self.accumulated_data, new_data], ignore_index=True)
+        # Compute additional features (assumed to modify/augment the dataframe).
+        self.accumulated_data = QForecasterDataprocessor.compute_additional_features(
+            self.accumulated_data)
+        # Optionally ignore initial rows if specified.
+        if len(self.accumulated_data) > ignore_before and self.batch_num == 1:
+            self.accumulated_data = self.accumulated_data.iloc[ignore_before:]
+
+        # Define features based on the class's configuration.
+        features = self.numerical_features + self.categorical_features
+        X_live = self.accumulated_data[features]
+
+        # Get predictions from both base models.
+        prob_matrix_short = self.predict_native(
+            self.model_short, self.preprocessors_short, X_live)
+        pred_short = QForecasterDataprocessor.viterbi_decode(
+            prob_matrix_short, self.transition_matrix_short)
+        prob_matrix_long = self.predict_native(
+            self.model_long, self.preprocessors_long, X_live)
+        pred_long = QForecasterDataprocessor.viterbi_decode(
+            prob_matrix_long, self.transition_matrix_long)
+
+        # Compute confidences for base models.
+        conf_short = np.array([prob_matrix_short[i, pred_short[i]]
+                              for i in range(len(pred_short))])
+        conf_long = np.array([prob_matrix_long[i, pred_long[i]]
+                             for i in range(len(pred_long))])
+
+        # Combine outputs for meta classifier.
+        meta_features = np.hstack([prob_matrix_short, prob_matrix_long])
+        meta_prob_matrix = self.meta_clf.predict_proba(meta_features)
+        final_preds = QForecasterDataprocessor.viterbi_decode(
+            meta_prob_matrix, self.meta_transition_matrix)
+        final_conf = np.array([meta_prob_matrix[i, final_preds[i]]
+                              for i in range(len(final_preds))])
+
+        return {
+            "pred_short": pred_short,
+            "pred_long": pred_long,
+            "final_preds": final_preds,
+            "conf_short": conf_short,
+            "conf_long": conf_long,
+            "final_conf": final_conf,
+            "accumulated_data": self.accumulated_data
+        }
 
 
 class QForecastSimluator:
