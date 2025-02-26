@@ -756,21 +756,39 @@ def simulate_serial_stream_from_loaded(loaded_data, batch_size=100):
 # -----------------------------
 
 
+def simulate_serial_stream_from_loaded(loaded_data):
+    """
+    Simulate a serial data stream by yielding random chunks from loaded_data.
+
+    Each chunk will have a random size between 100 and 200 rows.
+
+    Args:
+        loaded_data (pd.DataFrame): The loaded dataset to stream.
+
+    Yields:
+        pd.DataFrame: A chunk of data with a random number of rows.
+    """
+    num_rows = len(loaded_data)
+    start_idx = 0
+    while start_idx < num_rows:
+        batch_size = random.randint(100, 200)
+        yield loaded_data.iloc[start_idx:start_idx + batch_size]
+        start_idx += batch_size
+
+
 class QForecasterSimulator:
-    def __init__(self, predictor, dataset, chunk_size=100, ignore_before=0, delay=1.0):
+    def __init__(self, predictor, dataset, ignore_before=0, delay=1.0):
         """
-        Simulator class to stream data in chunks and update predictions live.
+        Simulator class to stream data in random chunk sizes and update predictions live.
 
         Args:
             predictor (QForecasterPredictor): An instance of your predictor class.
             dataset (pd.DataFrame): The full dataset to simulate the data stream.
-            chunk_size (int): Number of rows per simulated batch.
             ignore_before (int): Number of initial rows to ignore for stabilization.
             delay (float): Delay in seconds between processing each batch.
         """
         self.predictor = predictor
         self.dataset = dataset
-        self.chunk_size = chunk_size
         self.ignore_before = ignore_before
         self.delay = delay
 
@@ -781,25 +799,24 @@ class QForecasterSimulator:
 
     def run(self):
         """
-        Runs the simulation by iterating through the dataset in chunks, updating predictions,
-        and plotting the current state.
+        Runs the simulation by iterating through the dataset in random chunk sizes,
+        updating predictions, and plotting the current state.
         """
         # Reset predictor's internal data accumulator.
         self.predictor.reset_accumulator()
 
-        total_batches = int(np.ceil(len(self.dataset) / self.chunk_size))
-        for batch_index in range(total_batches):
-            start_idx = batch_index * self.chunk_size
-            end_idx = min((batch_index + 1) *
-                          self.chunk_size, len(self.dataset))
-            batch_data = self.dataset.iloc[start_idx:end_idx]
+        batch_number = 0
+        for batch_data in simulate_serial_stream_from_loaded(self.dataset):
+            batch_number += 1
+            print(
+                f"[INFO] Processing batch {batch_number} with {len(batch_data)} rows.")
 
             # Update predictions using the new batch.
             results = self.predictor.update_predictions(
                 batch_data, ignore_before=self.ignore_before)
 
             # Update the live plot.
-            self.plot_results(results, batch_number=batch_index + 1)
+            self.plot_results(results, batch_number=batch_number)
 
             # Simulate processing delay.
             plt.pause(self.delay)
@@ -809,35 +826,39 @@ class QForecasterSimulator:
 
     def plot_results(self, results, batch_number):
         """
-        Updates the live plots with the latest predictions and confidence (dissipation curve).
+        Updates the live plots with the latest predictions and the dissipation curve.
+
+        The dissipation curve is plotted using the accumulated target values from the 
+        predictor's dataset up to the current batch.
 
         Args:
-            results (dict): The dictionary output from update_predictions containing predictions and confidences.
+            results (dict): The dictionary output from update_predictions containing predictions and accumulated data.
             batch_number (int): The current batch number for display purposes.
         """
         # Clear the previous plots.
         self.axes[0].cla()  # For predictions.
         self.axes[1].cla()  # For dissipation curve.
 
-        # Assume that results["final_preds"] contains a prediction per data point
-        # and results["final_conf"] contains corresponding confidence values.
-        x = np.arange(len(results["final_preds"]))
-
-        # Plot final predictions.
-        self.axes[0].plot(x, results["final_preds"], marker='o',
+        # Assume that results["final_preds"] contains a prediction per data point.
+        x_preds = np.arange(len(results["final_preds"]))
+        self.axes[0].plot(x_preds, results["final_preds"],
                           linestyle='-', label='Final Predictions')
         self.axes[0].set_title(f'Predictions (Batch {batch_number})')
         self.axes[0].set_xlabel('Data Index')
         self.axes[0].set_ylabel('Predicted State')
         self.axes[0].legend()
 
-        # Plot live dissipation curve (using final confidences).
-        self.axes[1].plot(dataset["Dissipation"],
-                          linestyle='--', color='red', label='Dissipation')
+        # Plot the dissipation curve using the target column ("Fill") from accumulated data.
+        # This plots the target (e.g., "Fill") values from the start of the stream up to the current batch.
+        accumulated_data = results["accumulated_data"]
+        x_dissipation = np.arange(len(accumulated_data))
+        # dissipation_values = accumulated_data[self.predictor.target]
+        self.axes[1].plot(x_dissipation, accumulated_data["Dissipation"],
+                          linestyle='dotted', color='red', label='Dissipation Curve')
         self.axes[1].set_title(
-            f'Live Dissipation Curve (Batch {batch_number})')
-        self.axes[1].set_xlabel('Data Index')
-        self.axes[1].set_ylabel('Dissipation Value')
+            f'Dissipation Curve (up to Batch {batch_number})')
+        self.axes[1].set_xlabel('Accumulated Data Index')
+        self.axes[1].set_ylabel(self.predictor.target)
         self.axes[1].legend()
 
         # Redraw the figure to update the plots.
@@ -848,25 +869,25 @@ class QForecasterSimulator:
 if __name__ == '__main__':
     # Load your dataset (update the path and parameters as needed).
     dataset = pd.read_csv(
-        'content/training_data/channel_1/01104/MM231106W7_FV673_5X_K7_3rd.csv')
+        'content/training_data/channel_2/01104/MM231106W7_FV673_5X_K7_3rd.csv')
 
     # Define your feature lists.
     numerical_features = ['feature1', 'feature2',
                           'feature3']  # update with your feature names
-    categorical_features = ['cat_feature1']  # update if you have any
 
     # Create an instance of the predictor.
     predictor = QForecasterPredictor(
         FEATURES, target='Fill', save_dir='QModel/SavedModels/forecaster/')
     predictor.load_models()  # Ensure models and preprocessors are loaded.
+    delay = dataset['Relative_time'].max() / len(dataset)
+    # Create the simulator with desired parameters.
 
     # Create the simulator with desired parameters.
     simulator = QForecasterSimulator(
         predictor,
         dataset,
-        chunk_size=100,       # Adjust chunk size as needed.
-        ignore_before=10,     # Number of rows to ignore initially.
-        delay=1.0             # 1 second delay between batches.
+        ignore_before=50,
+        delay=delay
     )
 
     # Run the simulation.
