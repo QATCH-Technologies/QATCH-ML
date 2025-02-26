@@ -777,7 +777,7 @@ def simulate_serial_stream_from_loaded(loaded_data):
 
 
 class QForecasterSimulator:
-    def __init__(self, predictor, dataset, ignore_before=0, delay=1.0):
+    def __init__(self, predictor: QForecasterPredictor, dataset: pd.DataFrame, ignore_before=0, delay=1.0):
         """
         Simulator class to stream data in random chunk sizes and update predictions live.
 
