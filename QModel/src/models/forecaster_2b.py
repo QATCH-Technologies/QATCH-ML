@@ -570,6 +570,7 @@ class QForecasterTrainer:
 
         print("[INFO] All models and associated objects have been loaded successfully.")
 
+
 ###############################################################################
 # Predictor Class: Handles generating predictions (including live predictions).
 ###############################################################################
@@ -604,6 +605,10 @@ class QForecasterPredictor:
         self.batch_num = 0
         self.fig = None
         self.axes = None
+
+        # Added: Prediction history for stability detection.
+        # This dictionary maps a data point index (or unique id) to a list of (prediction, confidence) tuples.
+        self.prediction_history = {}
 
     def load_models(self):
         """
@@ -667,18 +672,53 @@ class QForecasterPredictor:
         self.accumulated_data = None
         self.batch_num = 0
 
-    def update_predictions(self, new_data, ignore_before=0):
+    def is_prediction_stable(self, pred_list, stability_window=5, frequency_threshold=0.8, confidence_threshold=0.9):
+        """
+        Determine if the predictions in pred_list are stable.
+
+        Args:
+            pred_list (list): A list of tuples (prediction, confidence) for recent updates.
+            stability_window (int): The number of most recent predictions to consider.
+            frequency_threshold (float): Fraction of predictions that must agree.
+            confidence_threshold (float): Minimum average confidence required.
+
+        Returns:
+            (bool, stable_class): Tuple where bool indicates stability and stable_class is the converged prediction.
+        """
+        if len(pred_list) < stability_window:
+            return False, None
+
+        # Consider only the last 'stability_window' predictions.
+        recent = pred_list[-stability_window:]
+
+        # Count frequency for each prediction.
+        counts = {}
+        confidences = {}
+        for pred, conf in recent:
+            counts[pred] = counts.get(pred, 0) + 1
+            confidences.setdefault(pred, []).append(conf)
+
+        # Check if any prediction meets the criteria.
+        for pred, count in counts.items():
+            if count / stability_window >= frequency_threshold:
+                avg_conf = np.mean(confidences[pred])
+                if avg_conf >= confidence_threshold:
+                    return True, pred
+        return False, None
+
+    def update_predictions(self, new_data, ignore_before=0, stability_window=5, frequency_threshold=0.8, confidence_threshold=0.9):
         """
         Update internal accumulated data with a new batch of data and compute predictions.
 
         Args:
             new_data (DataFrame): New incoming batch of data.
-            delay (float): Delay (in seconds) to simulate processing time.
             ignore_before (int): Number of initial rows to ignore (e.g., for stabilization).
-            update_monitor (bool): Whether to update a live-monitor plot.
+            stability_window (int): Number of recent predictions to check for stability.
+            frequency_threshold (float): Required frequency of a class for it to be considered stable.
+            confidence_threshold (float): Minimum average confidence required for stability.
 
         Returns:
-            dict: A dictionary containing base and meta predictions and confidences.
+            dict: A dictionary containing base and meta predictions, confidences, and stable predictions.
         """
         # Initialize accumulator if needed.
         if self.accumulated_data is None:
@@ -727,6 +767,21 @@ class QForecasterPredictor:
         final_conf = np.array([meta_prob_matrix[i, final_preds[i]]
                               for i in range(len(final_preds))])
 
+        # Update prediction history for stability checking.
+        # Here we assume each data point can be referenced by its row index.
+        for idx, (pred, conf) in enumerate(zip(final_preds, final_conf)):
+            if idx not in self.prediction_history:
+                self.prediction_history[idx] = []
+            self.prediction_history[idx].append((pred, conf))
+
+        # Check which predictions are stable.
+        stable_predictions = {}
+        for idx, history in self.prediction_history.items():
+            stable, stable_class = self.is_prediction_stable(
+                history, stability_window, frequency_threshold, confidence_threshold)
+            if stable:
+                stable_predictions[idx] = stable_class
+
         return {
             "pred_short": pred_short,
             "pred_long": pred_long,
@@ -734,6 +789,8 @@ class QForecasterPredictor:
             "conf_short": conf_short,
             "conf_long": conf_long,
             "final_conf": final_conf,
+            # Dictionary mapping index to stable prediction.
+            "stable_predictions": stable_predictions,
             "accumulated_data": self.accumulated_data
         }
 
@@ -826,7 +883,8 @@ class QForecasterSimulator:
         """
         Updates the live plot with the normalized dissipation curve overlaid
         with background shading corresponding to contiguous predicted class regions,
-        using channel fill names in the legend. The plot is styled with a clean,
+        using channel fill names in the legend. Additionally, regions where predictions
+        are stable are overlaid with a darker shading. The plot is styled with a clean,
         minimalist aesthetic.
         """
         self.ax.cla()  # Clear previous plot
@@ -888,25 +946,31 @@ class QForecasterSimulator:
             self.ax.scatter(valid_actual_indices, y_actual,
                             color='#2ca02c', marker='o', s=50, label='Actual POI')
 
-        # Compute average confidence per classification type.
-        if "final_conf" in results and len(results["final_conf"]) > 0:
-            preds = np.array(results["final_preds"])
-            confs = np.array(results["final_conf"])
-            avg_conf_per_class = {}
-            for cls in np.unique(preds):
-                avg_conf = np.mean(confs[preds == cls])
-                avg_conf_per_class[cls] = avg_conf
-
-            # Create a text block that summarizes the average confidence per class.
-            conf_text = "Avg Conf per Class:\n"
-            for cls, conf in avg_conf_per_class.items():
-                # Use class_names to show a friendly name if available.
-                conf_text += f"{class_names.get(cls, 'Unknown')}: {conf:.2f}\n"
-
-            # Display this text on the plot.
-            self.ax.text(0.05, 0.95, conf_text, transform=self.ax.transAxes,
-                         fontsize=12, verticalalignment='top', horizontalalignment='left',
-                         bbox=dict(facecolor='white', alpha=0.5))
+        # Overlay stable prediction regions as darker shaded areas.
+        if "stable_predictions" in results and results["stable_predictions"]:
+            stable_dict = results["stable_predictions"]
+            stable_idxs = sorted(stable_dict.keys())
+            if stable_idxs:
+                segments = []
+                current_class = stable_dict[stable_idxs[0]]
+                seg_start = stable_idxs[0]
+                prev = stable_idxs[0]
+                # Group contiguous indices with the same stable class.
+                for idx in stable_idxs[1:]:
+                    if idx == prev + 1 and stable_dict[idx] == current_class:
+                        prev = idx
+                    else:
+                        segments.append((seg_start, prev, current_class))
+                        seg_start = idx
+                        prev = idx
+                        current_class = stable_dict[idx]
+                segments.append((seg_start, prev, current_class))
+                already_labeled_stable = {}
+                for seg_start, seg_end, cls in segments:
+                    label = f"Stable: {class_names[cls]}" if cls not in already_labeled_stable else None
+                    already_labeled_stable[cls] = True
+                    self.ax.axvspan(seg_start, seg_end, color=class_colors.get(cls, '#000000'),
+                                    alpha=0.6, label=label)
 
         self.ax.set_title(
             f'Normalized Dissipation Curve (Batch {batch_number})', fontsize=14, weight='medium')
