@@ -4,13 +4,9 @@ Integrated System: Dual Fill Prediction Models with Additional Run-Type Classifi
 """
 
 from scipy.signal import hilbert, savgol_filter
-from sklearn.model_selection import GridSearchCV, train_test_split
 from xgboost import XGBClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline, make_pipeline
-import seaborn as sns
 import os
 import random
 import time
@@ -26,7 +22,7 @@ import pickle
 # ---------------------------
 # Global Settings
 # ---------------------------
-TRAINING = True
+TRAINING = False
 TESTING = True
 
 DATA_TO_LOAD = 50  # adjust as needed
@@ -34,7 +30,6 @@ IGNORE_BEFORE = 50
 FEATURES = [
     'Relative_time',
     'Dissipation',
-    # 'Dissipation_savgol',  # Newly added feature
     'Dissipation_rolling_mean',
     'Dissipation_rolling_median',
     'Dissipation_ewm',
@@ -231,108 +226,6 @@ def load_and_preprocess_single(data_file: str, poi_file: str):
     print(df.head())
     return df
 
-# ---------------------------
-# New Functions for Run-Type Classification
-# ---------------------------
-
-
-def extract_run_features(df: pd.DataFrame) -> dict:
-    """Extract summary features for run-level classification."""
-    features = {
-        'mean_dissipation': df['Dissipation'].mean(),
-        'std_dissipation': df['Dissipation'].std(),
-        'max_dissipation': df['Dissipation'].max(),
-        'min_dissipation': df['Dissipation'].min(),
-        'run_length': len(df)
-    }
-    return features
-
-
-def prepare_run_classification_data(short_runs: list, long_runs: list) -> tuple:
-    feature_list = []
-    labels = []
-    # Label short runs as 0 and long runs as 1
-    for run in short_runs:
-        run = compute_additional_features(run)
-        feature_list.append(extract_run_features(run))
-        labels.append(0)
-    for run in long_runs:
-        run = compute_additional_features(run)
-        feature_list.append(extract_run_features(run))
-        labels.append(1)
-    X = pd.DataFrame(feature_list)
-    y = np.array(labels)
-    return X, y
-
-
-def train_run_length_classifier(short_runs: list, long_runs: list) -> XGBClassifier:
-    X, y = prepare_run_classification_data(short_runs, long_runs)
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42)
-    clf = XGBClassifier(
-        random_state=42, use_label_encoder=False, eval_metric='logloss')
-    clf.fit(X_train, y_train)
-    from sklearn.metrics import accuracy_score
-    y_pred = clf.predict(X_test)
-    print("Run type classification accuracy:", accuracy_score(y_test, y_pred))
-    return clf
-
-
-def predict_run_type(clf: XGBClassifier, accumulated_df: pd.DataFrame) -> tuple:
-    """Predict run type based on accumulated live data.
-       Returns: label (0: short, 1: long) and probability distribution.
-    """
-    accumulated_df = compute_additional_features(accumulated_df)
-    features = extract_run_features(accumulated_df)
-    X_live = pd.DataFrame([features])
-    pred = clf.predict(X_live)[0]
-    prob = clf.predict_proba(X_live)[0]
-    return pred, prob
-
-
-def load_runs_for_classification(data_dir: str, required_runs=20) -> tuple:
-    """
-    Load individual runs from the training directory and return lists of short and long runs.
-    """
-    short_runs = []
-    long_runs = []
-    content = load_content(data_dir)
-    random.shuffle(content)
-    for file, poi_file in content:
-        if len(short_runs) >= required_runs and len(long_runs) >= required_runs:
-            break
-        df = pd.read_csv(file)
-        if df.empty or not all(col in df.columns for col in ["Relative_time", "Resonance_Frequency", "Dissipation"]):
-            continue
-        df = df[["Relative_time", "Resonance_Frequency", "Dissipation"]]
-        df = compute_additional_features(df)
-
-        Fill_df = pd.read_csv(poi_file, header=None)
-        if "Fill" in Fill_df.columns:
-            df["Fill"] = Fill_df["Fill"]
-        else:
-            df["Fill"] = 0
-            change_indices = sorted(Fill_df.iloc[:, 0].values)
-            for idx in change_indices:
-                df.loc[idx:, "Fill"] += 1
-        df["Fill"] = pd.Categorical(df["Fill"]).codes
-        unique_Fill = sorted(df["Fill"].unique())
-        if len(unique_Fill) != 7:
-            print(
-                f"[WARNING] File {file} does not have 7 unique Fill values; skipping.")
-            continue
-        df['Fill'] = df['Fill'].apply(reassign_region)
-        mapping = {'no_fill': 0, 'init_fill': 1,
-                   'ch_1': 2, 'ch_2': 3, 'full_fill': 4}
-        df['Fill'] = df['Fill'].map(mapping)
-        delta_idx = find_time_delta(df)
-        if delta_idx == -1:
-            if len(short_runs) < required_runs:
-                short_runs.append(df)
-        else:
-            if len(long_runs) < required_runs:
-                long_runs.append(df)
-    return short_runs, long_runs
 
 # ---------------------------
 # Model Training and Prediction for Fill
@@ -447,116 +340,6 @@ def predict_native(model, preprocessors, X, numerical_features=FEATURES, categor
 # ---------------------------
 # Live Monitor Plotting and Prediction Loop
 # ---------------------------
-
-
-def update_live_monitor_two_models(accumulated_data, pred_short, pred_long, conf_short, conf_long, delta_idx, axes, delay, run_type_info=None):
-    indices = np.arange(len(accumulated_data))
-    axes[0].cla()
-    axes[0].plot(indices, accumulated_data["Fill"], label="Actual",
-                 color='blue', marker='o', linestyle='--', markersize=3)
-    axes[0].plot(indices, pred_short, label="Short Model",
-                 color='red', marker='x', linestyle='-', markersize=3)
-    axes[0].plot(indices, pred_long, label="Long Model",
-                 color='green', marker='^', linestyle='-.', markersize=3)
-    if delta_idx != -1:
-        axes[0].axvline(x=delta_idx, color='purple',
-                        linestyle=':', label="Time Delta Detected")
-
-    change_indices_short = np.where(np.diff(pred_short) != 0)[0] + 1
-    for idx in change_indices_short:
-        conf_percent = conf_short[idx] * 100
-        y_val = pred_short[idx]
-        axes[0].annotate(f"S: {conf_percent:.0f}%", (idx, y_val),
-                         textcoords="offset points", xytext=(0, 10),
-                         ha='center', fontsize=8, color='red')
-
-    change_indices_long = np.where(np.diff(pred_long) != 0)[0] + 1
-    for idx in change_indices_long:
-        conf_percent = conf_long[idx] * 100
-        y_val = pred_long[idx]
-        axes[0].annotate(f"L: {conf_percent:.0f}%", (idx, y_val),
-                         textcoords="offset points", xytext=(0, -15),
-                         ha='center', fontsize=8, color='green')
-
-    # Annotate run type prediction if available
-    if run_type_info is not None:
-        run_label, confidence = run_type_info
-        label_str = "short" if run_label == 0 else "long"
-        axes[0].text(0.02, 0.95, f"Run type: {label_str} ({confidence*100:.1f}%)",
-                     transform=axes[0].transAxes, fontsize=10, color='black', bbox=dict(facecolor='white', alpha=0.6))
-
-    axes[0].set_title("Predicted vs Actual Fill")
-    axes[0].set_xlabel("Data Point Index")
-    axes[0].set_ylabel("Fill Category (numeric)")
-    axes[0].legend()
-    axes[0].set_ylim(-0.5, 4.5)
-
-    axes[1].cla()
-    axes[1].plot(indices, accumulated_data["Dissipation"],
-                 label="Dissipation", color='green')
-    if delta_idx != -1:
-        axes[1].axvline(x=delta_idx, color='purple',
-                        linestyle=':', label="Time Delta")
-    axes[1].set_title("Dissipation Curve")
-    axes[1].set_xlabel("Data Point Index")
-    axes[1].set_ylabel("Dissipation")
-    axes[1].legend()
-
-    plt.pause(delay)
-
-
-def live_prediction_loop_two_models(model_short, preprocessors_short, model_long, preprocessors_long,
-                                    transition_matrix_short, transition_matrix_long,
-                                    loaded_data, run_type_classifier, batch_size=100, delay=0.1):
-    accumulated_data = pd.DataFrame(columns=loaded_data.columns)
-    plt.ion()
-    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
-    stream_generator = simulate_serial_stream_from_loaded(
-        loaded_data, batch_size=batch_size)
-    batch_num = 0
-
-    for batch in stream_generator:
-        batch_num += 1
-        print(
-            f"\n[INFO] Streaming batch {batch_num} with {len(batch)} data points...")
-        time.sleep(delay)
-        accumulated_data = pd.concat(
-            [accumulated_data, batch], ignore_index=True)
-        accumulated_data = compute_additional_features(accumulated_data)
-        if len(accumulated_data) > IGNORE_BEFORE and batch_num == 1:
-            accumulated_data = accumulated_data.iloc[IGNORE_BEFORE:]
-        X_live = accumulated_data[FEATURES]
-
-        prob_matrix_short = predict_native(
-            model_short, preprocessors_short, X_live, numerical_features=FEATURES)
-        pred_short = viterbi_decode(prob_matrix_short, transition_matrix_short)
-        prob_matrix_long = predict_native(
-            model_long, preprocessors_long, X_live, numerical_features=FEATURES)
-        pred_long = viterbi_decode(prob_matrix_long, transition_matrix_long)
-
-        conf_short = np.array([prob_matrix_short[i, pred_short[i]]
-                              for i in range(len(pred_short))])
-        conf_long = np.array([prob_matrix_long[i, pred_long[i]]
-                             for i in range(len(pred_long))])
-
-        delta_idx = find_time_delta(accumulated_data)
-
-        # Run-Type Prediction: if enough data has been accumulated, predict run type.
-        run_type_info = None
-        if len(accumulated_data) >= 100:
-            run_type, prob_distribution = predict_run_type(
-                run_type_classifier, accumulated_data)
-            run_type_info = (run_type, max(prob_distribution))
-            print(
-                f"[INFO] Live run type prediction: {'short' if run_type==0 else 'long'} (Confidence: {max(prob_distribution)*100:.1f}%)")
-
-        update_live_monitor_two_models(accumulated_data, pred_short, pred_long,
-                                       conf_short, conf_long,
-                                       delta_idx, axes, delay, run_type_info=run_type_info)
-        print(
-            f"[INFO] Updated live monitor after batch {batch_num}. Total points: {len(accumulated_data)}")
-    plt.ioff()
-    plt.show()
 
 
 def simulate_serial_stream_from_loaded(loaded_data, batch_size=100):
@@ -704,7 +487,7 @@ def update_live_monitor_two_models(accumulated_data, pred_short, pred_long, fina
 
 def live_prediction_loop_two_models(model_short, preprocessors_short, model_long, preprocessors_long,
                                     transition_matrix_short, transition_matrix_long,
-                                    loaded_data, run_type_classifier, meta_clf, meta_transition_matrix,
+                                    loaded_data, meta_clf, meta_transition_matrix,
                                     batch_size=100, delay=0.1):
     accumulated_data = pd.DataFrame(columns=loaded_data.columns)
     plt.ion()
@@ -749,19 +532,10 @@ def live_prediction_loop_two_models(model_short, preprocessors_short, model_long
 
         delta_idx = find_time_delta(accumulated_data)
 
-        # Run-Type Prediction (as before)
-        run_type_info = None
-        if len(accumulated_data) >= 100:
-            run_type, prob_distribution = predict_run_type(
-                run_type_classifier, accumulated_data)
-            run_type_info = (run_type, max(prob_distribution))
-            print(
-                f"[INFO] Live run type prediction: {'short' if run_type==0 else 'long'} (Confidence: {max(prob_distribution)*100:.1f}%)")
-
         # Updated monitor plot to include meta-decoded predictions
         update_live_monitor_two_models(accumulated_data, pred_short, pred_long, final_preds,
                                        conf_short, conf_long, final_conf,
-                                       delta_idx, axes, delay, run_type_info=run_type_info)
+                                       delta_idx, axes, delay)
         print(
             f"[INFO] Updated live monitor after batch {batch_num}. Total points: {len(accumulated_data)}")
     plt.ioff()
@@ -776,18 +550,10 @@ if __name__ == "__main__":
     os.makedirs(save_dir, exist_ok=True)
     training_data_dir = r"content\training_data\full_fill"  # Update as needed
 
-    # Load individual runs for run-type classification
-    short_runs, long_runs = load_runs_for_classification(
-        training_data_dir, required_runs=200)
-    run_type_classifier = train_run_length_classifier(short_runs, long_runs)
-    # Save the run-type classifier
-    with open(os.path.join(save_dir, "run_type_classifier.pkl"), "wb") as f:
-        pickle.dump(run_type_classifier, f)
-
     if TRAINING:
         # Load and split training data into separate groups for fill prediction
         training_data_short, training_data_long = load_and_preprocess_data_split(
-            training_data_dir, required_runs=20)
+            training_data_dir, required_runs=145)
 
         # Compute dynamic transition matrices
         transition_matrix_short = compute_dynamic_transition_matrix(
@@ -871,10 +637,6 @@ if __name__ == "__main__":
             params_long = pickle.load(f)
         with open(os.path.join(save_dir, "transition_matrix_long.pkl"), "rb") as f:
             transition_matrix_long = pickle.load(f)
-
-        # Load the run-type classifier
-        with open(os.path.join(save_dir, "run_type_classifier.pkl"), "rb") as f:
-            run_type_classifier = pickle.load(f)
         # Load the meta-classifier and meta transition matrix
         with open(os.path.join(save_dir, "meta_classifier.pkl"), "rb") as f:
             meta_clf = pickle.load(f)
@@ -882,7 +644,7 @@ if __name__ == "__main__":
             meta_transition_matrix = pickle.load(f)
 
         # Load test data and simulate live predictions
-        test_dir = r"content\test_data"
+        test_dir = r"content\training_data\channel_1"
         test_content = load_content(test_dir)
         random.shuffle(test_content)
         for data_file, poi_file in test_content:
@@ -892,7 +654,7 @@ if __name__ == "__main__":
             loaded_data = load_and_preprocess_single(data_file, poi_file)
             live_prediction_loop_two_models(model_short, preprocessors_short, model_long, preprocessors_long,
                                             transition_matrix_short, transition_matrix_long,
-                                            loaded_data, run_type_classifier, meta_clf, meta_transition_matrix,
+                                            loaded_data, meta_clf, meta_transition_matrix,
                                             batch_size=100, delay=delay/2)
             print("\n[INFO] Live prediction simulation complete for one test run.")
         print("\n[INFO] All live prediction simulations complete.")
