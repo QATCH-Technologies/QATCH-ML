@@ -289,15 +289,6 @@ class QForecasterDataprocessor:
         return transition_counts / row_sums
 
 
-# Assume these functions are defined in another module:
-# from some_module import (
-#     load_and_preprocess_data_split,
-#     compute_dynamic_transition_matrix,
-#     load_content,
-#     load_and_preprocess_single,
-#     live_prediction_loop_two_models,
-# )
-
 ###############################################################################
 # Trainer Class: Handles model training, hyperparameter tuning, and saving.
 ###############################################################################
@@ -747,6 +738,136 @@ class QForecasterPredictor:
         }
 
 
-class QForecastSimluator:
-    def __init__(self):
-        pass
+# -----------------------------
+# Helper: Simulate Serial Stream
+# -----------------------------
+
+
+def simulate_serial_stream_from_loaded(loaded_data, batch_size=100):
+    """
+    Yields sequential batches of rows from the loaded data.
+    """
+    num_rows = len(loaded_data)
+    for start_idx in range(0, num_rows, batch_size):
+        yield loaded_data.iloc[start_idx:start_idx+batch_size]
+
+# -----------------------------
+# Live Prediction Simulator Class
+# -----------------------------
+
+
+class QForecasterSimulator:
+    def __init__(self, predictor, dataset, chunk_size=100, ignore_before=0, delay=1.0):
+        """
+        Simulator class to stream data in chunks and update predictions live.
+
+        Args:
+            predictor (QForecasterPredictor): An instance of your predictor class.
+            dataset (pd.DataFrame): The full dataset to simulate the data stream.
+            chunk_size (int): Number of rows per simulated batch.
+            ignore_before (int): Number of initial rows to ignore for stabilization.
+            delay (float): Delay in seconds between processing each batch.
+        """
+        self.predictor = predictor
+        self.dataset = dataset
+        self.chunk_size = chunk_size
+        self.ignore_before = ignore_before
+        self.delay = delay
+
+        # Setup a live plot with two subplots: one for predictions and one for the dissipation curve.
+        self.fig, self.axes = plt.subplots(1, 2, figsize=(12, 6))
+        plt.ion()  # Enable interactive mode.
+        plt.show()
+
+    def run(self):
+        """
+        Runs the simulation by iterating through the dataset in chunks, updating predictions,
+        and plotting the current state.
+        """
+        # Reset predictor's internal data accumulator.
+        self.predictor.reset_accumulator()
+
+        total_batches = int(np.ceil(len(self.dataset) / self.chunk_size))
+        for batch_index in range(total_batches):
+            start_idx = batch_index * self.chunk_size
+            end_idx = min((batch_index + 1) *
+                          self.chunk_size, len(self.dataset))
+            batch_data = self.dataset.iloc[start_idx:end_idx]
+
+            # Update predictions using the new batch.
+            results = self.predictor.update_predictions(
+                batch_data, ignore_before=self.ignore_before)
+
+            # Update the live plot.
+            self.plot_results(results, batch_number=batch_index + 1)
+
+            # Simulate processing delay.
+            plt.pause(self.delay)
+
+        plt.ioff()  # Turn off interactive mode.
+        plt.show()
+
+    def plot_results(self, results, batch_number):
+        """
+        Updates the live plots with the latest predictions and confidence (dissipation curve).
+
+        Args:
+            results (dict): The dictionary output from update_predictions containing predictions and confidences.
+            batch_number (int): The current batch number for display purposes.
+        """
+        # Clear the previous plots.
+        self.axes[0].cla()  # For predictions.
+        self.axes[1].cla()  # For dissipation curve.
+
+        # Assume that results["final_preds"] contains a prediction per data point
+        # and results["final_conf"] contains corresponding confidence values.
+        x = np.arange(len(results["final_preds"]))
+
+        # Plot final predictions.
+        self.axes[0].plot(x, results["final_preds"], marker='o',
+                          linestyle='-', label='Final Predictions')
+        self.axes[0].set_title(f'Predictions (Batch {batch_number})')
+        self.axes[0].set_xlabel('Data Index')
+        self.axes[0].set_ylabel('Predicted State')
+        self.axes[0].legend()
+
+        # Plot live dissipation curve (using final confidences).
+        self.axes[1].plot(dataset["Dissipation"],
+                          linestyle='--', color='red', label='Dissipation')
+        self.axes[1].set_title(
+            f'Live Dissipation Curve (Batch {batch_number})')
+        self.axes[1].set_xlabel('Data Index')
+        self.axes[1].set_ylabel('Dissipation Value')
+        self.axes[1].legend()
+
+        # Redraw the figure to update the plots.
+        self.fig.canvas.draw()
+        self.fig.canvas.flush_events()
+
+
+if __name__ == '__main__':
+    # Load your dataset (update the path and parameters as needed).
+    dataset = pd.read_csv(
+        'content/training_data/channel_1/01104/MM231106W7_FV673_5X_K7_3rd.csv')
+
+    # Define your feature lists.
+    numerical_features = ['feature1', 'feature2',
+                          'feature3']  # update with your feature names
+    categorical_features = ['cat_feature1']  # update if you have any
+
+    # Create an instance of the predictor.
+    predictor = QForecasterPredictor(
+        FEATURES, target='Fill', save_dir='QModel/SavedModels/forecaster/')
+    predictor.load_models()  # Ensure models and preprocessors are loaded.
+
+    # Create the simulator with desired parameters.
+    simulator = QForecasterSimulator(
+        predictor,
+        dataset,
+        chunk_size=100,       # Adjust chunk size as needed.
+        ignore_before=10,     # Number of rows to ignore initially.
+        delay=1.0             # 1 second delay between batches.
+    )
+
+    # Run the simulation.
+    simulator.run()
