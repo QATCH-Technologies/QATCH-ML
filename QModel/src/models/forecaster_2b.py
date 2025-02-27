@@ -16,6 +16,7 @@ import matplotlib.pyplot as plt
 import xgboost as xgb
 from hyperopt import fmin, tpe, hp, Trials, STATUS_OK
 import pickle
+from QATCH.core.worker import Worker
 FEATURES = [
     'Relative_time',
     'Dissipation',
@@ -36,6 +37,25 @@ IGNORE_BEFORE = 50
 
 
 class QForecasterDataprocessor:
+    def convert_to_dataframe(worker: Worker) -> pd.DataFrame:
+        # Retrieve the three buffers from the worker
+        resonance_frequency = worker.get_value0_buffer(0)
+        relative_time = worker.get_d1_buffer(0)
+        dissipation = worker.get_d2_buffer(0)
+
+        # Optional: check that all buffers have the same length
+        if not (len(resonance_frequency) == len(relative_time) == len(dissipation)):
+            raise ValueError("All buffers must have the same length.")
+
+        # Create the DataFrame with the specified column headers
+        df = pd.DataFrame({
+            'Resonance_Frequency': resonance_frequency,
+            'Relative_time': relative_time,
+            'Dissipation': dissipation
+        })
+
+        return df
+
     @staticmethod
     def load_content(data_dir: str) -> list:
         """
@@ -158,12 +178,12 @@ class QForecasterDataprocessor:
                 df.loc[idx:, "Fill"] += 1
 
         df["Fill"] = pd.Categorical(df["Fill"]).codes
-        if check_unique:
-            unique_fill = sorted(df["Fill"].unique())
-            if len(unique_fill) != 7:
-                print(f"[WARNING] File {file_name} does not have 7 unique Fill values; skipping."
-                      if file_name else "[WARNING] File does not have 7 unique Fill values; skipping.")
-                return None
+        # if check_unique:
+        #     unique_fill = sorted(df["Fill"].unique())
+        #     if len(unique_fill) != 7:
+        #         print(f"[WARNING] File {file_name} does not have 7 unique Fill values; skipping."
+        #               if file_name else "[WARNING] File does not have 7 unique Fill values; skipping.")
+        #         return None
 
         df["Fill"] = df["Fill"].apply(QForecasterDataprocessor.reassign_region)
         mapping = {'no_fill': 0, 'init_fill': 1,
@@ -310,7 +330,6 @@ class QForecasterTrainer:
         # Placeholders for trained objects.
         self.model_short = None
         self.model_long = None
-        self.meta_clf = None
 
         self.preprocessors_short = None
         self.preprocessors_long = None
@@ -320,7 +339,6 @@ class QForecasterTrainer:
 
         self.transition_matrix_short = None
         self.transition_matrix_long = None
-        self.meta_transition_matrix = None
 
     def _build_preprocessors(self, X):
         """Fit and return preprocessors for numerical and categorical data."""
@@ -430,14 +448,24 @@ class QForecasterTrainer:
         model = xgb.train(params, dtrain, num_boost_round=optimal_rounds)
         return model, preprocessors, params
 
-    def predict_native(self, model, preprocessors, X):
+    def predict_native(self, model: xgb.Booster, preprocessors, X):
         """
         Helper method to generate predictions; used when training the meta-classifier.
         """
         X_copy = X.copy()
+
+        # Ensure feature names are set on the model.
+        if model.feature_names is None:
+            # Assume that the DataFrame columns are the correct feature names.
+            model.feature_names = list(X_copy.columns)
+
+        print("Model feature names:", model.feature_names)
+        print("Preprocessors:", preprocessors)
+
         X_num = preprocessors['num_imputer'].transform(
-            X_copy[self.numerical_features])
+            X_copy[model.feature_names])
         X_num = preprocessors['scaler'].transform(X_num)
+
         if self.categorical_features:
             X_cat = preprocessors['cat_imputer'].transform(
                 X_copy[self.categorical_features])
@@ -445,31 +473,9 @@ class QForecasterTrainer:
             X_processed = np.hstack([X_num, X_cat])
         else:
             X_processed = X_num
+
         dmatrix = xgb.DMatrix(X_processed)
         return model.predict(dmatrix)
-
-    def train_meta_classifier(self, training_data, model_short, preprocessors_short, model_long, preprocessors_long, meta_model_type='xgb'):
-        """
-        Train a meta-classifier that combines outputs of two base models.
-        """
-        features = self.numerical_features + self.categorical_features
-        X_input = training_data[features]
-        prob_matrix_short = self.predict_native(
-            model_short, preprocessors_short, X_input)
-        prob_matrix_long = self.predict_native(
-            model_long, preprocessors_long, X_input)
-        X_meta = np.hstack([prob_matrix_short, prob_matrix_long])
-        y_meta = training_data[self.target].values
-
-        if meta_model_type == 'xgb':
-            meta_clf = XGBClassifier(
-                random_state=42, use_label_encoder=False, eval_metric='auc')
-        elif meta_model_type == 'logistic':
-            meta_clf = LogisticRegression(max_iter=1000, random_state=42)
-        else:
-            raise ValueError("Unsupported meta_model_type")
-        meta_clf.fit(X_meta, y_meta)
-        return meta_clf
 
     def train_base_models(self, training_data_short, training_data_long, tune=True):
         """
@@ -486,20 +492,6 @@ class QForecasterTrainer:
             training_data_long, tune=tune)
         print("[INFO] Base model training complete.")
 
-    def train_meta_model(self, meta_training_data, meta_model_type='xgb'):
-        """
-        Train the meta-classifier and compute its transition matrix.
-        """
-        self.meta_clf = self.train_meta_classifier(
-            meta_training_data,
-            self.model_short, self.preprocessors_short,
-            self.model_long, self.preprocessors_long,
-            meta_model_type=meta_model_type
-        )
-        self.meta_transition_matrix = QForecasterDataprocessor.compute_dynamic_transition_matrix(
-            meta_training_data)
-        print("[INFO] Meta model training complete.")
-
     def save_models(self):
         """
         Save base models, meta-classifier, preprocessors, parameters, and transition matrices.
@@ -507,12 +499,6 @@ class QForecasterTrainer:
         if not self.save_dir:
             raise ValueError("Save directory not specified.")
         os.makedirs(self.save_dir, exist_ok=True)
-
-        # Save meta objects.
-        with open(os.path.join(self.save_dir, "meta_classifier.pkl"), "wb") as f:
-            pickle.dump(self.meta_clf, f)
-        with open(os.path.join(self.save_dir, "meta_transition_matrix.pkl"), "wb") as f:
-            pickle.dump(self.meta_transition_matrix, f)
 
         # Save short model and its objects.
         self.model_short.save_model(os.path.join(
@@ -563,11 +549,6 @@ class QForecasterTrainer:
         with open(os.path.join(self.save_dir, "transition_matrix_long.pkl"), "rb") as f:
             self.transition_matrix_long = pickle.load(f)
 
-        with open(os.path.join(self.save_dir, "meta_classifier.pkl"), "rb") as f:
-            self.meta_clf = pickle.load(f)
-        with open(os.path.join(self.save_dir, "meta_transition_matrix.pkl"), "rb") as f:
-            self.meta_transition_matrix = pickle.load(f)
-
         print("[INFO] All models and associated objects have been loaded successfully.")
 
 
@@ -577,18 +558,20 @@ class QForecasterTrainer:
 
 
 class QForecasterPredictor:
-    def __init__(self, numerical_features, categorical_features=None, target='Fill', save_dir=None):
+    def __init__(self, numerical_features: list = FEATURES, categorical_features: list = None, target: str = 'Fill', save_dir: str = None, batch_threshold: int = 300):
         """
         Args:
             numerical_features (list): List of numerical feature names.
             categorical_features (list): List of categorical feature names.
             target (str): Target column name.
             save_dir (str): Directory from which to load saved objects.
+            batch_threshold (int): Number of new entries to accumulate before running predictions.
         """
         self.numerical_features = numerical_features
         self.categorical_features = categorical_features if categorical_features is not None else []
         self.target = target
         self.save_dir = save_dir
+        self.batch_threshold = batch_threshold
 
         # Placeholders for loaded objects.
         self.model_short = None
@@ -606,8 +589,7 @@ class QForecasterPredictor:
         self.fig = None
         self.axes = None
 
-        # Added: Prediction history for stability detection.
-        # This dictionary maps a data point index (or unique id) to a list of (prediction, confidence) tuples.
+        # Prediction history for stability detection.
         self.prediction_history = {}
 
     def load_models(self):
@@ -708,7 +690,8 @@ class QForecasterPredictor:
 
     def update_predictions(self, new_data, ignore_before=0, stability_window=5, frequency_threshold=0.8, confidence_threshold=0.9):
         """
-        Update internal accumulated data with a new batch of data and compute predictions.
+        Update internal accumulated data with a new batch of data and compute predictions only when the number
+        of accumulated rows reaches the batch_threshold.
 
         Args:
             new_data (DataFrame): New incoming batch of data.
@@ -718,28 +701,36 @@ class QForecasterPredictor:
             confidence_threshold (float): Minimum average confidence required for stability.
 
         Returns:
-            dict: A dictionary containing base and meta predictions, confidences, and stable predictions.
+            dict: A dictionary with prediction results or a status message indicating waiting for more data.
         """
         # Initialize accumulator if needed.
         if self.accumulated_data is None:
             self.accumulated_data = pd.DataFrame(columns=new_data.columns)
-            self.batch_num = 0
-
-        self.batch_num += 1
-        print(
-            f"\n[INFO] Received batch {self.batch_num} with {len(new_data)} data points.")
 
         # Append the new data.
         self.accumulated_data = pd.concat(
             [self.accumulated_data, new_data], ignore_index=True)
-        # Compute additional features (assumed to modify/augment the dataframe).
-        self.accumulated_data = QForecasterDataprocessor.compute_additional_features(
-            self.accumulated_data)
-        # Optionally ignore initial rows if specified.
-        if len(self.accumulated_data) > ignore_before and self.batch_num == 1:
+        current_count = len(self.accumulated_data)
+
+        # Check if we have collected enough new entries.
+        if current_count < self.batch_threshold:
+            print(
+                f"[INFO] Accumulated {current_count} entries so far; waiting for {self.batch_threshold} entries to run predictions.")
+            return {
+                "status": "waiting",
+                "accumulated_count": current_count,
+                "predictions": None
+            }
+
+        # Enough data accumulated; proceed with predictions.
+        self.batch_num += 1
+        print(
+            f"\n[INFO] Running predictions on batch {self.batch_num} with {current_count} entries.")
+
+        # Optionally ignore initial rows for stabilization (only on the first run).
+        if self.batch_num == 1 and current_count > ignore_before:
             self.accumulated_data = self.accumulated_data.iloc[ignore_before:]
 
-        # Define features based on the class's configuration.
         features = self.numerical_features + self.categorical_features
         X_live = self.accumulated_data[features]
 
@@ -748,6 +739,7 @@ class QForecasterPredictor:
             self.model_short, self.preprocessors_short, X_live)
         pred_short = QForecasterDataprocessor.viterbi_decode(
             prob_matrix_short, self.transition_matrix_short)
+
         prob_matrix_long = self.predict_native(
             self.model_long, self.preprocessors_long, X_live)
         pred_long = QForecasterDataprocessor.viterbi_decode(
@@ -759,7 +751,7 @@ class QForecasterPredictor:
         conf_long = np.array([prob_matrix_long[i, pred_long[i]]
                              for i in range(len(pred_long))])
 
-        # Combine outputs for meta classifier.
+        # Combine outputs for the meta classifier.
         meta_features = np.hstack([prob_matrix_short, prob_matrix_long])
         meta_prob_matrix = self.meta_clf.predict_proba(meta_features)
         final_preds = QForecasterDataprocessor.viterbi_decode(
@@ -768,7 +760,6 @@ class QForecasterPredictor:
                               for i in range(len(final_preds))])
 
         # Update prediction history for stability checking.
-        # Here we assume each data point can be referenced by its row index.
         for idx, (pred, conf) in enumerate(zip(final_preds, final_conf)):
             if idx not in self.prediction_history:
                 self.prediction_history[idx] = []
@@ -782,18 +773,20 @@ class QForecasterPredictor:
             if stable:
                 stable_predictions[idx] = stable_class
 
+        # Optionally reset the accumulator after running predictions so the next prediction is only on new data.
+        self.reset_accumulator()
+
         return {
+            "status": "completed",
             "pred_short": pred_short,
             "pred_long": pred_long,
             "final_preds": final_preds,
             "conf_short": conf_short,
             "conf_long": conf_long,
             "final_conf": final_conf,
-            # Dictionary mapping index to stable prediction.
             "stable_predictions": stable_predictions,
             "accumulated_data": self.accumulated_data
         }
-
 
 # -----------------------------
 # Helper: Simulate Serial Stream
@@ -984,33 +977,52 @@ class QForecasterSimulator:
         self.fig.canvas.flush_events()
 
 
+TESTING = True
+TRAINING = True
+
 # Main execution block.
 if __name__ == '__main__':
     # Load your dataset (update the path and parameters as needed).
-    test_dir = r"content\test_data"
-    test_content = QForecasterDataprocessor.load_content(test_dir)
-    random.shuffle(test_content)
-    for data_file, poi_file in test_content:
-        dataset = pd.read_csv(data_file)
-        end = np.random.randint(0, len(dataset))
-        random_slice = dataset.iloc[0:end]
-        poi_file = pd.read_csv(poi_file, header=None)
+    if TRAINING:
+        train_dir = r'content\training_data\full_fill'
+        training_data_short, training_data_long = QForecasterDataprocessor.load_and_preprocess_data_split(
+            train_dir, required_runs=140)
+        qft = QForecasterTrainer(
+            FEATURES, None, "Fill", r'QModel\SavedModels\forecaster')
+        # qft.train_base_models(training_data_short=training_data_short,
+        #                       training_data_long=training_data_long, tune=True)
+        qft.load_models()
+        meta_data = pd.concat(
+            [training_data_short, training_data_long], axis=1)
+        qft.train_meta_model(training_data_short)
+        print(qft.meta_transition_matrix)
+        qft.save_models()
+    if TESTING:
+        test_dir = r"content\test_data"
+        test_content = QForecasterDataprocessor.load_content(test_dir)
+        random.shuffle(test_content)
+        for data_file, poi_file in test_content:
+            dataset = pd.read_csv(data_file)
+            end = np.random.randint(0, len(dataset))
+            random_slice = dataset.iloc[0:end]
+            poi_file = pd.read_csv(poi_file, header=None)
 
-        # Create an instance of the predictor.
-        predictor = QForecasterPredictor(
-            FEATURES, target='Fill', save_dir='QModel/SavedModels/forecaster/')
-        predictor.load_models()  # Ensure models and preprocessors are loaded.
+            # Create an instance of the predictor.
+            predictor = QForecasterPredictor(
+                FEATURES, target='Fill', save_dir='QModel/SavedModels/forecaster/')
+            # Ensure models and preprocessors are loaded.
+            predictor.load_models()
 
-        delay = dataset['Relative_time'].max() / len(random_slice)
+            delay = dataset['Relative_time'].max() / len(random_slice)
 
-        # Create the simulator, now passing the poi_file.
-        simulator = QForecasterSimulator(
-            predictor,
-            random_slice,
-            poi_file=poi_file,
-            ignore_before=50,
-            delay=delay
-        )
+            # Create the simulator, now passing the poi_file.
+            simulator = QForecasterSimulator(
+                predictor,
+                random_slice,
+                poi_file=poi_file,
+                ignore_before=50,
+                delay=delay
+            )
 
-        # Run the simulation.
-        simulator.run()
+            # Run the simulation.
+            simulator.run()
