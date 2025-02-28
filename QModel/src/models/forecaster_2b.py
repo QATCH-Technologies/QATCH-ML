@@ -16,7 +16,10 @@ import matplotlib.pyplot as plt
 import xgboost as xgb
 from hyperopt import fmin, tpe, hp, Trials, STATUS_OK
 import pickle
-from QATCH.core.worker import Worker
+try:
+    from QATCH.core.worker import Worker
+except ImportError:
+    print("No catch model to import")
 FEATURES = [
     'Relative_time',
     'Dissipation',
@@ -32,12 +35,14 @@ FEATURES = [
     'Dissipation_envelope',
     'Time_shift'
 ]
+TARGET = "Fill"
 DATA_TO_LOAD = 50
 IGNORE_BEFORE = 50
 
 
 class QForecasterDataprocessor:
-    def convert_to_dataframe(worker: Worker) -> pd.DataFrame:
+    @staticmethod
+    def convert_to_dataframe(worker) -> pd.DataFrame:
         # Retrieve the three buffers from the worker
         resonance_frequency = worker.get_value0_buffer(0)
         relative_time = worker.get_d1_buffer(0)
@@ -314,16 +319,14 @@ class QForecasterDataprocessor:
 ###############################################################################
 
 class QForecasterTrainer:
-    def __init__(self, numerical_features, categorical_features=None, target='Fill', save_dir=None):
+    def __init__(self, numerical_features, target='Fill', save_dir=None):
         """
         Args:
             numerical_features (list): List of numerical feature names.
-            categorical_features (list): List of categorical feature names.
             target (str): Target column name.
             save_dir (str): Directory to save trained objects.
         """
         self.numerical_features = numerical_features
-        self.categorical_features = categorical_features if categorical_features is not None else []
         self.target = target
         self.save_dir = save_dir
 
@@ -340,25 +343,18 @@ class QForecasterTrainer:
         self.transition_matrix_short = None
         self.transition_matrix_long = None
 
+        # New: meta model and (optionally) its transition matrix.
+        self.meta_model = None
+        self.meta_transition_matrix = None
+
     def _build_preprocessors(self, X):
-        """Fit and return preprocessors for numerical and categorical data."""
+        """Fit and return preprocessors for numerical data."""
         num_imputer = SimpleImputer(strategy='mean')
         X_num = num_imputer.fit_transform(X[self.numerical_features])
         scaler = StandardScaler()
         X_num = scaler.fit_transform(X_num)
         preprocessors = {'num_imputer': num_imputer, 'scaler': scaler}
-
-        if self.categorical_features:
-            cat_imputer = SimpleImputer(strategy='most_frequent')
-            X_cat = cat_imputer.fit_transform(X[self.categorical_features])
-            encoder = OneHotEncoder(handle_unknown='ignore', sparse=False)
-            X_cat = encoder.fit_transform(X_cat)
-            preprocessors.update(
-                {'cat_imputer': cat_imputer, 'encoder': encoder})
-            X_processed = np.hstack([X_num, X_cat])
-        else:
-            X_processed = X_num
-
+        X_processed = X_num
         return X_processed, preprocessors
 
     def _tune_parameters(self, dtrain, base_params, max_evals=10):
@@ -413,7 +409,7 @@ class QForecasterTrainer:
             preprocessors (dict): Fitted preprocessors.
             params (dict): Model parameters.
         """
-        features = self.numerical_features + self.categorical_features
+        features = self.numerical_features
         X = training_data[features].copy()
         y = training_data[self.target].values
 
@@ -448,32 +444,21 @@ class QForecasterTrainer:
         model = xgb.train(params, dtrain, num_boost_round=optimal_rounds)
         return model, preprocessors, params
 
-    def predict_native(self, model: xgb.Booster, preprocessors, X):
+    def _apply_preprocessors(self, X, preprocessors):
         """
-        Helper method to generate predictions; used when training the meta-classifier.
+        Apply loaded preprocessors to input data.
         """
         X_copy = X.copy()
-
-        # Ensure feature names are set on the model.
-        if model.feature_names is None:
-            # Assume that the DataFrame columns are the correct feature names.
-            model.feature_names = list(X_copy.columns)
-
-        print("Model feature names:", model.feature_names)
-        print("Preprocessors:", preprocessors)
-
         X_num = preprocessors['num_imputer'].transform(
-            X_copy[model.feature_names])
+            X_copy[self.numerical_features])
         X_num = preprocessors['scaler'].transform(X_num)
+        return X_num
 
-        if self.categorical_features:
-            X_cat = preprocessors['cat_imputer'].transform(
-                X_copy[self.categorical_features])
-            X_cat = preprocessors['encoder'].transform(X_cat)
-            X_processed = np.hstack([X_num, X_cat])
-        else:
-            X_processed = X_num
-
+    def predict_native(self, model: xgb.Booster, preprocessors, X):
+        """
+        Generate predictions using a loaded XGBoost model.
+        """
+        X_processed = self._apply_preprocessors(X, preprocessors)
         dmatrix = xgb.DMatrix(X_processed)
         return model.predict(dmatrix)
 
@@ -492,9 +477,74 @@ class QForecasterTrainer:
             training_data_long, tune=tune)
         print("[INFO] Base model training complete.")
 
+    # --- New methods for meta model training and saving ---
+    def extract_meta_features(self, X, conf_short, conf_long, additional_info):
+        """
+        Example meta feature extraction: combines model confidences and summary statistics.
+        You can modify this to include more sophisticated features.
+        """
+        meta_features = np.column_stack([
+            np.array(conf_short),
+            np.array(conf_long),
+            np.full(len(conf_short), additional_info.get('stat_short', 0)),
+            np.full(len(conf_short), additional_info.get('stat_long', 0))
+        ])
+        return meta_features
+
+    def train_meta_model(self, training_data):
+        """
+        Train a meta model for model selection.
+        This method uses the base models' predictions on the training data and the true target
+        to label which base model performed better, then trains a meta classifier.
+        """
+        training_data = QForecasterDataprocessor.compute_additional_features(
+            training_data)
+
+        X = training_data.copy()
+        X.drop(columns=['Fill'], inplace=True)
+        y_true = training_data[self.target].values
+
+        prob_matrix_short = self.predict_native(
+            self.model_short, self.preprocessors_short, X)
+        prob_matrix_long = self.predict_native(
+            self.model_long, self.preprocessors_long, X)
+
+        pred_short = np.argmax(prob_matrix_short, axis=1)
+        pred_long = np.argmax(prob_matrix_long, axis=1)
+        conf_short = np.max(prob_matrix_short, axis=1)
+        conf_long = np.max(prob_matrix_long, axis=1)
+
+        # Label each sample based on which model predicted correctly,
+        # or if both are correct/incorrect, based on higher confidence.
+        meta_labels = []
+        for i in range(len(y_true)):
+            correct_short = (pred_short[i] == y_true[i])
+            correct_long = (pred_long[i] == y_true[i])
+            if correct_short and not correct_long:
+                meta_labels.append(0)  # short model is better
+            elif correct_long and not correct_short:
+                meta_labels.append(1)  # long model is better
+            else:
+                meta_labels.append(0 if conf_short[i] >= conf_long[i] else 1)
+        meta_labels = np.array(meta_labels)
+
+        # Extract meta features.
+        additional_info = {
+            'stat_short': np.std(prob_matrix_short, axis=1).mean(),
+            'stat_long': np.std(prob_matrix_long, axis=1).mean()
+        }
+        meta_features = self.extract_meta_features(
+            X, conf_short, conf_long, additional_info)
+
+        # Train a simple meta classifier, e.g., logistic regression.
+        from sklearn.linear_model import LogisticRegression
+        self.meta_model = LogisticRegression()
+        self.meta_model.fit(meta_features, meta_labels)
+        print("[INFO] Meta model training complete.")
+
     def save_models(self):
         """
-        Save base models, meta-classifier, preprocessors, parameters, and transition matrices.
+        Save base models, meta classifier, preprocessors, parameters, and transition matrices.
         """
         if not self.save_dir:
             raise ValueError("Save directory not specified.")
@@ -520,11 +570,20 @@ class QForecasterTrainer:
         with open(os.path.join(self.save_dir, "transition_matrix_long.pkl"), "wb") as f:
             pickle.dump(self.transition_matrix_long, f)
 
+        # Save meta model if it exists.
+        if self.meta_model is not None:
+            with open(os.path.join(self.save_dir, "meta_clf.pkl"), "wb") as f:
+                pickle.dump(self.meta_model, f)
+        # Optionally, save meta transition matrix if applicable.
+        if self.meta_transition_matrix is not None:
+            with open(os.path.join(self.save_dir, "meta_transition_matrix.pkl"), "wb") as f:
+                pickle.dump(self.meta_transition_matrix, f)
+
         print("[INFO] All models and associated objects have been saved successfully.")
 
     def load_models(self):
         """
-        Optionally, the trainer can also load models from disk.
+        Optionally, load models (base and meta) from disk.
         """
         if not self.save_dir:
             raise ValueError("Save directory not specified.")
@@ -549,16 +608,26 @@ class QForecasterTrainer:
         with open(os.path.join(self.save_dir, "transition_matrix_long.pkl"), "rb") as f:
             self.transition_matrix_long = pickle.load(f)
 
+        # Load meta model and its transition matrix if available.
+        meta_clf_path = os.path.join(self.save_dir, "meta_clf.pkl")
+        meta_trans_path = os.path.join(
+            self.save_dir, "meta_transition_matrix.pkl")
+        if os.path.exists(meta_clf_path):
+            with open(meta_clf_path, "rb") as f:
+                self.meta_model = pickle.load(f)
+        if os.path.exists(meta_trans_path):
+            with open(meta_trans_path, "rb") as f:
+                self.meta_transition_matrix = pickle.load(f)
+
         print("[INFO] All models and associated objects have been loaded successfully.")
 
 
 ###############################################################################
 # Predictor Class: Handles generating predictions (including live predictions).
 ###############################################################################
-
-
 class QForecasterPredictor:
-    def __init__(self, numerical_features: list = FEATURES, categorical_features: list = None, target: str = 'Fill', save_dir: str = None, batch_threshold: int = 300):
+    def __init__(self, numerical_features: list, categorical_features: list = None, target: str = 'Fill',
+                 save_dir: str = None, batch_threshold: int = 300):
         """
         Args:
             numerical_features (list): List of numerical feature names.
@@ -568,7 +637,6 @@ class QForecasterPredictor:
             batch_threshold (int): Number of new entries to accumulate before running predictions.
         """
         self.numerical_features = numerical_features
-        self.categorical_features = categorical_features if categorical_features is not None else []
         self.target = target
         self.save_dir = save_dir
         self.batch_threshold = batch_threshold
@@ -590,7 +658,8 @@ class QForecasterPredictor:
         self.axes = None
 
         # Prediction history for stability detection.
-        self.prediction_history = {}
+        self.prediction_history_short = {}
+        self.prediction_history_long = {}
 
     def load_models(self):
         """
@@ -615,10 +684,16 @@ class QForecasterPredictor:
         with open(os.path.join(self.save_dir, "transition_matrix_long.pkl"), "rb") as f:
             self.transition_matrix_long = pickle.load(f)
 
-        with open(os.path.join(self.save_dir, "meta_classifier.pkl"), "rb") as f:
-            self.meta_clf = pickle.load(f)
-        with open(os.path.join(self.save_dir, "meta_transition_matrix.pkl"), "rb") as f:
-            self.meta_transition_matrix = pickle.load(f)
+        # Optionally, load the meta-classifier and its transition matrix if available.
+        meta_clf_path = os.path.join(self.save_dir, "meta_clf.pkl")
+        meta_trans_path = os.path.join(
+            self.save_dir, "meta_transition_matrix.pkl")
+        if os.path.exists(meta_clf_path):
+            with open(meta_clf_path, "rb") as f:
+                self.meta_clf = pickle.load(f)
+        if os.path.exists(meta_trans_path):
+            with open(meta_trans_path, "rb") as f:
+                self.meta_transition_matrix = pickle.load(f)
 
         print("[INFO] All models and associated objects have been loaded successfully.")
 
@@ -630,14 +705,7 @@ class QForecasterPredictor:
         X_num = preprocessors['num_imputer'].transform(
             X_copy[self.numerical_features])
         X_num = preprocessors['scaler'].transform(X_num)
-        if self.categorical_features:
-            X_cat = preprocessors['cat_imputer'].transform(
-                X_copy[self.categorical_features])
-            X_cat = preprocessors['encoder'].transform(X_cat)
-            X_processed = np.hstack([X_num, X_cat])
-        else:
-            X_processed = X_num
-        return X_processed
+        return X_num
 
     def predict_native(self, model, preprocessors, X):
         """
@@ -672,15 +740,12 @@ class QForecasterPredictor:
 
         # Consider only the last 'stability_window' predictions.
         recent = pred_list[-stability_window:]
-
-        # Count frequency for each prediction.
         counts = {}
         confidences = {}
         for pred, conf in recent:
             counts[pred] = counts.get(pred, 0) + 1
             confidences.setdefault(pred, []).append(conf)
 
-        # Check if any prediction meets the criteria.
         for pred, count in counts.items():
             if count / stability_window >= frequency_threshold:
                 avg_conf = np.mean(confidences[pred])
@@ -688,20 +753,85 @@ class QForecasterPredictor:
                     return True, pred
         return False, None
 
-    def update_predictions(self, new_data, ignore_before=0, stability_window=5, frequency_threshold=0.8, confidence_threshold=0.9):
+    # --- Methods for model selection using the meta model ---
+    def adjust_confidence(self, base_confidence, transition_matrix, current_state):
         """
-        Update internal accumulated data with a new batch of data and compute predictions only when the number
-        of accumulated rows reaches the batch_threshold.
+        Adjust the model's base confidence using the dynamic transition matrix.
 
         Args:
-            new_data (DataFrame): New incoming batch of data.
-            ignore_before (int): Number of initial rows to ignore (e.g., for stabilization).
-            stability_window (int): Number of recent predictions to check for stability.
-            frequency_threshold (float): Required frequency of a class for it to be considered stable.
-            confidence_threshold (float): Minimum average confidence required for stability.
+            base_confidence (float): The original confidence score.
+            transition_matrix (np.array): The dynamic transition matrix for the model.
+            current_state (int): Current state index (as determined by your system logic).
 
         Returns:
-            dict: A dictionary with prediction results or a status message indicating waiting for more data.
+            float: Adjusted confidence score.
+        """
+        # Example: Multiply base confidence by a weight derived from the transition matrix.
+        weight = transition_matrix[current_state].max()
+        return base_confidence * weight
+
+    def extract_meta_features(self, X, conf_short, conf_long, additional_info):
+        """
+        Extract meta features from the input data and confidence scores.
+        For model selection, we aggregate metrics across the batch into a single feature vector.
+
+        Args:
+            X (pd.DataFrame): Input data.
+            conf_short (float): Aggregate confidence score from the short model.
+            conf_long (float): Aggregate confidence score from the long model.
+            additional_info (dict): Additional aggregated statistics.
+
+        Returns:
+            np.array: A feature vector of shape (1, n_features) for meta model prediction.
+        """
+        features = np.array([[conf_short, conf_long,
+                              additional_info.get('stat_short', 0),
+                              additional_info.get('stat_long', 0)]])
+        return features
+
+    def select_model(self, X, current_state=None):
+        """
+        Use the meta-model to decide which base model (short or long) should be used.
+        Returns 0 for short model and 1 for long model.
+        """
+        # Override: if the time delta condition is met, choose the long model.
+        if QForecasterDataprocessor.find_time_delta(X) >= 0:
+            return 1  # Always select long model
+
+        # 1. Get predictions for both models.
+        prob_matrix_short = self.predict_native(
+            self.model_short, self.preprocessors_short, X)
+        prob_matrix_long = self.predict_native(
+            self.model_long, self.preprocessors_long, X)
+
+        # 2. Compute aggregate confidence scores.
+        conf_short = np.mean(np.max(prob_matrix_short, axis=1))
+        conf_long = np.mean(np.max(prob_matrix_long, axis=1))
+
+        # Adjust based on the current state if provided.
+        if current_state is not None:
+            conf_short = self.adjust_confidence(
+                conf_short, self.transition_matrix_short, current_state)
+            conf_long = self.adjust_confidence(
+                conf_long, self.transition_matrix_long, current_state)
+
+        # 3. Extract additional summary statistics.
+        additional_info = {
+            'stat_short': np.std(prob_matrix_short, axis=1).mean(),
+            'stat_long': np.std(prob_matrix_long, axis=1).mean()
+        }
+        features = self.extract_meta_features(
+            X, conf_short, conf_long, additional_info)
+
+        # 4. Use the meta-model (meta classifier) to decide which model is likely to perform better.
+        model_choice = self.meta_clf.predict(features)[0]
+        return model_choice
+
+    def update_predictions(self, new_data, ignore_before=0, stability_window=5,
+                           frequency_threshold=0.8, confidence_threshold=0.9, current_state=None):
+        """
+        Accumulate new data and run predictions in batches. The method updates prediction
+        histories for stability detection and uses the meta-model for base model selection.
         """
         # Initialize accumulator if needed.
         if self.accumulated_data is None:
@@ -711,18 +841,18 @@ class QForecasterPredictor:
         self.accumulated_data = pd.concat(
             [self.accumulated_data, new_data], ignore_index=True)
         current_count = len(self.accumulated_data)
-
-        # Check if we have collected enough new entries.
+        self.accumulated_data = QForecasterDataprocessor.compute_additional_features(
+            self.accumulated_data)
         if current_count < self.batch_threshold:
             print(
                 f"[INFO] Accumulated {current_count} entries so far; waiting for {self.batch_threshold} entries to run predictions.")
             return {
                 "status": "waiting",
                 "accumulated_count": current_count,
+                "accumulated_data": self.accumulated_data,
                 "predictions": None
             }
 
-        # Enough data accumulated; proceed with predictions.
         self.batch_num += 1
         print(
             f"\n[INFO] Running predictions on batch {self.batch_num} with {current_count} entries.")
@@ -731,62 +861,67 @@ class QForecasterPredictor:
         if self.batch_num == 1 and current_count > ignore_before:
             self.accumulated_data = self.accumulated_data.iloc[ignore_before:]
 
-        features = self.numerical_features + self.categorical_features
+        features = self.numerical_features
         X_live = self.accumulated_data[features]
 
-        # Get predictions from both base models.
+        # Get predictions and probability matrices from both base models.
         prob_matrix_short = self.predict_native(
             self.model_short, self.preprocessors_short, X_live)
         pred_short = QForecasterDataprocessor.viterbi_decode(
             prob_matrix_short, self.transition_matrix_short)
-
         prob_matrix_long = self.predict_native(
             self.model_long, self.preprocessors_long, X_live)
         pred_long = QForecasterDataprocessor.viterbi_decode(
             prob_matrix_long, self.transition_matrix_long)
 
-        # Compute confidences for base models.
+        # Compute per-sample confidences for each base model.
         conf_short = np.array([prob_matrix_short[i, pred_short[i]]
                               for i in range(len(pred_short))])
         conf_long = np.array([prob_matrix_long[i, pred_long[i]]
                              for i in range(len(pred_long))])
 
-        # Combine outputs for the meta classifier.
-        meta_features = np.hstack([prob_matrix_short, prob_matrix_long])
-        meta_prob_matrix = self.meta_clf.predict_proba(meta_features)
-        final_preds = QForecasterDataprocessor.viterbi_decode(
-            meta_prob_matrix, self.meta_transition_matrix)
-        final_conf = np.array([meta_prob_matrix[i, final_preds[i]]
-                              for i in range(len(final_preds))])
+        # Update prediction history for each sample in this batch.
+        for i, (p_s, p_l, c_s, c_l) in enumerate(zip(pred_short, pred_long, conf_short, conf_long)):
+            if i not in self.prediction_history_short:
+                self.prediction_history_short[i] = []
+            self.prediction_history_short[i].append((p_s, c_s))
+            if i not in self.prediction_history_long:
+                self.prediction_history_long[i] = []
+            self.prediction_history_long[i].append((p_l, c_l))
 
-        # Update prediction history for stability checking.
-        for idx, (pred, conf) in enumerate(zip(final_preds, final_conf)):
-            if idx not in self.prediction_history:
-                self.prediction_history[idx] = []
-            self.prediction_history[idx].append((pred, conf))
+        # Use the meta-model based system to select the appropriate model.
+        selected_model = self.select_model(X_live, current_state=current_state)
 
-        # Check which predictions are stable.
-        stable_predictions = {}
-        for idx, history in self.prediction_history.items():
+        # Check stable predictions for both models separately.
+        stable_predictions_short = {}
+        for idx, history in self.prediction_history_short.items():
             stable, stable_class = self.is_prediction_stable(
                 history, stability_window, frequency_threshold, confidence_threshold)
             if stable:
-                stable_predictions[idx] = stable_class
+                stable_predictions_short[idx] = stable_class
 
-        # Optionally reset the accumulator after running predictions so the next prediction is only on new data.
-        self.reset_accumulator()
+        stable_predictions_long = {}
+        for idx, history in self.prediction_history_long.items():
+            stable, stable_class = self.is_prediction_stable(
+                history, stability_window, frequency_threshold, confidence_threshold)
+            if stable:
+                stable_predictions_long[idx] = stable_class
 
+        # Capture the accumulated data for plotting before resetting.
+        data_for_plot = self.accumulated_data.copy()
         return {
             "status": "completed",
+            "selected_model": selected_model,  # 0 for short, 1 for long
             "pred_short": pred_short,
             "pred_long": pred_long,
-            "final_preds": final_preds,
             "conf_short": conf_short,
             "conf_long": conf_long,
-            "final_conf": final_conf,
-            "stable_predictions": stable_predictions,
-            "accumulated_data": self.accumulated_data
+            "stable_predictions_short": stable_predictions_short,
+            "stable_predictions_long": stable_predictions_long,
+            "accumulated_data": data_for_plot,
+            "accumulated_count": current_count
         }
+
 
 # -----------------------------
 # Helper: Simulate Serial Stream
@@ -830,6 +965,12 @@ class QForecasterSimulator:
     def __init__(self, predictor: QForecasterPredictor, dataset: pd.DataFrame, poi_file: pd.DataFrame = None, ignore_before=0, delay=1.0):
         """
         Simulator class to stream data in random chunk sizes and update predictions live.
+        Args:
+            predictor (QForecasterPredictor): Predictor object.
+            dataset (pd.DataFrame): Dataset to simulate streaming.
+            poi_file (pd.DataFrame, optional): DataFrame containing Points Of Interest indices.
+            ignore_before (int): Number of initial rows to ignore.
+            delay (float): Delay (in seconds) between processing batches.
         """
         self.predictor = predictor
         self.dataset = dataset
@@ -872,27 +1013,44 @@ class QForecasterSimulator:
         plt.ioff()  # Turn off interactive mode.
         plt.show()
 
-    def plot_results(self, results, batch_number):
+    def plot_results(self, results: dict, batch_number: int):
         """
-        Updates the live plot with the normalized dissipation curve overlaid
-        with background shading corresponding to contiguous predicted class regions,
-        using channel fill names in the legend. Additionally, regions where predictions
-        are stable are overlaid with a darker shading. The plot is styled with a clean,
-        minimalist aesthetic.
+        Updates the live plot with the normalized dissipation curve overlaid with
+        background shading corresponding to contiguous predicted class regions.
+        Stable prediction regions (as determined by the model selection system) are overlaid
+        with darker shading. The plot is styled with a clean, minimalist aesthetic.
         """
         self.ax.cla()  # Clear previous plot
 
-        # Apply minimalist styling.
-        self.ax.set_facecolor('white')
-        self.fig.patch.set_facecolor('white')
-        self.ax.spines['top'].set_visible(False)
-        self.ax.spines['right'].set_visible(False)
+        # Check if there is enough data to run predictions.
+        if results.get("status") == "waiting":
+            self.ax.set_title(
+                f"Waiting for more data (Batch {batch_number})", fontsize=14)
+            self.fig.canvas.draw()
+            self.fig.canvas.flush_events()
+            return
 
-        # Plot the dissipation curve with a clean dark line.
-        accumulated_data = results["accumulated_data"]
+        # Otherwise, proceed with plotting.
+        accumulated_data = results.get("accumulated_data")
+        if accumulated_data is None or accumulated_data.empty:
+            print("[WARN] No accumulated data available for plotting.")
+            return
+
         x_dissipation = np.arange(len(accumulated_data))
-        self.ax.plot(x_dissipation, accumulated_data["Dissipation"],
-                     linestyle=':', color='#333333', linewidth=1.5, label='Dissipation Curve')
+        self.ax.plot(
+            x_dissipation,
+            accumulated_data["Dissipation"],
+            linestyle=':',
+            color='#333333',
+            linewidth=1.5,
+            label='Dissipation Curve'
+        )
+
+        # Use the model selection system to determine which base model's predictions to plot.
+        if results["selected_model"] == 0:
+            preds = np.array(results["pred_short"])
+        else:
+            preds = np.array(results["pred_long"])
 
         # Define mappings for class IDs to names and colors.
         class_names = {
@@ -911,7 +1069,6 @@ class QForecasterSimulator:
         }
 
         # Overlay shaded regions for predicted class regions.
-        preds = np.array(results["final_preds"])
         if len(preds) > 0:
             already_labeled = {}
             current_class = preds[0]
@@ -921,27 +1078,42 @@ class QForecasterSimulator:
                     end_idx = i - 1
                     label = class_names[current_class] if current_class not in already_labeled else None
                     already_labeled[current_class] = True
-                    self.ax.axvspan(start_idx, end_idx, color=class_colors.get(current_class, '#cccccc'),
-                                    alpha=0.3, label=label)
+                    self.ax.axvspan(
+                        start_idx, end_idx,
+                        color=class_colors.get(current_class, '#cccccc'),
+                        alpha=0.3,
+                        label=label
+                    )
                     current_class = preds[i]
                     start_idx = i
             # Shade the final segment.
             end_idx = len(preds) - 1
             label = class_names[current_class] if current_class not in already_labeled else None
-            self.ax.axvspan(start_idx, end_idx, color=class_colors.get(current_class, '#cccccc'),
-                            alpha=0.3, label=label)
+            self.ax.axvspan(
+                start_idx, end_idx,
+                color=class_colors.get(current_class, '#cccccc'),
+                alpha=0.3,
+                label=label
+            )
 
         # Scatter the actual POI indices on the dissipation curve.
         if self.actual_poi_indices.size > 0:
             valid_actual_indices = [
                 int(idx) for idx in self.actual_poi_indices if idx < len(accumulated_data)]
-            y_actual = accumulated_data["Dissipation"].iloc[valid_actual_indices]
-            self.ax.scatter(valid_actual_indices, y_actual,
-                            color='#2ca02c', marker='o', s=50, label='Actual POI')
+            if valid_actual_indices:
+                y_actual = accumulated_data["Dissipation"].iloc[valid_actual_indices]
+                self.ax.scatter(
+                    valid_actual_indices,
+                    y_actual,
+                    color='#2ca02c',
+                    marker='o',
+                    s=50,
+                    label='Actual POI'
+                )
 
-        # Overlay stable prediction regions as darker shaded areas.
-        if "stable_predictions" in results and results["stable_predictions"]:
-            stable_dict = results["stable_predictions"]
+       # Overlay stable prediction regions for the short model as darker shaded areas.
+        if "stable_predictions_short" in results and results["stable_predictions_short"] and results['selected_model'] == 0:
+            stable_dict = results["stable_predictions_short"]
             stable_idxs = sorted(stable_dict.keys())
             if stable_idxs:
                 segments = []
@@ -958,15 +1130,57 @@ class QForecasterSimulator:
                         prev = idx
                         current_class = stable_dict[idx]
                 segments.append((seg_start, prev, current_class))
-                already_labeled_stable = {}
+                already_labeled = {}
                 for seg_start, seg_end, cls in segments:
-                    label = f"Stable: {class_names[cls]}" if cls not in already_labeled_stable else None
-                    already_labeled_stable[cls] = True
-                    self.ax.axvspan(seg_start, seg_end, color=class_colors.get(cls, '#000000'),
-                                    alpha=0.6, label=label)
+                    label = f"Stable Short: {class_names[cls]}" if cls not in already_labeled else None
+                    already_labeled[cls] = True
+                    self.ax.axvspan(
+                        seg_start, seg_end,
+                        color=class_colors.get(cls, '#000000'),
+                        alpha=0.6,  # darker for short model
+                        label=label
+                    )
 
+        # Overlay stable prediction regions for the long model as lighter shaded areas.
+        if "stable_predictions_long" in results and results["stable_predictions_long"] and results['selected_model'] == 1:
+            stable_dict = results["stable_predictions_long"]
+            stable_idxs = sorted(stable_dict.keys())
+            if stable_idxs:
+                segments = []
+                current_class = stable_dict[stable_idxs[0]]
+                seg_start = stable_idxs[0]
+                prev = stable_idxs[0]
+                # Group contiguous indices with the same stable class.
+                for idx in stable_idxs[1:]:
+                    if idx == prev + 1 and stable_dict[idx] == current_class:
+                        prev = idx
+                    else:
+                        segments.append((seg_start, prev, current_class))
+                        seg_start = idx
+                        prev = idx
+                        current_class = stable_dict[idx]
+                segments.append((seg_start, prev, current_class))
+                already_labeled = {}
+                for seg_start, seg_end, cls in segments:
+                    label = f"Stable Long: {class_names[cls]}" if cls not in already_labeled else None
+                    already_labeled[cls] = True
+                    self.ax.axvspan(
+                        seg_start, seg_end,
+                        color=class_colors.get(cls, '#000000'),
+                        alpha=0.3,  # lighter for long model
+                        label=label
+                    )
+
+        model_name = "Short Model" if results["selected_model"] == 0 else "Long Model"
+        self.ax.text(
+            0.05, 0.95, f'Model: {model_name}',
+            transform=self.ax.transAxes,
+            fontsize=12, color='black',
+            verticalalignment='top',
+            bbox=dict(facecolor='white', alpha=0.5, edgecolor='none')
+        )
         self.ax.set_title(
-            f'Normalized Dissipation Curve (Batch {batch_number})', fontsize=14, weight='medium')
+            f'Dissipation Curve (Batch {batch_number})', fontsize=14, weight='medium')
         self.ax.set_xlabel('Data Index', fontsize=12)
         self.ax.set_ylabel(self.predictor.target, fontsize=12)
         self.ax.tick_params(axis='both', which='major', labelsize=10)
@@ -978,25 +1192,25 @@ class QForecasterSimulator:
 
 
 TESTING = True
-TRAINING = True
+TRAINING = False
 
 # Main execution block.
 if __name__ == '__main__':
-    # Load your dataset (update the path and parameters as needed).
     if TRAINING:
         train_dir = r'content\training_data\full_fill'
         training_data_short, training_data_long = QForecasterDataprocessor.load_and_preprocess_data_split(
             train_dir, required_runs=140)
-        qft = QForecasterTrainer(
-            FEATURES, None, "Fill", r'QModel\SavedModels\forecaster')
-        # qft.train_base_models(training_data_short=training_data_short,
-        #                       training_data_long=training_data_long, tune=True)
-        qft.load_models()
-        meta_data = pd.concat(
-            [training_data_short, training_data_long], axis=1)
-        qft.train_meta_model(training_data_short)
-        print(qft.meta_transition_matrix)
+        meta_training_data = pd.concat(
+            [training_data_short, training_data_long], ignore_index=True)
+
+        qft = QForecasterTrainer(FEATURES, TARGET,
+                                 r'QModel\SavedModels\forecaster')
+        qft.train_base_models(training_data_short=training_data_short,
+                              training_data_long=training_data_long, tune=True)
         qft.save_models()
+        qft.train_meta_model(meta_training_data)
+        qft.save_models()
+
     if TESTING:
         test_dir = r"content\test_data"
         test_content = QForecasterDataprocessor.load_content(test_dir)
@@ -1004,6 +1218,8 @@ if __name__ == '__main__':
         for data_file, poi_file in test_content:
             dataset = pd.read_csv(data_file)
             end = np.random.randint(0, len(dataset))
+            end = random.randint(min(end, len(dataset)),
+                                 max(end, len(dataset)))
             random_slice = dataset.iloc[0:end]
             poi_file = pd.read_csv(poi_file, header=None)
 
