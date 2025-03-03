@@ -204,6 +204,8 @@ class QForecasterDataprocessor:
         Files are then categorized into 'short_runs' and 'long_runs' based on whether
         a significant time delta is detected. Before final concatenation, if the number
         of rows in a run exceeds IGNORE_BEFORE, the first IGNORE_BEFORE rows are dropped.
+        Additionally, each DataFrame is filtered to remove rows with Relative_time < 1.2
+        and downsampled by a factor of 5.
         Returns two DataFrames: one for short runs and one for long runs.
         """
         short_runs, long_runs = [], []
@@ -238,6 +240,11 @@ class QForecasterDataprocessor:
             else:
                 if len(long_runs) < required_runs:
                     long_runs.append(df)
+            # Trim rows with Relative_time less than 1.2
+            df = df[df["Relative_time"] >= 1.2]
+
+            # Downsample the DataFrame by a factor of 5 (take every 5th row)
+            df = df.iloc[::5]
 
         if len(short_runs) < required_runs or len(long_runs) < required_runs:
             raise ValueError(f"Not enough runs found. Required: {required_runs} short and {required_runs} long, "
@@ -263,6 +270,11 @@ class QForecasterDataprocessor:
                 "Data file is empty or missing required sensor columns.")
         df = df[required_cols]
         df = QForecasterDataprocessor._process_fill(df, poi_file)
+        # Trim rows with Relative_time less than 1.2
+        df = df[df["Relative_time"] >= 1.2]
+
+        # Downsample the DataFrame by a factor of 5 (take every 5th row)
+        df = df.iloc[::5]
         if df is None:
             raise ValueError("Error processing fill information.")
         print("[INFO] Preprocessed single-file data sample:")
@@ -711,6 +723,7 @@ class QForecasterPredictor:
         """
         Generate predictions using a loaded XGBoost model.
         """
+        X = X[FEATURES]
         X_processed = self._apply_preprocessors(X, preprocessors)
         dmatrix = xgb.DMatrix(X_processed)
         return model.predict(dmatrix)
@@ -890,8 +903,8 @@ class QForecasterPredictor:
             self.prediction_history_long[i].append((p_l, c_l))
 
         # Use the meta-model based system to select the appropriate model.
-        selected_model = self.select_model(X_live, current_state=current_state)
-
+        # selected_model = self.select_model(X_live, current_state=current_state)
+        selected_model = 0
         # Check stable predictions for both models separately.
         stable_predictions_short = {}
         for idx, history in self.prediction_history_short.items():
@@ -1220,17 +1233,17 @@ if __name__ == '__main__':
             end = np.random.randint(0, len(dataset))
             end = random.randint(min(end, len(dataset)),
                                  max(end, len(dataset)))
-            random_slice = dataset.iloc[0:end]
+            random_slice = dataset.iloc[0:len(dataset)-1]
             poi_file = pd.read_csv(poi_file, header=None)
 
-            # Create an instance of the predictor.
             predictor = QForecasterPredictor(
                 FEATURES, target='Fill', save_dir='QModel/SavedModels/forecaster/')
             # Ensure models and preprocessors are loaded.
             predictor.load_models()
 
             delay = dataset['Relative_time'].max() / len(random_slice)
-
+            random_slice = random_slice[random_slice["Relative_time"] >= 1.2]
+            random_slice = random_slice.iloc[::5]
             # Create the simulator, now passing the poi_file.
             simulator = QForecasterSimulator(
                 predictor,
