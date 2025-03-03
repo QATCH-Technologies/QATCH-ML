@@ -679,7 +679,6 @@ class QForecasterSimulator:
             self.actual_poi_indices = poi_file.values
         else:
             self.actual_poi_indices = np.array([])
-
         # Setup a live plot with a single axis.
         self.fig, self.ax = plt.subplots(figsize=(12, 6))
         plt.ion()  # Enable interactive mode.
@@ -743,7 +742,7 @@ class QForecasterSimulator:
             label='Dissipation Curve'
         )
 
-        preds = np.array(results["preds"])
+        preds = np.array(results["pred"])
 
         # Define mappings for class IDs to names and colors.
         class_names = {
@@ -847,7 +846,7 @@ class QForecasterSimulator:
 
 
 TESTING = True
-TRAINING = True
+TRAINING = False
 
 # Main execution block.
 if __name__ == '__main__':
@@ -870,7 +869,7 @@ if __name__ == '__main__':
             end = np.random.randint(0, len(dataset))
             end = random.randint(min(end, len(dataset)),
                                  max(end, len(dataset)))
-            random_slice = dataset.iloc[0:len(dataset)-1]
+            random_slice = dataset.iloc[0:end]
             poi_file = pd.read_csv(poi_file, header=None)
 
             predictor = QForecasterPredictor(
