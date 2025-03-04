@@ -1,14 +1,11 @@
 from hyperopt import fmin, tpe, hp, STATUS_OK, Trials
-from sklearn.linear_model import LogisticRegression
 from scipy.signal import hilbert
 from scipy.signal import savgol_filter
 from scipy.signal import hilbert, savgol_filter
-from xgboost import XGBClassifier
 from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.preprocessing import StandardScaler
 import os
 import random
-import time
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
@@ -18,7 +15,6 @@ from hyperopt import fmin, tpe, hp, Trials, STATUS_OK
 import pickle
 
 FEATURES = [
-    'Relative_time',
     'Dissipation',
     'Dissipation_rolling_mean',
     'Dissipation_rolling_median',
@@ -26,15 +22,12 @@ FEATURES = [
     'Dissipation_rolling_std',
     'Dissipation_diff',
     'Dissipation_pct_change',
-    'Dissipation_rate',
     'Dissipation_ratio_to_mean',
     'Dissipation_ratio_to_ewm',
-    'Dissipation_envelope',
-    'Time_shift'
+    'Dissipation_envelope'
 ]
+
 TARGET = "Fill"
-DATA_TO_LOAD = 50
-IGNORE_BEFORE = 50
 
 
 class QForecasterDataprocessor:
@@ -121,8 +114,8 @@ class QForecasterDataprocessor:
             window=window, min_periods=1).std()
         df['Dissipation_diff'] = df['Dissipation'].diff()
         df['Dissipation_pct_change'] = df['Dissipation'].pct_change()
-        df['Relative_time_diff'] = df['Relative_time'].diff().replace(0, np.nan)
-        df['Dissipation_rate'] = df['Dissipation_diff'] / df['Relative_time_diff']
+        # df['Relative_time_diff'] = df['Relative_time'].diff().replace(0, np.nan)
+        # df['Dissipation_rate'] = df['Dissipation_diff'] / df['Relative_time_diff']
         df['Dissipation_ratio_to_mean'] = df['Dissipation'] / \
             df['Dissipation_rolling_mean']
         df['Dissipation_ratio_to_ewm'] = df['Dissipation'] / df['Dissipation_ewm']
@@ -132,11 +125,11 @@ class QForecasterDataprocessor:
         if 'Resonance_Frequency' in df.columns:
             df.drop(columns=['Resonance_Frequency'], inplace=True)
 
-        t_delta = QForecasterDataprocessor.find_time_delta(df)
-        if t_delta == -1:
-            df['Time_shift'] = 0
-        else:
-            df.loc[t_delta:, 'Time_shift'] = 1
+        # t_delta = QForecasterDataprocessor.find_time_delta(df)
+        # if t_delta == -1:
+        #     df['Time_shift'] = 0
+        # else:
+        #     df.loc[t_delta:, 'Time_shift'] = 1
 
         return df
 
@@ -168,22 +161,11 @@ class QForecasterDataprocessor:
 
     @staticmethod
     def load_and_preprocess_data_split(data_dir: str):
-        """
-        Load and preprocess data from all files in data_dir. Each file (and its matching
-        POI file) is processed to compute additional features and fill information.
-        Files are then categorized into 'short_runs' and 'long_runs' based on whether
-        a significant time delta is detected. Before final concatenation, if the number
-        of rows in a run exceeds IGNORE_BEFORE, the first IGNORE_BEFORE rows are dropped.
-        Additionally, each DataFrame is filtered to remove rows with Relative_time < 1.2
-        and downsampled by a factor of 5.
-        Returns two DataFrames: one for short runs and one for long runs.
-        """
         runs = []
         content = QForecasterDataprocessor.load_content(data_dir)
         random.shuffle(content)
 
         for file, poi_file in content:
-
             df = pd.read_csv(file)
             required_cols = ["Relative_time", "Dissipation"]
             if df.empty or not all(col in df.columns for col in required_cols):
@@ -205,6 +187,7 @@ class QForecasterDataprocessor:
         training_data = pd.concat(runs).sort_values(
             "Relative_time").reset_index(drop=True)
 
+        training_data.drop(columns=['Relative_time'], inplace=True)
         return training_data
 
     @staticmethod
@@ -215,7 +198,7 @@ class QForecasterDataprocessor:
         and prints a head sample of the resulting DataFrame.
         """
         df = pd.read_csv(data_file)
-        required_cols = ["Relative_time", "Resonance_Frequency", "Dissipation"]
+        required_cols = ["Relative_time", "Dissipation"]
         if df.empty or not all(col in df.columns for col in required_cols):
             raise ValueError(
                 "Data file is empty or missing required sensor columns.")
@@ -280,14 +263,14 @@ class QForecasterDataprocessor:
 ###############################################################################
 
 class QForecasterTrainer:
-    def __init__(self, numerical_features, target='Fill', save_dir=None):
+    def __init__(self, features, target='Fill', save_dir=None):
         """
         Args:
             numerical_features (list): List of numerical feature names.
             target (str): Target column name.
             save_dir (str): Directory to save trained objects.
         """
-        self.numerical_features = numerical_features
+        self.features = features
         self.target = target
         self.save_dir = save_dir
 
@@ -299,7 +282,7 @@ class QForecasterTrainer:
     def _build_preprocessors(self, X):
         """Fit and return preprocessors for numerical data."""
         num_imputer = SimpleImputer(strategy='mean')
-        X_num = num_imputer.fit_transform(X[self.numerical_features])
+        X_num = num_imputer.fit_transform(X[self.features])
         scaler = StandardScaler()
         X_num = scaler.fit_transform(X_num)
         preprocessors = {'num_imputer': num_imputer, 'scaler': scaler}
@@ -329,12 +312,12 @@ class QForecasterTrainer:
                 dtrain,
                 num_boost_round=200,
                 nfold=5,
-                metrics={'aucpr'},
+                metrics={'auc'},
                 early_stopping_rounds=10,
                 seed=42,
                 verbose_eval=False
             )
-            best_score = cv_results['test-aucpr-mean'].max()
+            best_score = cv_results['test-auc-mean'].max()
             best_rounds = len(cv_results)
             return {'loss': -best_score, 'status': STATUS_OK, 'num_rounds': best_rounds}
 
@@ -358,7 +341,7 @@ class QForecasterTrainer:
             preprocessors (dict): Fitted preprocessors.
             params (dict): Model parameters.
         """
-        features = self.numerical_features
+        features = self.features
         X = training_data[features].copy()
         y = training_data[self.target].values
 
@@ -368,7 +351,7 @@ class QForecasterTrainer:
         base_params = {
             'objective': 'multi:softprob',
             'num_class': 5,
-            'eval_metric': 'aucpr',
+            'eval_metric': 'auc',
             'seed': 42,
             'device': 'cuda',
         }
@@ -383,7 +366,7 @@ class QForecasterTrainer:
                 dtrain,
                 num_boost_round=200,
                 nfold=5,
-                metrics={'aucpr'},
+                metrics={'auc'},
                 early_stopping_rounds=10,
                 seed=42,
                 verbose_eval=False
@@ -399,7 +382,7 @@ class QForecasterTrainer:
         """
         X_copy = X.copy()
         X_num = preprocessors['num_imputer'].transform(
-            X_copy[self.numerical_features])
+            X_copy[self.features])
         X_num = preprocessors['scaler'].transform(X_num)
         return X_num
 
@@ -551,11 +534,65 @@ class QForecasterPredictor:
                     return True, pred
         return False, None
 
-    def update_predictions(self, new_data, ignore_before=0, stability_window=5,
-                           frequency_threshold=0.8, confidence_threshold=0.9, current_state=None):
+    def enforce_fill_distribution(self, prob_matrix, transition_matrix, max_iter=5):
         """
-        Accumulate new data and run predictions in batches. The method updates prediction
-        histories for stability detection and uses the meta-model for base model selection.
+        Iteratively boost probabilities for Fill type 2 and type 3 so that:
+          - Let L be the difference between the last and first index where Fill equals 1.
+          - The count of Fill type 2 is at least 4 * L.
+          - The count of Fill type 3 is at least 9 * L.
+        Returns:
+            The (possibly modified) predicted sequence, along with the adjusted prob_matrix.
+        """
+        for iteration in range(max_iter):
+            pred = QForecasterDataprocessor.viterbi_decode(
+                prob_matrix, transition_matrix)
+            type1_indices = np.where(pred == 1)[0]
+            if type1_indices.size == 0:
+                # No type 1 predictions; cannot compute baseline L.
+                break
+            L = type1_indices[-1] - type1_indices[0]
+            if L <= 0:
+                break
+
+            count2 = np.sum(pred == 2)
+            count3 = np.sum(pred == 3)
+
+            if count2 >= 4 * L and count3 >= 9 * L:
+                # Condition met; return the current prediction.
+                print(
+                    f"[INFO] Distribution condition met after {iteration} iterations.")
+                return pred, prob_matrix, transition_matrix
+
+            # Calculate boost factors for types 2 and 3.
+            boost_factor2 = (4 * L) / (count2 + 1e-6)
+            boost_factor3 = (9 * L) / (count3 + 1e-6)
+
+            first = type1_indices[0]
+            last = type1_indices[-1]
+
+            # Boost the probabilities in the region between first and last type 1.
+            for t in range(first, last + 1):
+                prob_matrix[t, 2] *= boost_factor2
+                prob_matrix[t, 3] *= boost_factor3
+                # Renormalize the row so probabilities sum to 1.
+                row_sum = np.sum(prob_matrix[t, :])
+                if row_sum > 0:
+                    prob_matrix[t, :] /= row_sum
+
+            print(
+                f"[INFO] Iteration {iteration+1}: Boosted probabilities with factors {boost_factor2:.2f} (type 2) and {boost_factor3:.2f} (type 3).")
+
+        # Return the last prediction even if condition is not fully met.
+        pred = QForecasterDataprocessor.viterbi_decode(
+            prob_matrix, transition_matrix)
+        return pred, prob_matrix, transition_matrix
+
+    def update_predictions(self, new_data, stability_window=5,
+                           frequency_threshold=0.8, confidence_threshold=0.9):
+        """
+        Accumulate new data and run predictions in batches.
+        Updates prediction histories for stability detection and applies a
+        post-process boosting to enforce the fill distribution.
         """
         # Initialize accumulator if needed.
         if self.accumulated_data is None:
@@ -581,16 +618,15 @@ class QForecasterPredictor:
         print(
             f"\n[INFO] Running predictions on batch {self.batch_num} with {current_count} entries.")
 
-        # Optionally ignore initial rows for stabilization (only on the first run).
-        if self.batch_num == 1 and current_count > ignore_before:
-            self.accumulated_data = self.accumulated_data.iloc[ignore_before:]
-
         features = self.numerical_features
         X_live = self.accumulated_data[features]
 
+        # Get the initial probability matrix from the model.
         prob_matrix = self.predict_native(
             self.model, self.preprocessors, X_live)
-        pred = QForecasterDataprocessor.viterbi_decode(
+
+        # Use our new method to boost probabilities and enforce the fill distribution.
+        pred, prob_matrix, _ = self.enforce_fill_distribution(
             prob_matrix, self.transition_matrix)
 
         conf = np.array([prob_matrix[i, pred[i]]
@@ -697,8 +733,7 @@ class QForecasterSimulator:
                 f"[INFO] Processing batch {batch_number} with {len(batch_data)} rows.")
 
             # Update predictions using the new batch.
-            results = self.predictor.update_predictions(
-                batch_data, ignore_before=self.ignore_before)
+            results = self.predictor.update_predictions(batch_data)
 
             # Update the live plot.
             self.plot_results(results, batch_number=batch_number)
@@ -856,7 +891,7 @@ if __name__ == '__main__':
             train_dir)
 
         qft = QForecasterTrainer(FEATURES, TARGET,
-                                 r'QModel\SavedModels\forecaster')
+                                 r'QModel\SavedModels\forecaster_v2')
         qft.train_model(training_data=training_data, tune=True)
         qft.save_models()
 
@@ -873,7 +908,7 @@ if __name__ == '__main__':
             poi_file = pd.read_csv(poi_file, header=None)
 
             predictor = QForecasterPredictor(
-                FEATURES, target='Fill', save_dir='QModel/SavedModels/forecaster/')
+                FEATURES, target='Fill', save_dir='QModel/SavedModels/forecaster_v2/')
             # Ensure models and preprocessors are loaded.
             predictor.load_models()
 
@@ -886,7 +921,7 @@ if __name__ == '__main__':
                 random_slice,
                 poi_file=poi_file,
                 ignore_before=50,
-                delay=delay
+                delay=delay * 5
             )
 
             # Run the simulation.
