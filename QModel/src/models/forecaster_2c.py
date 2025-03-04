@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import xgboost as xgb
 from hyperopt import fmin, tpe, hp, Trials, STATUS_OK
 import pickle
-
+import random
 FEATURES = [
     'Dissipation',
     'Dissipation_rolling_mean',
@@ -26,8 +26,11 @@ FEATURES = [
     'Dissipation_ratio_to_ewm',
     'Dissipation_envelope'
 ]
-
+NUM_CLASSES = 4
 TARGET = "Fill"
+DOWNSAMPLE_FACTOR = 5
+SPIN_UP_TIME = (1.2, 1.4)
+BASELINE_WINDOW = 100
 
 
 class QForecasterDataprocessor:
@@ -160,10 +163,13 @@ class QForecasterDataprocessor:
         return df
 
     @staticmethod
-    def load_and_preprocess_data_split(data_dir: str):
+    def load_and_preprocess_data(data_dir: str, num_datasets: int):
         runs = []
         content = QForecasterDataprocessor.load_content(data_dir)
         random.shuffle(content)
+
+        if num_datasets < len(content):
+            content = content[:num_datasets]
 
         for file, poi_file in content:
             df = pd.read_csv(file)
@@ -172,7 +178,7 @@ class QForecasterDataprocessor:
                 continue
 
             df = df[required_cols]
-            df = QForecasterDataprocessor.compute_additional_features(df)
+
             try:
                 df = QForecasterDataprocessor._process_fill(
                     df, poi_file, check_unique=True, file_name=file)
@@ -180,38 +186,30 @@ class QForecasterDataprocessor:
                 df = None
             if df is None:
                 continue
-            df = df[df["Relative_time"] >= 1.2]
-            df = df.iloc[::5]
+
+            df = df[df["Relative_time"] >= random.uniform(
+                SPIN_UP_TIME[0], SPIN_UP_TIME[1])]
+            df = df.iloc[::DOWNSAMPLE_FACTOR]
+            df = df.reset_index()
+            dissipation_before = df['Dissipation']
+            init_fill_point = QForecasterDataprocessor.init_fill_point(
+                df, BASELINE_WINDOW, 10)
+            df = df.iloc[init_fill_point:]
+            print(len(df))
+            if df is None or df.empty:
+                continue
+            df.loc[df['Fill'] == 0, 'Fill'] = 1
+            # Method 2 (in-place subtraction):
+            df['Fill'] -= 1
+            df = QForecasterDataprocessor.compute_additional_features(df)
+            df.reset_index(inplace=True)
+
             runs.append(df)
 
         training_data = pd.concat(runs).sort_values(
             "Relative_time").reset_index(drop=True)
-
         training_data.drop(columns=['Relative_time'], inplace=True)
         return training_data
-
-    @staticmethod
-    def load_and_preprocess_single(data_file: str, poi_file: str):
-        """
-        Load and preprocess a single data file (and its corresponding POI file).
-        The method ensures required sensor columns exist, processes the fill information,
-        and prints a head sample of the resulting DataFrame.
-        """
-        df = pd.read_csv(data_file)
-        required_cols = ["Relative_time", "Dissipation"]
-        if df.empty or not all(col in df.columns for col in required_cols):
-            raise ValueError(
-                "Data file is empty or missing required sensor columns.")
-        df = df[required_cols]
-        df = QForecasterDataprocessor._process_fill(df, poi_file)
-        df = df[df["Relative_time"] >= 1.2]
-
-        df = df.iloc[::5]
-        if df is None:
-            raise ValueError("Error processing fill information.")
-        print("[INFO] Preprocessed single-file data sample:")
-        print(df.head())
-        return df
 
     @staticmethod
     def viterbi_decode(prob_matrix, transition_matrix):
@@ -256,6 +254,42 @@ class QForecasterDataprocessor:
         row_sums = transition_counts.sum(axis=1, keepdims=True)
         row_sums[row_sums == 0] = 1
         return transition_counts / row_sums
+
+    @staticmethod
+    def init_fill_point(
+        df: pd.DataFrame, baseline_window: int = 10, threshold_factor: float = 3.0
+    ) -> int:
+        """
+        Identify the first index in the Dissipation column where a significant increase
+        occurs relative to the initial baseline noise.
+
+        The baseline is estimated using the first `baseline_window` samples.
+        A significant increase is defined as a Dissipation value exceeding:
+            baseline_mean + threshold_factor * baseline_std
+
+        Args:
+            df (pd.DataFrame): DataFrame containing a 'Dissipation' column.
+            baseline_window (int): Number of initial samples used to compute the baseline.
+            threshold_factor (float): Multiplier for the baseline standard deviation.
+
+        Returns:
+            int: The index of the first significant increase, or -1 if not found.
+        """
+        if 'Dissipation' not in df.columns:
+            raise ValueError("Dissipation column not found in DataFrame.")
+
+        if len(df) < baseline_window:
+            return -1
+
+        baseline_values = df['Dissipation'].iloc[:baseline_window]
+        baseline_mean = baseline_values.mean()
+        baseline_std = baseline_values.std()
+        threshold = baseline_mean + threshold_factor * baseline_std
+
+        for idx, value in enumerate(df['Dissipation']):
+            if value > threshold:
+                return idx
+        return -1
 
 
 ###############################################################################
@@ -350,7 +384,7 @@ class QForecasterTrainer:
 
         base_params = {
             'objective': 'multi:softprob',
-            'num_class': 5,
+            'num_class': NUM_CLASSES,
             'eval_metric': 'auc',
             'seed': 42,
             'device': 'cuda',
@@ -594,6 +628,7 @@ class QForecasterPredictor:
         Updates prediction histories for stability detection and applies a
         post-process boosting to enforce the fill distribution.
         """
+
         # Initialize accumulator if needed.
         if self.accumulated_data is None:
             self.accumulated_data = pd.DataFrame(columns=new_data.columns)
@@ -604,6 +639,18 @@ class QForecasterPredictor:
         current_count = len(self.accumulated_data)
         self.accumulated_data = QForecasterDataprocessor.compute_additional_features(
             self.accumulated_data)
+        init_fill_point = QForecasterDataprocessor.init_fill_point(
+            self.accumulated_data, 100, threshold_factor=10)
+        if init_fill_point == -1:
+            print(
+                f"[INFO] Fill not yet started, waiting on initial fill point")
+            return {
+                "status": "waiting",
+                "accumulated_count": current_count,
+                "accumulated_data": self.accumulated_data,
+                "predictions": None
+            }
+
         if current_count < self.batch_threshold:
             print(
                 f"[INFO] Accumulated {current_count} entries so far; waiting for {self.batch_threshold} entries to run predictions.")
@@ -768,6 +815,12 @@ class QForecasterSimulator:
             return
 
         x_dissipation = np.arange(len(accumulated_data))
+        init_fill_point = QForecasterDataprocessor.init_fill_point(
+            accumulated_data, 100, threshold_factor=10)
+
+        if init_fill_point > -1:
+            self.ax.axvline(init_fill_point, color='orange',
+                            label='Initial fill location')
         self.ax.plot(
             x_dissipation,
             accumulated_data["Dissipation"],
@@ -881,17 +934,17 @@ class QForecasterSimulator:
 
 
 TESTING = True
-TRAINING = False
+TRAINING = True
 
 # Main execution block.
 if __name__ == '__main__':
+    SAVE_DIR = r'QModel\SavedModels\forecaster_v3'
     if TRAINING:
         train_dir = r'content\training_data'
-        training_data = QForecasterDataprocessor.load_and_preprocess_data_split(
-            train_dir)
+        training_data = QForecasterDataprocessor.load_and_preprocess_data(
+            train_dir, num_datasets=100)
 
-        qft = QForecasterTrainer(FEATURES, TARGET,
-                                 r'QModel\SavedModels\forecaster_v2')
+        qft = QForecasterTrainer(FEATURES, TARGET, SAVE_DIR)
         qft.train_model(training_data=training_data, tune=True)
         qft.save_models()
 
@@ -908,13 +961,14 @@ if __name__ == '__main__':
             poi_file = pd.read_csv(poi_file, header=None)
 
             predictor = QForecasterPredictor(
-                FEATURES, target='Fill', save_dir='QModel/SavedModels/forecaster_v2/')
+                FEATURES, target=TARGET, save_dir=SAVE_DIR)
             # Ensure models and preprocessors are loaded.
             predictor.load_models()
 
             delay = dataset['Relative_time'].max() / len(random_slice)
-            random_slice = random_slice[random_slice["Relative_time"] >= 1.2]
-            random_slice = random_slice.iloc[::5]
+            random_slice = random_slice[random_slice["Relative_time"] >= random.uniform(
+                SPIN_UP_TIME[0], SPIN_UP_TIME[1])]
+            random_slice = random_slice.iloc[::DOWNSAMPLE_FACTOR]
             # Create the simulator, now passing the poi_file.
             simulator = QForecasterSimulator(
                 predictor,
