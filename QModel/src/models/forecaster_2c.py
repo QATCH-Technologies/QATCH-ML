@@ -128,16 +128,10 @@ class QForecasterDataprocessor:
         if 'Resonance_Frequency' in df.columns:
             df.drop(columns=['Resonance_Frequency'], inplace=True)
 
-        # t_delta = QForecasterDataprocessor.find_time_delta(df)
-        # if t_delta == -1:
-        #     df['Time_shift'] = 0
-        # else:
-        #     df.loc[t_delta:, 'Time_shift'] = 1
-
         return df
 
     @staticmethod
-    def _process_fill(df: pd.DataFrame, poi_file: str, check_unique: bool = False, file_name: str = None) -> pd.DataFrame:
+    def _process_fill(df: pd.DataFrame, poi_file: str) -> pd.DataFrame:
         """
         Helper to process fill information from the poi_file.
         Reads the poi CSV (with no header) and adds a Fill column to df.
@@ -181,7 +175,7 @@ class QForecasterDataprocessor:
 
             try:
                 df = QForecasterDataprocessor._process_fill(
-                    df, poi_file, check_unique=True, file_name=file)
+                    df, poi_file=poi_file)
             except FileNotFoundError:
                 df = None
             if df is None:
@@ -191,11 +185,9 @@ class QForecasterDataprocessor:
                 SPIN_UP_TIME[0], SPIN_UP_TIME[1])]
             df = df.iloc[::DOWNSAMPLE_FACTOR]
             df = df.reset_index()
-            dissipation_before = df['Dissipation']
             init_fill_point = QForecasterDataprocessor.init_fill_point(
                 df, BASELINE_WINDOW, 10)
             df = df.iloc[init_fill_point:]
-            print(len(df))
             if df is None or df.empty:
                 continue
             df.loc[df['Fill'] == 0, 'Fill'] = 1
@@ -285,16 +277,86 @@ class QForecasterDataprocessor:
         baseline_mean = baseline_values.mean()
         baseline_std = baseline_values.std()
         threshold = baseline_mean + threshold_factor * baseline_std
-
-        for idx, value in enumerate(df['Dissipation']):
+        dissipation = df['Dissipation'].values
+        for idx, value in enumerate(dissipation):
             if value > threshold:
                 return idx
         return -1
 
+    @staticmethod
+    def ch1_point(
+        df: pd.DataFrame,
+        init_fill_idx: int,
+        tolerance: float = 1e-3,
+        min_plateau_length: int = 3
+    ) -> int:
+        """
+        Find the first peak or plateau in the 'Dissipation' column after the init_fill_idx,
+        ensuring that the dissipation value at the candidate index is at least
+        `min_dissipation_increase` higher than the dissipation value at the init_fill_idx.
+
+        A plateau is defined as a sequence of consecutive values where the difference
+        between successive values is less than `tolerance` for at least `min_plateau_length` points.
+        A peak is defined as an index i where:
+            Dissipation[i] > Dissipation[i-1] and Dissipation[i] > Dissipation[i+1]
+
+        Args:
+            df (pd.DataFrame): DataFrame containing a 'Dissipation' column.
+            init_fill_idx (int): The starting index after which to search.
+            tolerance (float): Maximum difference between consecutive values to consider them as equal.
+            min_plateau_length (int): Minimum number of consecutive points to qualify as a plateau.
+            min_dissipation_increase (float): Minimum increase in Dissipation required between the init_fill_idx and candidate.
+
+        Returns:
+            int: The index of the first detected peak or plateau satisfying the condition,
+                or -1 if none is found.
+        """
+        if 'Dissipation' not in df.columns:
+            raise ValueError("Dissipation column not found in DataFrame.")
+
+        dissipation = df['Dissipation'].values
+        n = len(dissipation)
+        if init_fill_idx < 0:
+            return -1
+        if init_fill_idx >= n:
+            raise ValueError("init_fill_idx is out of bounds")
+
+        init_fill_value = dissipation[init_fill_idx]
+
+        # Start searching immediately after the init fill point
+        i = init_fill_idx + 1
+
+        while i < n - 1:
+            # Check for plateau: a sequence of nearly equal values.
+            plateau_start = i
+            plateau_end = i
+
+            while (plateau_end + 1 < n and
+                   abs(dissipation[plateau_end + 1] - dissipation[plateau_end]) < tolerance):
+                plateau_end += 1
+
+            plateau_length = plateau_end - plateau_start + 1
+            if plateau_length >= min_plateau_length:
+                candidate = plateau_start
+                # Ensure candidate dissipation is higher than at init fill point.
+                if dissipation[candidate] > init_fill_value + 0.25e-5:
+                    return candidate
+
+            # Check for a peak: a point higher than both its immediate neighbors.
+            if i - 1 >= 0 and i + 1 < n:
+                if dissipation[i] > dissipation[i - 1] and dissipation[i] > dissipation[i + 1]:
+                    candidate = i
+                    if dissipation[candidate] > init_fill_value + 0.25e-5:
+                        return candidate
+
+            i += 1
+
+        return -1
 
 ###############################################################################
 # Trainer Class: Handles model training, hyperparameter tuning, and saving.
 ###############################################################################
+
 
 class QForecasterTrainer:
     def __init__(self, features, target='Fill', save_dir=None):
@@ -480,7 +542,6 @@ class QForecasterTrainer:
 class QForecasterPredictor:
     def __init__(self, numerical_features: list, target: str = 'Fill',
                  save_dir: str = None, batch_threshold: int = 60):
-
         self.numerical_features = numerical_features
         self.target = target
         self.save_dir = save_dir
@@ -502,8 +563,7 @@ class QForecasterPredictor:
             raise ValueError("Save directory not specified.")
 
         self.model = xgb.Booster()
-        self.model.load_model(os.path.join(
-            self.save_dir, "model.json"))
+        self.model.load_model(os.path.join(self.save_dir, "model.json"))
         with open(os.path.join(self.save_dir, "preprocessors.pkl"), "rb") as f:
             self.preprocessors = pickle.load(f)
         with open(os.path.join(self.save_dir, "transition_matrix.pkl"), "rb") as f:
@@ -553,7 +613,6 @@ class QForecasterPredictor:
         if len(pred_list) < stability_window:
             return False, None
 
-        # Consider only the last 'stability_window' predictions.
         recent = pred_list[-stability_window:]
         counts = {}
         confidences = {}
@@ -568,121 +627,206 @@ class QForecasterPredictor:
                     return True, pred
         return False, None
 
-    def enforce_fill_distribution(self, prob_matrix, transition_matrix, max_iter=5):
+    def enforce_fill_distribution(self, prob_matrix, transition_matrix):
         """
-        Iteratively boost probabilities for Fill type 2 and type 3 so that:
-          - Let L be the difference between the last and first index where Fill equals 1.
-          - The count of Fill type 2 is at least 4 * L.
-          - The count of Fill type 3 is at least 9 * L.
+        Replaces the original boosting method.
+
+        Steps:
+          1. Use Viterbi decoding to obtain raw predictions (for the live data portion).
+          2. Compute the baseline "init_fill" duration from the init_fill_point to the last contiguous
+             prediction of raw class 1. This duration is defined as:
+
+                 baseline_duration = (Relative_time at last raw 1 in the contiguous block)
+                                    - (Relative_time at the init_fill_point)
+
+          3. Enforce that any contiguous segment of raw class 1 (channel_1 fill) has a duration of at least
+             4×baseline_duration, and any contiguous segment of raw class 2 (channel_2 fill) lasts at least
+             9×baseline_duration.
+
         Returns:
-            The (possibly modified) predicted sequence, along with the adjusted prob_matrix.
+            Tuple: (adjusted predictions, original probability matrix, transition_matrix)
         """
-        for iteration in range(max_iter):
-            pred = QForecasterDataprocessor.viterbi_decode(
-                prob_matrix, transition_matrix)
-            type1_indices = np.where(pred == 1)[0]
-            if type1_indices.size == 0:
-                # No type 1 predictions; cannot compute baseline L.
-                break
-            L = type1_indices[-1] - type1_indices[0]
-            if L <= 0:
-                break
-
-            count2 = np.sum(pred == 2)
-            count3 = np.sum(pred == 3)
-
-            if count2 >= 4 * L and count3 >= 9 * L:
-                # Condition met; return the current prediction.
-                print(
-                    f"[INFO] Distribution condition met after {iteration} iterations.")
-                return pred, prob_matrix, transition_matrix
-
-            # Calculate boost factors for types 2 and 3.
-            boost_factor2 = (4 * L) / (count2 + 1e-6)
-            boost_factor3 = (9 * L) / (count3 + 1e-6)
-
-            first = type1_indices[0]
-            last = type1_indices[-1]
-
-            # Boost the probabilities in the region between first and last type 1.
-            for t in range(first, last + 1):
-                prob_matrix[t, 2] *= boost_factor2
-                prob_matrix[t, 3] *= boost_factor3
-                # Renormalize the row so probabilities sum to 1.
-                row_sum = np.sum(prob_matrix[t, :])
-                if row_sum > 0:
-                    prob_matrix[t, :] /= row_sum
-
-            print(
-                f"[INFO] Iteration {iteration+1}: Boosted probabilities with factors {boost_factor2:.2f} (type 2) and {boost_factor3:.2f} (type 3).")
-
-        # Return the last prediction even if condition is not fully met.
+        # Obtain raw predictions via Viterbi decoding.
         pred = QForecasterDataprocessor.viterbi_decode(
             prob_matrix, transition_matrix)
-        return pred, prob_matrix, transition_matrix
+
+        # Determine the init_fill_point from the accumulated data.
+        init_fill_point = QForecasterDataprocessor.init_fill_point(
+            self.accumulated_data, 100, threshold_factor=10)
+        if init_fill_point == -1:
+            return pred, prob_matrix, transition_matrix
+
+        # Get the live data times corresponding to predictions (from init_fill_point onward).
+        live_times = self.accumulated_data['Relative_time'].iloc[init_fill_point:].values
+
+        # Ensure that there is at least one prediction.
+        if len(pred) == 0:
+            return pred, prob_matrix, transition_matrix
+
+        # Compute the baseline duration from the init_fill block.
+        # We define the baseline as the contiguous block of raw 1's starting at the beginning.
+        if pred[0] != 1:
+            # If the first live prediction isn't a 1, we cannot compute a baseline; return as is.
+            return pred, prob_matrix, transition_matrix
+
+        block_end = 0
+        while block_end < len(pred) and pred[block_end] == 1:
+            block_end += 1
+
+        # Baseline duration is the difference between the first live time and the last time in the contiguous block of 1's.
+        baseline_duration = live_times[block_end - 1] - live_times[0]
+        # If baseline_duration is zero (or negative), skip enforcement.
+        if baseline_duration <= 0:
+            return pred, prob_matrix, transition_matrix
+
+        # Set required durations:
+        # For channel_1 fill (raw class 1).
+        required_duration_ch1 = 4 * baseline_duration
+        # For channel_2 fill (raw class 2).
+        required_duration_ch2 = 9 * baseline_duration
+
+        # Enforce the minimum duration requirements on live predictions.
+        adjusted_pred = pred.copy()
+        n = len(pred)
+        i = 0
+        while i < n:
+            current_state = pred[i]
+            start_time = live_times[i]
+            j = i + 1
+            # Find contiguous segment with the same raw prediction.
+            while j < n and pred[j] == current_state:
+                j += 1
+            segment_duration = live_times[j - 1] - start_time
+
+            if current_state == 1 and segment_duration < required_duration_ch1:
+                # Extend the segment to reach the required duration.
+                k = j
+                while k < n and (live_times[k] - start_time) < required_duration_ch1:
+                    adjusted_pred[k] = 1
+                    k += 1
+                i = k
+            elif current_state == 2 and segment_duration < required_duration_ch2:
+                k = j
+                while k < n and (live_times[k] - start_time) < required_duration_ch2:
+                    adjusted_pred[k] = 2
+                    k += 1
+                i = k
+            else:
+                i = j
+
+        return adjusted_pred, prob_matrix, transition_matrix
 
     def update_predictions(self, new_data, stability_window=5,
                            frequency_threshold=0.8, confidence_threshold=0.9):
         """
         Accumulate new data and run predictions in batches.
-        Updates prediction histories for stability detection and applies a
-        post-process boosting to enforce the fill distribution.
+        - Data before the init_fill_point are set to 0 (no_fill).
+        - ML prediction is applied only to data from the init_fill_point onward.
+        - Raw ML predictions (0-3) are adjusted via Viterbi decoding and the fill distribution enforcement.
+        - Final predictions are offset by 1 (yielding classes 1-4).
         """
-
-        # Initialize accumulator if needed.
         if self.accumulated_data is None:
             self.accumulated_data = pd.DataFrame(columns=new_data.columns)
-
-        # Append the new data.
         self.accumulated_data = pd.concat(
             [self.accumulated_data, new_data], ignore_index=True)
         current_count = len(self.accumulated_data)
+
+        # Compute additional features.
         self.accumulated_data = QForecasterDataprocessor.compute_additional_features(
             self.accumulated_data)
+
+        # Identify the initial fill point and the ch₁ point.
         init_fill_point = QForecasterDataprocessor.init_fill_point(
-            self.accumulated_data, 100, threshold_factor=10)
+            self.accumulated_data, 100, threshold_factor=20)
+        ch1_fill_point = QForecasterDataprocessor.ch1_point(
+            self.accumulated_data, init_fill_point, tolerance=0)
+
+        # If fill hasn't started, report all data as no_fill (0).
         if init_fill_point == -1:
-            print(
-                f"[INFO] Fill not yet started, waiting on initial fill point")
+            print("[INFO] Fill not yet started; reporting all data as no_fill (0).")
+            predictions = np.zeros(current_count, dtype=int)
+            conf = np.zeros(current_count)
+            for i in range(current_count):
+                if i not in self.prediction_history:
+                    self.prediction_history[i] = []
+                self.prediction_history[i].append((0, 1.0))
             return {
                 "status": "waiting",
-                "accumulated_count": current_count,
+                "pred": predictions,
+                "conf": conf,
+                "stable_predictions": {},
                 "accumulated_data": self.accumulated_data,
-                "predictions": None
+                "accumulated_count": current_count
             }
 
-        if current_count < self.batch_threshold:
-            print(
-                f"[INFO] Accumulated {current_count} entries so far; waiting for {self.batch_threshold} entries to run predictions.")
-            return {
-                "status": "waiting",
-                "accumulated_count": current_count,
-                "accumulated_data": self.accumulated_data,
-                "predictions": None
-            }
+        predictions = np.zeros(current_count, dtype=int)
+        conf = np.zeros(current_count)
 
-        self.batch_num += 1
-        print(
-            f"\n[INFO] Running predictions on batch {self.batch_num} with {current_count} entries.")
-
-        features = self.numerical_features
-        X_live = self.accumulated_data[features]
-
-        # Get the initial probability matrix from the model.
-        prob_matrix = self.predict_native(
-            self.model, self.preprocessors, X_live)
-
-        # Use our new method to boost probabilities and enforce the fill distribution.
-        pred, prob_matrix, _ = self.enforce_fill_distribution(
-            prob_matrix, self.transition_matrix)
-
-        conf = np.array([prob_matrix[i, pred[i]]
-                         for i in range(len(pred))])
-
-        for i, (p_s, c_s) in enumerate(zip(pred, conf)):
+        # Pre-fill data (before init_fill_point) are set to 0.
+        for i in range(init_fill_point):
             if i not in self.prediction_history:
                 self.prediction_history[i] = []
-            self.prediction_history[i].append((p_s, c_s))
+            self.prediction_history[i].append((0, 1.0))
+
+        if current_count > init_fill_point:
+            features = self.numerical_features
+            X_live = self.accumulated_data[features].iloc[init_fill_point:]
+            prob_matrix = self.predict_native(
+                self.model, self.preprocessors, X_live)
+
+            # Apply Viterbi decoding and enforce fill duration based on the init_fill block.
+            pred_ml, prob_matrix, _ = self.enforce_fill_distribution(
+                prob_matrix, self.transition_matrix)
+            # Offset raw predictions by 1 (raw 0-3 become final 1-4).
+            ml_pred_offset = pred_ml + 1
+
+            # ----------------------------------------------------------
+            # (1) Restrict predictions: Ensure that label 2 only starts at ch₁ point.
+            # Since ml_pred_offset corresponds to data starting at init_fill_point,
+            # for indices before ch1_fill_point, force any label 2 to label 1.
+            if ch1_fill_point > init_fill_point:
+                region_length = ch1_fill_point - init_fill_point
+                ml_pred_offset[:region_length] = np.where(
+                    ml_pred_offset[:region_length] == 2,
+                    1,
+                    ml_pred_offset[:region_length]
+                )
+
+                # ------------------------------------------------------
+                # (2) Enforce minimum region length on predictions 2 and 3.
+                # For any contiguous block of predictions that are 2 or 3,
+                # if its length is shorter than the length of the init fill region,
+                # change the block (here we set it to 1; alternatively, merge/extend as needed).
+                def enforce_min_region_length(preds, min_length, allowed_labels=(2, 3)):
+                    start = None
+                    for i in range(len(preds)):
+                        if preds[i] in allowed_labels:
+                            if start is None:
+                                start = i
+                        else:
+                            if start is not None:
+                                if i - start < min_length:
+                                    # Adjust the region to label 1.
+                                    preds[start:i] = 1
+                                start = None
+                    # Handle the case where the allowed region extends to the end.
+                    if start is not None and len(preds) - start < min_length:
+                        preds[start:] = 1
+                    return preds
+
+                ml_pred_offset = enforce_min_region_length(
+                    ml_pred_offset, region_length)
+
+            predictions[init_fill_point:] = ml_pred_offset
+
+            ml_conf = np.array([prob_matrix[i, pred_ml[i]]
+                                for i in range(len(pred_ml))])
+            conf[init_fill_point:] = ml_conf
+
+            for idx, (p, c) in enumerate(zip(ml_pred_offset, ml_conf), start=init_fill_point):
+                if idx not in self.prediction_history:
+                    self.prediction_history[idx] = []
+                self.prediction_history[idx].append((p, c))
 
         stable_predictions = {}
         for idx, history in self.prediction_history.items():
@@ -691,14 +835,16 @@ class QForecasterPredictor:
             if stable:
                 stable_predictions[idx] = stable_class
 
-        # Capture the accumulated data for plotting before resetting.
-        data_for_plot = self.accumulated_data.copy()
+        self.batch_num += 1
+        print(f"\n[INFO] Running predictions on batch {self.batch_num} with {current_count} entries. "
+              f"ML predictions are offset by 1, and pre-fill data are marked as no_fill (0).")
+
         return {
             "status": "completed",
-            "pred": pred,
+            "pred": predictions,
             "conf": conf,
             "stable_predictions": stable_predictions,
-            "accumulated_data": data_for_plot,
+            "accumulated_data": self.accumulated_data,
             "accumulated_count": current_count
         }
 
@@ -759,7 +905,7 @@ class QForecasterSimulator:
 
         # If a POI file is provided, extract the actual indices.
         if poi_file is not None:
-            self.actual_poi_indices = poi_file.values
+            self.actual_poi_indices = poi_file
         else:
             self.actual_poi_indices = np.array([])
         # Setup a live plot with a single axis.
@@ -816,11 +962,17 @@ class QForecasterSimulator:
 
         x_dissipation = np.arange(len(accumulated_data))
         init_fill_point = QForecasterDataprocessor.init_fill_point(
-            accumulated_data, 100, threshold_factor=10)
+            accumulated_data, 100, threshold_factor=20)
+        ch1_fill_point = QForecasterDataprocessor.ch1_point(
+            accumulated_data, init_fill_point, tolerance=0)
 
         if init_fill_point > -1:
             self.ax.axvline(init_fill_point, color='orange',
                             label='Initial fill location')
+
+        if ch1_fill_point > -1:
+            self.ax.axvline(ch1_fill_point, color='brown',
+                            label='Channel 1 fill location')
         self.ax.plot(
             x_dissipation,
             accumulated_data["Dissipation"],
@@ -934,8 +1086,7 @@ class QForecasterSimulator:
 
 
 TESTING = True
-TRAINING = True
-
+TRAINING = False
 # Main execution block.
 if __name__ == '__main__':
     SAVE_DIR = r'QModel\SavedModels\forecaster_v3'
@@ -958,7 +1109,14 @@ if __name__ == '__main__':
             end = random.randint(min(end, len(dataset)),
                                  max(end, len(dataset)))
             random_slice = dataset.iloc[0:end]
-            poi_file = pd.read_csv(poi_file, header=None)
+
+            # Load the POI file which is a flat list of 6 indices from the original dataset.
+            poi_df = pd.read_csv(poi_file, header=None)
+            poi_indices_original = poi_df.to_numpy().flatten()
+
+            # Use these indices to extract the corresponding relative times from the original dataset.
+            original_relative_times = dataset.loc[poi_indices_original,
+                                                  'Relative_time'].values
 
             predictor = QForecasterPredictor(
                 FEATURES, target=TARGET, save_dir=SAVE_DIR)
@@ -968,12 +1126,25 @@ if __name__ == '__main__':
             delay = dataset['Relative_time'].max() / len(random_slice)
             random_slice = random_slice[random_slice["Relative_time"] >= random.uniform(
                 SPIN_UP_TIME[0], SPIN_UP_TIME[1])]
+            # Downsample the data.
             random_slice = random_slice.iloc[::DOWNSAMPLE_FACTOR]
-            # Create the simulator, now passing the poi_file.
+
+            # Get the downsampled relative times.
+            downsampled_times = random_slice["Relative_time"].values
+
+            # For each original relative time, find the index in the downsampled data
+            # that has the closest relative time.
+            mapped_poi_indices = []
+            for orig_time in original_relative_times:
+                idx = np.abs(downsampled_times - orig_time).argmin()
+                mapped_poi_indices.append(idx)
+            mapped_poi_indices = np.array(mapped_poi_indices)
+
+            # Create the simulator, passing the mapped POI indices.
             simulator = QForecasterSimulator(
                 predictor,
                 random_slice,
-                poi_file=poi_file,
+                poi_file=mapped_poi_indices,
                 ignore_before=50,
                 delay=delay * 5
             )
