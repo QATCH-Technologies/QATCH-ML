@@ -287,71 +287,55 @@ class QForecasterDataprocessor:
     def ch1_point(
         df: pd.DataFrame,
         init_fill_idx: int,
-        tolerance: float = 1e-3,
-        min_plateau_length: int = 3
+        min_offset_ratio: float = 0.1
     ) -> int:
         """
-        Find the first peak or plateau in the 'Dissipation' column after the init_fill_idx,
-        ensuring that the dissipation value at the candidate index is at least
-        `min_dissipation_increase` higher than the dissipation value at the init_fill_idx.
+        Find the index in the 'Dissipation' column where the slope first begins to decrease,
+        provided that the candidate is at least min_offset_ratio (default 10%) ahead of the init_fill_idx.
 
-        A plateau is defined as a sequence of consecutive values where the difference
-        between successive values is less than `tolerance` for at least `min_plateau_length` points.
-        A peak is defined as an index i where:
-            Dissipation[i] > Dissipation[i-1] and Dissipation[i] > Dissipation[i+1]
+        The slope is approximated by the difference between successive Dissipation values.
+        We return the first index (after the offset) where the slope decreases compared to the previous slope,
+        which indicates a turning point in the slope.
 
         Args:
             df (pd.DataFrame): DataFrame containing a 'Dissipation' column.
-            init_fill_idx (int): The starting index after which to search.
-            tolerance (float): Maximum difference between consecutive values to consider them as equal.
-            min_plateau_length (int): Minimum number of consecutive points to qualify as a plateau.
-            min_dissipation_increase (float): Minimum increase in Dissipation required between the init_fill_idx and candidate.
+            init_fill_idx (int): Starting index from which to begin the search.
+            min_offset_ratio (float): Minimum offset as a fraction of the remaining data length (default is 0.1).
 
         Returns:
-            int: The index of the first detected peak or plateau satisfying the condition,
-                or -1 if none is found.
+            int: The index where the slope first decreases (i.e. the turning point), or -1 if none is found.
         """
         if 'Dissipation' not in df.columns:
             raise ValueError("Dissipation column not found in DataFrame.")
 
         dissipation = df['Dissipation'].values
         n = len(dissipation)
+
         if init_fill_idx < 0:
             return -1
-        if init_fill_idx >= n:
-            raise ValueError("init_fill_idx is out of bounds")
+        if init_fill_idx >= n - 1:
+            raise ValueError(
+                "init_fill_idx is out of bounds or too close to the end of the array.")
 
-        init_fill_value = dissipation[init_fill_idx]
+        # Ensure we start at least 10% of the remaining length ahead of init_fill_idx.
+        min_idx = init_fill_idx + \
+            max(1, int(min_offset_ratio * (n - init_fill_idx)))
+        if min_idx >= n - 1:
+            return -1
 
-        # Start searching immediately after the init fill point
-        i = init_fill_idx + 1
+        # Compute the slope (first difference) array.
+        slopes = np.diff(dissipation)
 
-        while i < n - 1:
-            # Check for plateau: a sequence of nearly equal values.
-            plateau_start = i
-            plateau_end = i
-
-            while (plateau_end + 1 < n and
-                   abs(dissipation[plateau_end + 1] - dissipation[plateau_end]) < tolerance):
-                plateau_end += 1
-
-            plateau_length = plateau_end - plateau_start + 1
-            if plateau_length >= min_plateau_length:
-                candidate = plateau_start
-                # Ensure candidate dissipation is higher than at init fill point.
-                if dissipation[candidate] > init_fill_value + 0.25e-5:
-                    return candidate
-
-            # Check for a peak: a point higher than both its immediate neighbors.
-            if i - 1 >= 0 and i + 1 < n:
-                if dissipation[i] > dissipation[i - 1] and dissipation[i] > dissipation[i + 1]:
-                    candidate = i
-                    if dissipation[candidate] > init_fill_value + 0.25e-5:
-                        return candidate
-
-            i += 1
+        # Iterate over candidate indices (using dissipation indices)
+        # Note: slope[i] corresponds to the difference dissipation[i+1]-dissipation[i].
+        for i in range(min_idx, n - 1):
+            # Check if the slope decreases relative to the previous slope.
+            if slopes[i] < slopes[i - 1]:
+                # i is the index in dissipation where the slope starts to drop.
+                return i
 
         return -1
+
 
 ###############################################################################
 # Trainer Class: Handles model training, hyperparameter tuning, and saving.
@@ -739,7 +723,7 @@ class QForecasterPredictor:
         init_fill_point = QForecasterDataprocessor.init_fill_point(
             self.accumulated_data, 100, threshold_factor=20)
         ch1_fill_point = QForecasterDataprocessor.ch1_point(
-            self.accumulated_data, init_fill_point, tolerance=0)
+            self.accumulated_data, init_fill_point)
 
         # If fill hasn't started, report all data as no_fill (0).
         if init_fill_point == -1:
@@ -964,7 +948,7 @@ class QForecasterSimulator:
         init_fill_point = QForecasterDataprocessor.init_fill_point(
             accumulated_data, 100, threshold_factor=20)
         ch1_fill_point = QForecasterDataprocessor.ch1_point(
-            accumulated_data, init_fill_point, tolerance=0)
+            accumulated_data, init_fill_point)
 
         if init_fill_point > -1:
             self.ax.axvline(init_fill_point, color='orange',
