@@ -14,6 +14,8 @@ import xgboost as xgb
 from hyperopt import fmin, tpe, hp, Trials, STATUS_OK
 import pickle
 import random
+from typing import Any, Dict, List, Optional, Tuple
+
 FEATURES = [
     'Dissipation',
     'Dissipation_rolling_mean',
@@ -89,46 +91,70 @@ class QForecasterDataprocessor:
     @staticmethod
     def compute_additional_features(df: pd.DataFrame) -> pd.DataFrame:
         """
-        Compute a series of additional features (e.g., rolling statistics,
-        differences, ratios, and the signal envelope) for the Dissipation column.
-        Also computes a 'Time_shift' column based on the first significant change in time.
+        Compute additional features for the Dissipation column and live compute the difference curve.
+        This includes rolling statistics, differences, ratios, signal envelope, and a Difference curve.
         """
-        window = 10
-        span = 10
-        run_length = len(df)
-        window_length = int(np.ceil(0.01 * run_length))
-        # Ensure window_length is odd and at least 3
-        if window_length % 2 == 0:
-            window_length += 1
-        if window_length < 3:
-            window_length = 3
-        polyorder = 2 if window_length > 2 else 1
+        try:
+            required_columns = ["Dissipation",
+                                "Resonance_Frequency", "Relative_time"]
+            if not all(column in df.columns for column in required_columns):
+                raise ValueError(
+                    f"Input DataFrame must contain the following columns: {required_columns}")
 
-        df['Dissipation'] = savgol_filter(df['Dissipation'].values,
-                                          window_length=window_length,
-                                          polyorder=polyorder)
-        df['Dissipation_rolling_mean'] = df['Dissipation'].rolling(
-            window=window, min_periods=1).mean()
-        df['Dissipation_rolling_median'] = df['Dissipation'].rolling(
-            window=window, min_periods=1).median()
-        df['Dissipation_ewm'] = df['Dissipation'].ewm(
-            span=span, adjust=False).mean()
-        df['Dissipation_rolling_std'] = df['Dissipation'].rolling(
-            window=window, min_periods=1).std()
-        df['Dissipation_diff'] = df['Dissipation'].diff()
-        df['Dissipation_pct_change'] = df['Dissipation'].pct_change()
-        # df['Relative_time_diff'] = df['Relative_time'].diff().replace(0, np.nan)
-        # df['Dissipation_rate'] = df['Dissipation_diff'] / df['Relative_time_diff']
-        df['Dissipation_ratio_to_mean'] = df['Dissipation'] / \
-            df['Dissipation_rolling_mean']
-        df['Dissipation_ratio_to_ewm'] = df['Dissipation'] / df['Dissipation_ewm']
-        df['Dissipation_envelope'] = np.abs(hilbert(df['Dissipation'].values))
+            window = 10
+            span = 10
+            run_length = len(df)
+            # Ensure window_length is at least 3
+            window_length = max(3, int(np.ceil(0.01 * run_length)))
 
-        # Drop the Resonance_Frequency column if present.
-        if 'Resonance_Frequency' in df.columns:
-            df.drop(columns=['Resonance_Frequency'], inplace=True)
+            # Adjust window_length if it's larger than the Dissipation data size
+            diss_length = len(df['Dissipation'])
+            if window_length > diss_length:
+                window_length = diss_length if diss_length % 2 == 1 else diss_length - 1
 
-        return df
+            polyorder = 2 if window_length > 2 else 1
+            df['Dissipation'] = savgol_filter(
+                df['Dissipation'].values, window_length=window_length, polyorder=polyorder)
+            df['Dissipation_rolling_mean'] = df['Dissipation'].rolling(
+                window=window, min_periods=1).mean()
+            df['Dissipation_rolling_median'] = df['Dissipation'].rolling(
+                window=window, min_periods=1).median()
+            df['Dissipation_ewm'] = df['Dissipation'].ewm(
+                span=span, adjust=False).mean()
+            df['Dissipation_rolling_std'] = df['Dissipation'].rolling(
+                window=window, min_periods=1).std()
+            df['Dissipation_diff'] = df['Dissipation'].diff()
+            df['Dissipation_pct_change'] = df['Dissipation'].pct_change()
+            df['Dissipation_ratio_to_mean'] = df['Dissipation'] / \
+                df['Dissipation_rolling_mean']
+            df['Dissipation_ratio_to_ewm'] = df['Dissipation'] / \
+                df['Dissipation_ewm']
+            df['Dissipation_envelope'] = np.abs(
+                hilbert(df['Dissipation'].values))
+
+            # Compute difference curve
+            xs = df["Relative_time"]
+            i = next((x for x, t in enumerate(xs) if t > 0.5), None)
+            j = next((x for x, t in enumerate(xs) if t > 2.5), None)
+
+            if i is not None and j is not None:
+                avg_resonance_frequency = df["Resonance_Frequency"][i:j].mean()
+                avg_dissipation = df["Dissipation"][i:j].mean()
+
+                df["ys_diss"] = (df["Dissipation"] -
+                                 avg_dissipation) * avg_resonance_frequency / 2
+                df["ys_freq"] = avg_resonance_frequency - \
+                    df["Resonance_Frequency"]
+                difference_factor = 1  # Default value; can be made dynamic
+                df["Difference"] = df["ys_freq"] - \
+                    difference_factor * df["ys_diss"]
+
+            df.replace([np.inf, -np.inf], np.nan, inplace=True)
+            df.fillna(0, inplace=True)
+
+            return df
+        except Exception as e:
+            raise RuntimeError(f"Error computing features: {e}")
 
     @staticmethod
     def _process_fill(df: pd.DataFrame, poi_file: str) -> pd.DataFrame:
@@ -267,19 +293,23 @@ class QForecasterDataprocessor:
         Returns:
             int: The index of the first significant increase, or -1 if not found.
         """
-        if 'Dissipation' not in df.columns:
-            raise ValueError("Dissipation column not found in DataFrame.")
-
+        if 'Resonance_Frequency' not in df.columns:
+            raise ValueError(
+                "Resonance_Frequency column not found in DataFrame.")
         if len(df) < baseline_window:
             return -1
 
-        baseline_values = df['Dissipation'].iloc[:baseline_window]
+        if df['Relative_time'].max() < 3.0:
+            return -1
+
+        baseline_values = df['Resonance_Frequency'].iloc[:baseline_window]
         baseline_mean = baseline_values.mean()
         baseline_std = baseline_values.std()
-        threshold = baseline_mean + threshold_factor * baseline_std
-        dissipation = df['Dissipation'].values
+        threshold = baseline_mean - threshold_factor * baseline_std
+        dissipation = df['Resonance_Frequency'].values
+
         for idx, value in enumerate(dissipation):
-            if value > threshold:
+            if value < threshold:
                 return idx
         return -1
 
@@ -316,7 +346,6 @@ class QForecasterDataprocessor:
         if init_fill_idx >= n - 1:
             raise ValueError(
                 "init_fill_idx is out of bounds or too close to the end of the array.")
-
         # Ensure we start at least 10% of the remaining length ahead of init_fill_idx.
         min_idx = init_fill_idx + \
             max(1, int(min_offset_ratio * (n - init_fill_idx)))
@@ -335,6 +364,96 @@ class QForecasterDataprocessor:
                 return i
 
         return -1
+
+    @staticmethod
+    def ch2_point(df, init_fill_point, ch1_fill_point, rolling_window=20, std_threshold=1e-7):
+        """
+        Finds the index where ch2_fill_point (blue line) occurs after ch1_fill_point (red line).
+        - ch2_fill_point is detected at the start of the next plateau after an increase.
+        - Ensures it occurs near 3x the 'Relative_time' difference between init_fill_point and ch1_fill_point.
+        - Checks if the dataframe has even reached the expected Relative_time before searching.
+
+        Parameters:
+            df (pd.DataFrame): Dataframe with 'Dissipation' and 'Resonance_Frequency'.
+            init_fill_point (int): Index of init_fill_point (initial fill location).
+            ch1_fill_point (int): Index of ch1_fill_point (red line).
+            rolling_window (int): Window size for detecting plateaus.
+            std_threshold (float): Standard deviation threshold for plateau detection.
+
+        Returns:
+            int: Index of ch2_fill_point (blue line) or -1 if not found.
+        """
+        if ch1_fill_point == -1 or init_fill_point == -1:
+            print(
+                "ch1_fill_point or init_fill_point not found. Cannot detect ch2_fill_point.")
+            return -1
+
+        # Compute expected Relative_time for ch2_fill_point
+        time_diff = df.loc[ch1_fill_point, "Relative_time"] - \
+            df.loc[init_fill_point, "Relative_time"]
+        expected_relative_time = df.loc[ch1_fill_point,
+                                        "Relative_time"] + 3 * time_diff
+
+        # Check if the dataframe has reached the expected Relative_time
+        max_relative_time = df["Relative_time"].max()
+        if max_relative_time < expected_relative_time:
+            print(
+                f"Dataframe has not reached expected Relative_time {expected_relative_time:.2f}. Returning -1.")
+            return -1
+
+        # Compute rate of change and rolling statistics
+        df["Dissipation_diff"] = df["Dissipation"].diff()
+        df["Dissipation_rolling_std"] = df["Dissipation"].rolling(
+            rolling_window).std()
+
+        # Search AFTER ch1_fill_point
+        post_ch1_df = df.loc[ch1_fill_point+1:].copy()
+
+        # Find the end of the first plateau
+        first_plateau_end = post_ch1_df[post_ch1_df["Dissipation_rolling_std"]
+                                        < std_threshold].index.min()
+
+        if first_plateau_end is None or pd.isna(first_plateau_end):
+            print("No first plateau detected. Returning -1.")
+            return df[df["Relative_time"] >= expected_relative_time].index.min()
+
+        # Find the first significant increase after the plateau
+        threshold_increase = post_ch1_df["Dissipation_diff"].abs().mean() * 5
+        increase_index = post_ch1_df[post_ch1_df["Dissipation_diff"]
+                                     > threshold_increase].index.min()
+
+        if increase_index is None or pd.isna(increase_index) or increase_index < first_plateau_end:
+            print(
+                "No significant increase detected after the first plateau. Returning -1.")
+            return df[df["Relative_time"] >= expected_relative_time].index.min()
+
+        # Fix: Apply the filter BEFORE slicing to avoid reindexing warnings
+        plateau_candidates = post_ch1_df[post_ch1_df["Dissipation_rolling_std"] < std_threshold]
+        plateau_candidates = plateau_candidates.loc[increase_index:]
+
+        if plateau_candidates.empty:
+            print("No second plateau detected. Returning -1.")
+            return df[df["Relative_time"] >= expected_relative_time].index.min()
+
+        next_plateau_start = plateau_candidates.index.min()
+
+        if next_plateau_start is None or pd.isna(next_plateau_start):
+            print("No valid next plateau start detected. Returning -1.")
+            return df[df["Relative_time"] >= expected_relative_time].index.min()
+        # Ensure ch2_fill_point occurs near the expected Relative_time
+        relative_time_diff = abs(
+            df.loc[next_plateau_start, "Relative_time"] - expected_relative_time)
+
+        # Define a tolerance window (adjustable)
+        time_tolerance = time_diff * 0.5  # Allow 50% deviation from the expected time
+
+        if relative_time_diff > time_tolerance:
+            print(
+                f"Detected ch2_fill_point at index {next_plateau_start}, but it's too far from expected time. Returning expected index.")
+
+            return df[df["Relative_time"] >= expected_relative_time].index.min()
+
+        return next_plateau_start
 
 
 ###############################################################################
@@ -520,44 +639,87 @@ class QForecasterTrainer:
         print("[INFO] All models and associated objects have been loaded successfully.")
 
 
-###############################################################################
-# Predictor Class: Handles generating predictions (including live predictions).
-###############################################################################
 class QForecasterPredictor:
-    def __init__(self, numerical_features: list, target: str = 'Fill',
-                 save_dir: str = None, batch_threshold: int = 60):
-        self.numerical_features = numerical_features
-        self.target = target
-        self.save_dir = save_dir
-        self.batch_threshold = batch_threshold
+    """Predictor class for QForecaster that handles model loading, data accumulation, and prediction.
 
-        self.model = None
-        self.preprocessors = None
-        self.transition_matrix = None
+    This class loads a pre-trained XGBoost model along with its associated preprocessors and transition
+    matrix. It provides methods to apply preprocessing to input data, generate predictions using the
+    model and Viterbi decoding, and maintain a history of predictions to assess stability.
+    """
 
-        self.accumulated_data = None
-        self.batch_num = 0
-        self.fig = None
-        self.axes = None
+    def __init__(
+        self,
+        numerical_features: List[str] = FEATURES,
+        target: str = 'Fill',
+        save_dir: Optional[str] = None,
+        batch_threshold: int = 60
+    ) -> None:
+        """Initializes the QForecasterPredictor.
 
-        self.prediction_history = {}
+        Args:
+            numerical_features (List[str], optional): List of feature names used for numerical processing.
+                Defaults to FEATURES.
+            target (str, optional): The target variable name. Defaults to 'Fill'.
+            save_dir (Optional[str], optional): Directory path from which to load model files and preprocessors.
+                Defaults to None.
+            batch_threshold (int, optional): The rate at which to process batches of data. Defaults to 60.
+        """
+        self.numerical_features: List[str] = numerical_features
+        self.target: str = target
+        self.save_dir: Optional[str] = save_dir
+        self.batch_threshold: int = batch_threshold
 
-    def load_models(self):
+        self.model: Optional[xgb.Booster] = None
+        self.preprocessors: Optional[Dict[str, Any]] = None
+        self.transition_matrix: Optional[np.ndarray] = None
+
+        self.accumulated_data: Optional[pd.DataFrame] = None
+        self.batch_num: int = 0
+        self.prediction_history: Dict[int, List[Tuple[int, int]]] = {}
+
+    def load_models(self) -> None:
+        """Loads the XGBoost model, preprocessors, and transition matrix from the specified directory.
+
+        The method expects to find:
+          - "model.json" for the XGBoost model,
+          - "preprocessors.pkl" for the preprocessing objects, and
+          - "transition_matrix.pkl" for the transition matrix.
+
+        Raises:
+            ValueError: If `save_dir` is not specified.
+        """
         if not self.save_dir:
             raise ValueError("Save directory not specified.")
 
+        model_path = os.path.join(self.save_dir, "model.json")
         self.model = xgb.Booster()
-        self.model.load_model(os.path.join(self.save_dir, "model.json"))
-        with open(os.path.join(self.save_dir, "preprocessors.pkl"), "rb") as f:
+        self.model.load_model(model_path)
+
+        preprocessors_path = os.path.join(self.save_dir, "preprocessors.pkl")
+        with open(preprocessors_path, "rb") as f:
             self.preprocessors = pickle.load(f)
-        with open(os.path.join(self.save_dir, "transition_matrix.pkl"), "rb") as f:
+
+        transition_matrix_path = os.path.join(
+            self.save_dir, "transition_matrix.pkl")
+        with open(transition_matrix_path, "rb") as f:
             self.transition_matrix = pickle.load(f)
 
-        print("[INFO] All models and associated objects have been loaded successfully.")
+    def _apply_preprocessors(
+        self, X: pd.DataFrame, preprocessors: Dict[str, Any]
+    ) -> np.ndarray:
+        """Applies the loaded preprocessors to the input data.
 
-    def _apply_preprocessors(self, X, preprocessors):
-        """
-        Apply loaded preprocessors to input data.
+        The method copies the input DataFrame, extracts the numerical features, applies the numerical
+        imputer, and then scales the features.
+
+        Args:
+            X (pd.DataFrame): Input DataFrame containing the numerical features.
+            preprocessors (Dict[str, Any]): Dictionary of preprocessor objects. Must include:
+                - 'num_imputer': for imputing missing values.
+                - 'scaler': for scaling the data.
+
+        Returns:
+            np.ndarray: The preprocessed numerical features as a NumPy array.
         """
         X_copy = X.copy()
         X_num = preprocessors['num_imputer'].transform(
@@ -565,263 +727,120 @@ class QForecasterPredictor:
         X_num = preprocessors['scaler'].transform(X_num)
         return X_num
 
-    def predict_native(self, model, preprocessors, X):
+    def predict_native(
+        self, model: xgb.Booster, preprocessors: Dict[str, Any], X: pd.DataFrame
+    ) -> np.ndarray:
+        """Generates predictions using the provided XGBoost model.
+
+        The input DataFrame is filtered to contain only numerical features, preprocessed, converted to an
+        XGBoost DMatrix, and then used to produce predictions.
+
+        Args:
+            model (xgb.Booster): The pre-trained XGBoost model.
+            preprocessors (Dict[str, Any]): Dictionary containing preprocessing objects.
+            X (pd.DataFrame): Input DataFrame from which predictions are to be generated.
+
+        Returns:
+            np.ndarray: An array of prediction probabilities or scores.
         """
-        Generate predictions using a loaded XGBoost model.
-        """
-        X = X[FEATURES]
+        X = X[self.numerical_features]
         X_processed = self._apply_preprocessors(X, preprocessors)
         dmatrix = xgb.DMatrix(X_processed)
         return model.predict(dmatrix)
 
-    def reset_accumulator(self):
-        """
-        Reset the internal accumulated dataframe and batch counter.
+    def reset_accumulator(self) -> None:
+        """Resets the accumulated data and batch counter.
+
+        This method clears the internal DataFrame that accumulates new data and resets the batch number to zero.
         """
         self.accumulated_data = None
         self.batch_num = 0
 
-    def is_prediction_stable(self, pred_list, stability_window=5, frequency_threshold=0.8, confidence_threshold=0.9):
-        """
-        Determine if the predictions in pred_list are stable.
+    def is_prediction_stable(
+        self,
+        pred_list: List[Tuple[int, int]],
+        stability_window: int = 5,
+        frequency_threshold: float = 0.8,
+        location_tolerance: int = 0
+    ) -> Tuple[bool, Optional[int]]:
+        """Determines if the prediction is stable based on its occurrence frequency and location consistency.
+
+        Each element in `pred_list` is a tuple consisting of (location, prediction). A prediction is deemed
+        stable if, among the last `stability_window` entries:
+          - It appears with a frequency at least equal to `frequency_threshold`, and
+          - The difference between the maximum and minimum locations does not exceed `location_tolerance`.
 
         Args:
-            pred_list (list): A list of tuples (prediction, confidence) for recent updates.
-            stability_window (int): The number of most recent predictions to consider.
-            frequency_threshold (float): Fraction of predictions that must agree.
-            confidence_threshold (float): Minimum average confidence required.
+            pred_list (List[Tuple[int, int]]): List of tuples where each tuple is (location, prediction).
+            stability_window (int, optional): Number of recent predictions to consider for stability. Defaults to 5.
+            frequency_threshold (float, optional): Required frequency fraction for stability. Defaults to 0.8.
+            location_tolerance (int, optional): Maximum allowed difference between locations for stability.
+                Defaults to 0.
 
         Returns:
-            (bool, stable_class): Tuple where bool indicates stability and stable_class is the converged prediction.
+            Tuple[bool, Optional[int]]:
+                - A boolean indicating if a stable prediction was found.
+                - The stable prediction class if stable, otherwise None.
         """
         if len(pred_list) < stability_window:
             return False, None
 
         recent = pred_list[-stability_window:]
-        counts = {}
-        confidences = {}
-        for pred, conf in recent:
-            counts[pred] = counts.get(pred, 0) + 1
-            confidences.setdefault(pred, []).append(conf)
+        groups: Dict[int, Dict[str, Any]] = {}
+        for loc, pred in recent:
+            if pred not in groups:
+                groups[pred] = {'count': 0, 'locations': []}
+            groups[pred]['count'] += 1
+            groups[pred]['locations'].append(loc)
 
-        for pred, count in counts.items():
-            if count / stability_window >= frequency_threshold:
-                avg_conf = np.mean(confidences[pred])
-                if avg_conf >= confidence_threshold:
+        for pred, data in groups.items():
+            frequency = data['count'] / stability_window
+            if frequency >= frequency_threshold:
+                if max(data['locations']) - min(data['locations']) <= location_tolerance:
                     return True, pred
         return False, None
 
-    def enforce_fill_distribution(self, prob_matrix, transition_matrix):
-        """
-        Replaces the original boosting method.
+    def update_predictions(
+        self,
+        new_data: pd.DataFrame,
+        stability_window: int = 5,
+        frequency_threshold: float = 0.8,
+        confidence_threshold: float = 0.6
+    ) -> Dict[str, Any]:
+        """Accumulates new data, generates predictions, and assesses prediction stability."""
 
-        Steps:
-          1. Use Viterbi decoding to obtain raw predictions (for the live data portion).
-          2. Compute the baseline "init_fill" duration from the init_fill_point to the last contiguous
-             prediction of raw class 1. This duration is defined as:
-
-                 baseline_duration = (Relative_time at last raw 1 in the contiguous block)
-                                    - (Relative_time at the init_fill_point)
-
-          3. Enforce that any contiguous segment of raw class 1 (channel_1 fill) has a duration of at least
-             4×baseline_duration, and any contiguous segment of raw class 2 (channel_2 fill) lasts at least
-             9×baseline_duration.
-
-        Returns:
-            Tuple: (adjusted predictions, original probability matrix, transition_matrix)
-        """
-        # Obtain raw predictions via Viterbi decoding.
-        pred = QForecasterDataprocessor.viterbi_decode(
-            prob_matrix, transition_matrix)
-
-        # Determine the init_fill_point from the accumulated data.
-        init_fill_point = QForecasterDataprocessor.init_fill_point(
-            self.accumulated_data, 100, threshold_factor=10)
-        if init_fill_point == -1:
-            return pred, prob_matrix, transition_matrix
-
-        # Get the live data times corresponding to predictions (from init_fill_point onward).
-        live_times = self.accumulated_data['Relative_time'].iloc[init_fill_point:].values
-
-        # Ensure that there is at least one prediction.
-        if len(pred) == 0:
-            return pred, prob_matrix, transition_matrix
-
-        # Compute the baseline duration from the init_fill block.
-        # We define the baseline as the contiguous block of raw 1's starting at the beginning.
-        if pred[0] != 1:
-            # If the first live prediction isn't a 1, we cannot compute a baseline; return as is.
-            return pred, prob_matrix, transition_matrix
-
-        block_end = 0
-        while block_end < len(pred) and pred[block_end] == 1:
-            block_end += 1
-
-        # Baseline duration is the difference between the first live time and the last time in the contiguous block of 1's.
-        baseline_duration = live_times[block_end - 1] - live_times[0]
-        # If baseline_duration is zero (or negative), skip enforcement.
-        if baseline_duration <= 0:
-            return pred, prob_matrix, transition_matrix
-
-        # Set required durations:
-        # For channel_1 fill (raw class 1).
-        required_duration_ch1 = 4 * baseline_duration
-        # For channel_2 fill (raw class 2).
-        required_duration_ch2 = 9 * baseline_duration
-
-        # Enforce the minimum duration requirements on live predictions.
-        adjusted_pred = pred.copy()
-        n = len(pred)
-        i = 0
-        while i < n:
-            current_state = pred[i]
-            start_time = live_times[i]
-            j = i + 1
-            # Find contiguous segment with the same raw prediction.
-            while j < n and pred[j] == current_state:
-                j += 1
-            segment_duration = live_times[j - 1] - start_time
-
-            if current_state == 1 and segment_duration < required_duration_ch1:
-                # Extend the segment to reach the required duration.
-                k = j
-                while k < n and (live_times[k] - start_time) < required_duration_ch1:
-                    adjusted_pred[k] = 1
-                    k += 1
-                i = k
-            elif current_state == 2 and segment_duration < required_duration_ch2:
-                k = j
-                while k < n and (live_times[k] - start_time) < required_duration_ch2:
-                    adjusted_pred[k] = 2
-                    k += 1
-                i = k
-            else:
-                i = j
-
-        return adjusted_pred, prob_matrix, transition_matrix
-
-    def update_predictions(self, new_data, stability_window=5,
-                           frequency_threshold=0.8, confidence_threshold=0.9):
-        """
-        Accumulate new data and run predictions in batches.
-        - Data before the init_fill_point are set to 0 (no_fill).
-        - ML prediction is applied only to data from the init_fill_point onward.
-        - Raw ML predictions (0-3) are adjusted via Viterbi decoding and the fill distribution enforcement.
-        - Final predictions are offset by 1 (yielding classes 1-4).
-        """
+        # Accumulate new data
         if self.accumulated_data is None:
             self.accumulated_data = pd.DataFrame(columns=new_data.columns)
         self.accumulated_data = pd.concat(
             [self.accumulated_data, new_data], ignore_index=True)
         current_count = len(self.accumulated_data)
 
-        # Compute additional features.
+        # Compute additional features
         self.accumulated_data = QForecasterDataprocessor.compute_additional_features(
             self.accumulated_data)
 
-        # Identify the initial fill point and the ch₁ point.
+        # Identify initial fill points
         init_fill_point = QForecasterDataprocessor.init_fill_point(
-            self.accumulated_data, 100, threshold_factor=20)
+            self.accumulated_data, baseline_window=100, threshold_factor=10)
         ch1_fill_point = QForecasterDataprocessor.ch1_point(
             self.accumulated_data, init_fill_point)
+        ch2_fill_point = QForecasterDataprocessor.ch2_point(
+            self.accumulated_data, init_fill_point, ch1_fill_point)
 
-        # If fill hasn't started, report all data as no_fill (0).
+        # If no fill has started, return waiting status
         if init_fill_point == -1:
-            print("[INFO] Fill not yet started; reporting all data as no_fill (0).")
-            predictions = np.zeros(current_count, dtype=int)
-            conf = np.zeros(current_count)
-            for i in range(current_count):
-                if i not in self.prediction_history:
-                    self.prediction_history[i] = []
-                self.prediction_history[i].append((0, 1.0))
-            return {
-                "status": "waiting",
-                "pred": predictions,
-                "conf": conf,
-                "stable_predictions": {},
-                "accumulated_data": self.accumulated_data,
-                "accumulated_count": current_count
-            }
+            return self._return_waiting_state(current_count)
 
-        predictions = np.zeros(current_count, dtype=int)
-        conf = np.zeros(current_count)
+        # Perform predictions on live data
+        predictions, conf = self._generate_predictions(
+            init_fill_point, ch1_fill_point, ch2_fill_point)
 
-        # Pre-fill data (before init_fill_point) are set to 0.
-        for i in range(init_fill_point):
-            if i not in self.prediction_history:
-                self.prediction_history[i] = []
-            self.prediction_history[i].append((0, 1.0))
-
-        if current_count > init_fill_point:
-            features = self.numerical_features
-            X_live = self.accumulated_data[features].iloc[init_fill_point:]
-            prob_matrix = self.predict_native(
-                self.model, self.preprocessors, X_live)
-
-            # Apply Viterbi decoding and enforce fill duration based on the init_fill block.
-            pred_ml, prob_matrix, _ = self.enforce_fill_distribution(
-                prob_matrix, self.transition_matrix)
-            # Offset raw predictions by 1 (raw 0-3 become final 1-4).
-            ml_pred_offset = pred_ml + 1
-
-            # ----------------------------------------------------------
-            # (1) Restrict predictions: Ensure that label 2 only starts at ch₁ point.
-            # Since ml_pred_offset corresponds to data starting at init_fill_point,
-            # for indices before ch1_fill_point, force any label 2 to label 1.
-            if ch1_fill_point > init_fill_point:
-                region_length = ch1_fill_point - init_fill_point
-                ml_pred_offset[:region_length] = np.where(
-                    ml_pred_offset[:region_length] == 2,
-                    1,
-                    ml_pred_offset[:region_length]
-                )
-
-                # ------------------------------------------------------
-                # (2) Enforce minimum region length on predictions 2 and 3.
-                # For any contiguous block of predictions that are 2 or 3,
-                # if its length is shorter than the length of the init fill region,
-                # change the block (here we set it to 1; alternatively, merge/extend as needed).
-                def enforce_min_region_length(preds, min_length, allowed_labels=(2, 3)):
-                    start = None
-                    for i in range(len(preds)):
-                        if preds[i] in allowed_labels:
-                            if start is None:
-                                start = i
-                        else:
-                            if start is not None:
-                                if i - start < min_length:
-                                    # Adjust the region to label 1.
-                                    preds[start:i] = 1
-                                start = None
-                    # Handle the case where the allowed region extends to the end.
-                    if start is not None and len(preds) - start < min_length:
-                        preds[start:] = 1
-                    return preds
-
-                ml_pred_offset = enforce_min_region_length(
-                    ml_pred_offset, region_length)
-
-            predictions[init_fill_point:] = ml_pred_offset
-
-            ml_conf = np.array([prob_matrix[i, pred_ml[i]]
-                                for i in range(len(pred_ml))])
-            conf[init_fill_point:] = ml_conf
-
-            for idx, (p, c) in enumerate(zip(ml_pred_offset, ml_conf), start=init_fill_point):
-                if idx not in self.prediction_history:
-                    self.prediction_history[idx] = []
-                self.prediction_history[idx].append((p, c))
-
-        stable_predictions = {}
-        for idx, history in self.prediction_history.items():
-            stable, stable_class = self.is_prediction_stable(
-                history, stability_window, frequency_threshold, confidence_threshold)
-            if stable:
-                stable_predictions[idx] = stable_class
+        # Update prediction history and check stability
+        stable_predictions = self._check_stability(
+            predictions, conf, init_fill_point, stability_window, frequency_threshold, confidence_threshold)
 
         self.batch_num += 1
-        print(f"\n[INFO] Running predictions on batch {self.batch_num} with {current_count} entries. "
-              f"ML predictions are offset by 1, and pre-fill data are marked as no_fill (0).")
 
         return {
             "status": "completed",
@@ -829,9 +848,84 @@ class QForecasterPredictor:
             "conf": conf,
             "stable_predictions": stable_predictions,
             "accumulated_data": self.accumulated_data,
+            "accumulated_count": current_count,
+            "init_fill_point": init_fill_point,
+            "ch1_fill_point": ch1_fill_point,
+            "ch2_fill_point": ch2_fill_point,
+        }
+
+    # ------------------ Helper Methods ------------------
+
+    def _return_waiting_state(self, current_count: int) -> Dict[str, Any]:
+        """Handles case when fill has not started."""
+        predictions = np.zeros(current_count, dtype=int)
+        conf = np.zeros(current_count)
+        for i in range(current_count):
+            if i not in self.prediction_history:
+                self.prediction_history[i] = []
+            self.prediction_history[i].append((i, 0))
+
+        return {
+            "status": "waiting",
+            "pred": predictions,
+            "conf": conf,
+            "stable_predictions": {},
+            "accumulated_data": self.accumulated_data,
             "accumulated_count": current_count
         }
 
+    def _generate_predictions(self, init_fill_point: int, ch1_fill_point: int, ch2_fill_point: int):
+        """Runs predictions and applies Viterbi decoding."""
+        predictions = np.zeros(len(self.accumulated_data), dtype=int)
+        conf = np.zeros(len(self.accumulated_data))
+
+        # Apply no_fill (0) before init_fill_point
+        predictions[:init_fill_point] = 0
+
+        # Get live data for prediction
+        X_live = self.accumulated_data[self.numerical_features].iloc[init_fill_point:]
+        prob_matrix = self.predict_native(
+            self.model, self.preprocessors, X_live)
+
+        # Perform Viterbi decoding
+        ml_pred = QForecasterDataprocessor.viterbi_decode(
+            prob_matrix, self.transition_matrix)
+        ml_pred_offset = ml_pred + 1  # Offset if needed
+
+        predictions[init_fill_point:] = ml_pred_offset
+        conf[init_fill_point:] = [prob_matrix[i, ml_pred[i]]
+                                  for i in range(len(ml_pred))]
+
+        # Adjust predictions based on fill points
+        self._apply_fill_point_constraints(
+            predictions, ch1_fill_point, ch2_fill_point)
+
+        return predictions, conf
+
+    def _apply_fill_point_constraints(self, predictions: np.ndarray, ch1_fill_point: int, ch2_fill_point: int):
+        """Adjusts predictions based on fill points."""
+        if ch1_fill_point > -1:
+            predictions[ch1_fill_point:] = 2  # Assign 2 after ch1_fill_point
+        if ch2_fill_point > -1:
+            predictions[ch2_fill_point:] = 3  # Assign 3 after ch2_fill_point
+
+    def _check_stability(self, predictions: np.ndarray, conf: np.ndarray, init_fill_point: int,
+                         stability_window: int, frequency_threshold: float, confidence_threshold: float) -> Dict[int, int]:
+        """Checks stability of predictions over a given window."""
+        stable_predictions = {}
+
+        for idx, p in enumerate(predictions[init_fill_point:], start=init_fill_point):
+            if idx not in self.prediction_history:
+                self.prediction_history[idx] = []
+            self.prediction_history[idx].append((idx, p))
+
+        for idx, history in self.prediction_history.items():
+            stable, stable_class = self.is_prediction_stable(
+                history, stability_window, frequency_threshold, int(confidence_threshold))
+            if stable:
+                stable_predictions[idx] = stable_class
+
+        return stable_predictions
 
 # -----------------------------
 # Helper: Simulate Serial Stream
@@ -866,7 +960,7 @@ def simulate_serial_stream_from_loaded(loaded_data):
     num_rows = len(loaded_data)
     start_idx = 0
     while start_idx < num_rows:
-        batch_size = random.randint(100, 200)
+        batch_size = random.randint(10, 30)
         yield loaded_data.iloc[start_idx:start_idx + batch_size]
         start_idx += batch_size
 
@@ -892,6 +986,7 @@ class QForecasterSimulator:
             self.actual_poi_indices = poi_file
         else:
             self.actual_poi_indices = np.array([])
+
         # Setup a live plot with a single axis.
         self.fig, self.ax = plt.subplots(figsize=(12, 6))
         plt.ion()  # Enable interactive mode.
@@ -925,66 +1020,66 @@ class QForecasterSimulator:
         """
         Updates the live plot with the normalized dissipation curve overlaid with
         background shading corresponding to contiguous predicted class regions.
-        Stable prediction regions (as determined by the model selection system) are overlaid
-        with darker shading. The plot is styled with a clean, minimalist aesthetic.
         """
         self.ax.cla()  # Clear previous plot
 
-        # Check if there is enough data to run predictions.
-        if results.get("status") == "waiting":
-            self.ax.set_title(
-                f"Waiting for more data (Batch {batch_number})", fontsize=14)
-            self.fig.canvas.draw()
-            self.fig.canvas.flush_events()
-            return
-
-        # Otherwise, proceed with plotting.
         accumulated_data = results.get("accumulated_data")
         if accumulated_data is None or accumulated_data.empty:
             print("[WARN] No accumulated data available for plotting.")
             return
 
         x_dissipation = np.arange(len(accumulated_data))
-        init_fill_point = QForecasterDataprocessor.init_fill_point(
-            accumulated_data, 100, threshold_factor=20)
-        ch1_fill_point = QForecasterDataprocessor.ch1_point(
-            accumulated_data, init_fill_point)
 
+        if results.get("status") == "waiting":
+            self.ax.set_title(
+                f"Waiting for more data (Batch {batch_number})", fontsize=14)
+            self.ax.plot(
+                x_dissipation,
+                accumulated_data["Dissipation"],
+                linestyle=":",
+                color="#333333",
+                linewidth=1.5,
+                label="Dissipation Curve",
+            )
+            self.fig.canvas.draw()
+            self.fig.canvas.flush_events()
+            return
+
+        init_fill_point = results["init_fill_point"]
+        ch1_fill_point = results["ch1_fill_point"]
+        ch2_fill_point = results["ch2_fill_point"]
+
+        # Vertical lines for fill points
         if init_fill_point > -1:
-            self.ax.axvline(init_fill_point, color='orange',
-                            label='Initial fill location')
-
+            self.ax.axvline(init_fill_point, color="orange",
+                            label="Initial fill location")
         if ch1_fill_point > -1:
-            self.ax.axvline(ch1_fill_point, color='brown',
-                            label='Channel 1 fill location')
+            self.ax.axvline(ch1_fill_point, color="brown",
+                            label="Channel 1 fill location")
+        if ch2_fill_point > -1:
+            self.ax.axvline(ch2_fill_point, color="red",
+                            label="Channel 2 fill location")
+
+        # Plot Dissipation Curve
         self.ax.plot(
             x_dissipation,
-            accumulated_data["Dissipation"],
-            linestyle=':',
-            color='#333333',
+            accumulated_data["Difference"],
+            linestyle=":",
+            color="#333333",
             linewidth=1.5,
-            label='Dissipation Curve'
+            label="Dissipation Curve",
         )
 
         preds = np.array(results["pred"])
+        stable_preds = results.get("stable_predictions", {})
 
-        # Define mappings for class IDs to names and colors.
-        class_names = {
-            0: "no_fill",
-            1: "initial_fill",
-            2: "channel_1",
-            3: "channel_2",
-            4: "full_fill"
-        }
-        class_colors = {
-            0: "#d3d3d3",    # light grey for no_fill
-            1: "#a6cee3",    # pastel blue for initial_fill
-            2: "#b2df8a",    # pastel green for channel_1
-            3: "#fdbf6f",    # pastel orange for channel_2
-            4: "#fb9a99"     # pastel red/pink for full_fill
-        }
+        # Define class name and color mappings
+        class_names = {0: "no_fill", 1: "initial_fill",
+                       2: "channel_1", 3: "channel_2", 4: "full_fill"}
+        class_colors = {0: "#d3d3d3", 1: "#a6cee3",
+                        2: "#b2df8a", 3: "#fdbf6f", 4: "#fb9a99"}
 
-        # Overlay shaded regions for predicted class regions.
+        # Overlay shaded regions for predicted class regions
         if len(preds) > 0:
             already_labeled = {}
             current_class = preds[0]
@@ -995,24 +1090,49 @@ class QForecasterSimulator:
                     label = class_names[current_class] if current_class not in already_labeled else None
                     already_labeled[current_class] = True
                     self.ax.axvspan(
-                        start_idx, end_idx,
-                        color=class_colors.get(current_class, '#cccccc'),
+                        start_idx,
+                        end_idx,
+                        color=class_colors.get(current_class, "#cccccc"),
                         alpha=0.3,
-                        label=label
+                        label=label,
                     )
                     current_class = preds[i]
                     start_idx = i
-            # Shade the final segment.
+            # Shade the final segment
             end_idx = len(preds) - 1
             label = class_names[current_class] if current_class not in already_labeled else None
             self.ax.axvspan(
-                start_idx, end_idx,
-                color=class_colors.get(current_class, '#cccccc'),
+                start_idx,
+                end_idx,
+                color=class_colors.get(current_class, "#cccccc"),
                 alpha=0.3,
-                label=label
+                label=label,
             )
 
-        # Scatter the actual POI indices on the dissipation curve.
+        # Scatter plot stable predictions
+        if stable_preds:
+            stable_indices = list(stable_preds.keys())
+            stable_labels = list(stable_preds.values())
+
+            # Ensure indices are within bounds
+            stable_indices = [
+                idx for idx in stable_indices if idx < len(accumulated_data)]
+            stable_labels = [stable_preds[idx] for idx in stable_indices]
+
+            if stable_indices:
+                y_stable = accumulated_data["Dissipation"].iloc[stable_indices]
+                self.ax.scatter(
+                    stable_indices,
+                    y_stable,
+                    color="blue",
+                    marker="s",
+                    s=50,
+                    label="Stable Predictions",
+                    edgecolor="black",
+                    linewidth=0.8,
+                )
+
+        # Scatter actual POI indices
         if self.actual_poi_indices.size > 0:
             valid_actual_indices = [
                 int(idx) for idx in self.actual_poi_indices if idx < len(accumulated_data)]
@@ -1021,50 +1141,20 @@ class QForecasterSimulator:
                 self.ax.scatter(
                     valid_actual_indices,
                     y_actual,
-                    color='#2ca02c',
-                    marker='o',
+                    color="#2ca02c",
+                    marker="o",
                     s=50,
-                    label='Actual POI'
+                    label=f"Actual POI {self.actual_poi_indices.size}",
                 )
 
-       # Overlay stable prediction regions for the short model as darker shaded areas.
-        if "stable_predictions" in results and results["stable_predictions"]:
-            stable_dict = results["stable_predictions"]
-            stable_idxs = sorted(stable_dict.keys())
-            if stable_idxs:
-                segments = []
-                current_class = stable_dict[stable_idxs[0]]
-                seg_start = stable_idxs[0]
-                prev = stable_idxs[0]
-                # Group contiguous indices with the same stable class.
-                for idx in stable_idxs[1:]:
-                    if idx == prev + 1 and stable_dict[idx] == current_class:
-                        prev = idx
-                    else:
-                        segments.append((seg_start, prev, current_class))
-                        seg_start = idx
-                        prev = idx
-                        current_class = stable_dict[idx]
-                segments.append((seg_start, prev, current_class))
-                already_labeled = {}
-                for seg_start, seg_end, cls in segments:
-                    label = f"Stable Short: {class_names[cls]}" if cls not in already_labeled else None
-                    already_labeled[cls] = True
-                    self.ax.axvspan(
-                        seg_start, seg_end,
-                        color=class_colors.get(cls, '#000000'),
-                        alpha=0.6,  # darker for short model
-                        label=label
-                    )
-
         self.ax.set_title(
-            f'Dissipation Curve (Batch {batch_number})', fontsize=14, weight='medium')
-        self.ax.set_xlabel('Data Index', fontsize=12)
+            f"Dissipation Curve (Batch {batch_number})", fontsize=14, weight="medium")
+        self.ax.set_xlabel("Data Index", fontsize=12)
         self.ax.set_ylabel(self.predictor.target, fontsize=12)
-        self.ax.tick_params(axis='both', which='major', labelsize=10)
+        self.ax.tick_params(axis="both", which="major", labelsize=10)
         self.ax.legend(frameon=False, fontsize=10)
 
-        # Redraw the figure.
+        # Redraw the figure
         self.fig.canvas.draw()
         self.fig.canvas.flush_events()
 
@@ -1130,7 +1220,7 @@ if __name__ == '__main__':
                 random_slice,
                 poi_file=mapped_poi_indices,
                 ignore_before=50,
-                delay=delay * 5
+                delay=1
             )
 
             # Run the simulation.

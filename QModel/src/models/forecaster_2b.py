@@ -1,14 +1,11 @@
 from hyperopt import fmin, tpe, hp, STATUS_OK, Trials
-from sklearn.linear_model import LogisticRegression
 from scipy.signal import hilbert
 from scipy.signal import savgol_filter
 from scipy.signal import hilbert, savgol_filter
-from xgboost import XGBClassifier
 from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.preprocessing import StandardScaler
 import os
 import random
-import time
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
@@ -16,12 +13,10 @@ import matplotlib.pyplot as plt
 import xgboost as xgb
 from hyperopt import fmin, tpe, hp, Trials, STATUS_OK
 import pickle
-try:
-    from QATCH.core.worker import Worker
-except ImportError:
-    print("No catch model to import")
+import random
+from typing import Any, Dict, List, Optional, Tuple
+
 FEATURES = [
-    'Relative_time',
     'Dissipation',
     'Dissipation_rolling_mean',
     'Dissipation_rolling_median',
@@ -29,38 +24,18 @@ FEATURES = [
     'Dissipation_rolling_std',
     'Dissipation_diff',
     'Dissipation_pct_change',
-    'Dissipation_rate',
     'Dissipation_ratio_to_mean',
     'Dissipation_ratio_to_ewm',
-    'Dissipation_envelope',
-    'Time_shift'
+    'Dissipation_envelope'
 ]
+NUM_CLASSES = 4
 TARGET = "Fill"
-DATA_TO_LOAD = 50
-IGNORE_BEFORE = 50
+DOWNSAMPLE_FACTOR = 5
+SPIN_UP_TIME = (1.2, 1.4)
+BASELINE_WINDOW = 100
 
 
 class QForecasterDataprocessor:
-    @staticmethod
-    def convert_to_dataframe(worker) -> pd.DataFrame:
-        # Retrieve the three buffers from the worker
-        resonance_frequency = worker.get_value0_buffer(0)
-        relative_time = worker.get_d1_buffer(0)
-        dissipation = worker.get_d2_buffer(0)
-
-        # Optional: check that all buffers have the same length
-        if not (len(resonance_frequency) == len(relative_time) == len(dissipation)):
-            raise ValueError("All buffers must have the same length.")
-
-        # Create the DataFrame with the specified column headers
-        df = pd.DataFrame({
-            'Resonance_Frequency': resonance_frequency,
-            'Relative_time': relative_time,
-            'Dissipation': dissipation
-        })
-
-        return df
-
     @staticmethod
     def load_content(data_dir: str) -> list:
         """
@@ -123,14 +98,22 @@ class QForecasterDataprocessor:
         window = 10
         span = 10
         run_length = len(df)
+        # Calculate initial window_length as 1% of run_length
         window_length = int(np.ceil(0.01 * run_length))
+
         # Ensure window_length is odd and at least 3
         if window_length % 2 == 0:
             window_length += 1
         if window_length < 3:
             window_length = 3
-        polyorder = 2 if window_length > 2 else 1
 
+        # Adjust window_length if it's greater than the size of the 'Dissipation' data.
+        diss_length = len(df['Dissipation'])
+        if window_length > diss_length:
+            # Set to diss_length, ensuring it's odd.
+            window_length = diss_length if diss_length % 2 == 1 else diss_length - 1
+
+        polyorder = 2 if window_length > 2 else 1
         df['Dissipation'] = savgol_filter(df['Dissipation'].values,
                                           window_length=window_length,
                                           polyorder=polyorder)
@@ -144,27 +127,21 @@ class QForecasterDataprocessor:
             window=window, min_periods=1).std()
         df['Dissipation_diff'] = df['Dissipation'].diff()
         df['Dissipation_pct_change'] = df['Dissipation'].pct_change()
-        df['Relative_time_diff'] = df['Relative_time'].diff().replace(0, np.nan)
-        df['Dissipation_rate'] = df['Dissipation_diff'] / df['Relative_time_diff']
         df['Dissipation_ratio_to_mean'] = df['Dissipation'] / \
             df['Dissipation_rolling_mean']
         df['Dissipation_ratio_to_ewm'] = df['Dissipation'] / df['Dissipation_ewm']
         df['Dissipation_envelope'] = np.abs(hilbert(df['Dissipation'].values))
 
-        # Drop the Resonance_Frequency column if present.
-        if 'Resonance_Frequency' in df.columns:
-            df.drop(columns=['Resonance_Frequency'], inplace=True)
+        # if 'Resonance_Frequency' in df.columns:
+        #     df.drop(columns=['Resonance_Frequency'], inplace=True)
 
-        t_delta = QForecasterDataprocessor.find_time_delta(df)
-        if t_delta == -1:
-            df['Time_shift'] = 0
-        else:
-            df.loc[t_delta:, 'Time_shift'] = 1
+        df.replace([np.inf, -np.inf], np.nan, inplace=True)
+        df.fillna(0, inplace=True)
 
         return df
 
     @staticmethod
-    def _process_fill(df: pd.DataFrame, poi_file: str, check_unique: bool = False, file_name: str = None) -> pd.DataFrame:
+    def _process_fill(df: pd.DataFrame, poi_file: str) -> pd.DataFrame:
         """
         Helper to process fill information from the poi_file.
         Reads the poi CSV (with no header) and adds a Fill column to df.
@@ -183,13 +160,6 @@ class QForecasterDataprocessor:
                 df.loc[idx:, "Fill"] += 1
 
         df["Fill"] = pd.Categorical(df["Fill"]).codes
-        # if check_unique:
-        #     unique_fill = sorted(df["Fill"].unique())
-        #     if len(unique_fill) != 7:
-        #         print(f"[WARNING] File {file_name} does not have 7 unique Fill values; skipping."
-        #               if file_name else "[WARNING] File does not have 7 unique Fill values; skipping.")
-        #         return None
-
         df["Fill"] = df["Fill"].apply(QForecasterDataprocessor.reassign_region)
         mapping = {'no_fill': 0, 'init_fill': 1,
                    'ch_1': 2, 'ch_2': 3, 'full_fill': 4}
@@ -197,89 +167,51 @@ class QForecasterDataprocessor:
         return df
 
     @staticmethod
-    def load_and_preprocess_data_split(data_dir: str, required_runs: int = 20):
-        """
-        Load and preprocess data from all files in data_dir. Each file (and its matching
-        POI file) is processed to compute additional features and fill information.
-        Files are then categorized into 'short_runs' and 'long_runs' based on whether
-        a significant time delta is detected. Before final concatenation, if the number
-        of rows in a run exceeds IGNORE_BEFORE, the first IGNORE_BEFORE rows are dropped.
-        Additionally, each DataFrame is filtered to remove rows with Relative_time < 1.2
-        and downsampled by a factor of 5.
-        Returns two DataFrames: one for short runs and one for long runs.
-        """
-        short_runs, long_runs = [], []
+    def load_and_preprocess_data(data_dir: str, num_datasets: int):
+        runs = []
         content = QForecasterDataprocessor.load_content(data_dir)
         random.shuffle(content)
 
-        for file, poi_file in content:
-            # Exit early if both groups have reached the required number of runs.
-            if len(short_runs) >= required_runs and len(long_runs) >= required_runs:
-                break
+        if num_datasets < len(content):
+            content = content[:num_datasets]
 
+        for file, poi_file in content:
             df = pd.read_csv(file)
-            required_cols = ["Relative_time",
-                             "Resonance_Frequency", "Dissipation"]
+            required_cols = ["Relative_time", "Dissipation"]
             if df.empty or not all(col in df.columns for col in required_cols):
                 continue
 
             df = df[required_cols]
-            df = QForecasterDataprocessor.compute_additional_features(df)
-            df = QForecasterDataprocessor._process_fill(
-                df, poi_file, check_unique=True, file_name=file)
+
+            try:
+                df = QForecasterDataprocessor._process_fill(
+                    df, poi_file=poi_file)
+            except FileNotFoundError:
+                df = None
             if df is None:
                 continue
 
-            if len(df) > IGNORE_BEFORE:
-                df = df.iloc[IGNORE_BEFORE:]
+            df = df[df["Relative_time"] >= random.uniform(
+                SPIN_UP_TIME[0], SPIN_UP_TIME[1])]
+            df = df.iloc[::DOWNSAMPLE_FACTOR]
+            df = df.reset_index()
+            init_fill_point = QForecasterDataprocessor.init_fill_point(
+                df, BASELINE_WINDOW, 10)
+            df = df.iloc[init_fill_point:]
+            if df is None or df.empty:
+                continue
+            df.loc[df['Fill'] == 0, 'Fill'] = 1
+            # Method 2 (in-place subtraction):
+            df['Fill'] -= 1
+            df = QForecasterDataprocessor.compute_additional_features(df)
+            df.reset_index(inplace=True)
 
-            delta_idx = QForecasterDataprocessor.find_time_delta(df)
-            if delta_idx == -1:
-                if len(short_runs) < required_runs:
-                    short_runs.append(df)
-            else:
-                if len(long_runs) < required_runs:
-                    long_runs.append(df)
-            # Trim rows with Relative_time less than 1.2
-            df = df[df["Relative_time"] >= 1.2]
+            runs.append(df)
 
-            # Downsample the DataFrame by a factor of 5 (take every 5th row)
-            df = df.iloc[::5]
-
-        if len(short_runs) < required_runs or len(long_runs) < required_runs:
-            raise ValueError(f"Not enough runs found. Required: {required_runs} short and {required_runs} long, "
-                             f"found: {len(short_runs)} short and {len(long_runs)} long.")
-
-        training_data_short = pd.concat(short_runs).sort_values(
+        training_data = pd.concat(runs).sort_values(
             "Relative_time").reset_index(drop=True)
-        training_data_long = pd.concat(long_runs).sort_values(
-            "Relative_time").reset_index(drop=True)
-        return training_data_short, training_data_long
-
-    @staticmethod
-    def load_and_preprocess_single(data_file: str, poi_file: str):
-        """
-        Load and preprocess a single data file (and its corresponding POI file).
-        The method ensures required sensor columns exist, processes the fill information,
-        and prints a head sample of the resulting DataFrame.
-        """
-        df = pd.read_csv(data_file)
-        required_cols = ["Relative_time", "Resonance_Frequency", "Dissipation"]
-        if df.empty or not all(col in df.columns for col in required_cols):
-            raise ValueError(
-                "Data file is empty or missing required sensor columns.")
-        df = df[required_cols]
-        df = QForecasterDataprocessor._process_fill(df, poi_file)
-        # Trim rows with Relative_time less than 1.2
-        df = df[df["Relative_time"] >= 1.2]
-
-        # Downsample the DataFrame by a factor of 5 (take every 5th row)
-        df = df.iloc[::5]
-        if df is None:
-            raise ValueError("Error processing fill information.")
-        print("[INFO] Preprocessed single-file data sample:")
-        print(df.head())
-        return df
+        training_data.drop(columns=['Relative_time'], inplace=True)
+        return training_data
 
     @staticmethod
     def viterbi_decode(prob_matrix, transition_matrix):
@@ -325,44 +257,159 @@ class QForecasterDataprocessor:
         row_sums[row_sums == 0] = 1
         return transition_counts / row_sums
 
+    @staticmethod
+    def init_fill_point(
+        df: pd.DataFrame, baseline_window: int = 10, threshold_factor: float = 3.0
+    ) -> int:
+        """
+        Identify the first index in the Dissipation column where a significant increase
+        occurs relative to the initial baseline noise.
+
+        The baseline is estimated using the first `baseline_window` samples.
+        A significant increase is defined as a Dissipation value exceeding:
+            baseline_mean + threshold_factor * baseline_std
+
+        Args:
+            df (pd.DataFrame): DataFrame containing a 'Dissipation' column.
+            baseline_window (int): Number of initial samples used to compute the baseline.
+            threshold_factor (float): Multiplier for the baseline standard deviation.
+
+        Returns:
+            int: The index of the first significant increase, or -1 if not found.
+        """
+        if 'Resonance_Frequency' not in df.columns:
+            raise ValueError(
+                "Resonance_Frequency column not found in DataFrame.")
+        if len(df) < baseline_window:
+            return -1
+
+        if df['Relative_time'].max() < 3.0:
+            return -1
+
+        baseline_values = df['Resonance_Frequency'].iloc[:baseline_window]
+        baseline_mean = baseline_values.mean()
+        baseline_std = baseline_values.std()
+        threshold = baseline_mean - threshold_factor * baseline_std
+        dissipation = df['Resonance_Frequency'].values
+
+        for idx, value in enumerate(dissipation):
+            if value < threshold:
+                return idx
+        return -1
+
+    @staticmethod
+    def ch1_point(
+        df: pd.DataFrame,
+        init_fill_idx: int,
+        min_offset_ratio: float = 0.1
+    ) -> int:
+        """
+        Find the index in the 'Dissipation' column where the slope first begins to decrease,
+        provided that the candidate is at least min_offset_ratio (default 10%) ahead of the init_fill_idx.
+
+        The slope is approximated by the difference between successive Dissipation values.
+        We return the first index (after the offset) where the slope decreases compared to the previous slope,
+        which indicates a turning point in the slope.
+
+        Args:
+            df (pd.DataFrame): DataFrame containing a 'Dissipation' column.
+            init_fill_idx (int): Starting index from which to begin the search.
+            min_offset_ratio (float): Minimum offset as a fraction of the remaining data length (default is 0.1).
+
+        Returns:
+            int: The index where the slope first decreases (i.e. the turning point), or -1 if none is found.
+        """
+        if 'Dissipation' not in df.columns:
+            raise ValueError("Dissipation column not found in DataFrame.")
+
+        dissipation = df['Dissipation'].values
+        n = len(dissipation)
+
+        if init_fill_idx < 0:
+            return -1
+        if init_fill_idx >= n - 1:
+            raise ValueError(
+                "init_fill_idx is out of bounds or too close to the end of the array.")
+        # Ensure we start at least 10% of the remaining length ahead of init_fill_idx.
+        min_idx = init_fill_idx + \
+            max(1, int(min_offset_ratio * (n - init_fill_idx)))
+        if min_idx >= n - 1:
+            return -1
+
+        # Compute the slope (first difference) array.
+        slopes = np.diff(dissipation)
+
+        # Iterate over candidate indices (using dissipation indices)
+        # Note: slope[i] corresponds to the difference dissipation[i+1]-dissipation[i].
+        for i in range(min_idx, n - 1):
+            # Check if the slope decreases relative to the previous slope.
+            if slopes[i] < slopes[i - 1]:
+                # i is the index in dissipation where the slope starts to drop.
+                return i
+
+        return -1
+
+    @staticmethod
+    def ch2_point(df, ch1_fill_point):
+        """
+        Finds the index where ch2_fill_point (blue line) occurs after ch1_fill_point (red line).
+
+        Parameters:
+            df (pd.DataFrame): Dataframe with 'Resonance_Frequency' and 'Dissipation'.
+            ch1_fill_point (int): Index of ch1_fill_point (red line). If -1, returns -1.
+
+        Returns:
+            int: Index of ch2_fill_point (blue line) or -1 if not found.
+        """
+        if ch1_fill_point == -1:
+            print("ch1_fill_point not found. Cannot detect ch2_fill_point.")
+            return -1
+
+        # Compute rate of change in Resonance_Frequency
+        df["Resonance_Frequency_diff"] = df["Resonance_Frequency"].diff()
+
+        # Search AFTER the red line index
+        post_ch1_df = df.loc[ch1_fill_point+1:].copy()
+
+        # Find the first major change (spike/drop) in Resonance_Frequency
+        threshold = post_ch1_df["Resonance_Frequency_diff"].abs(
+        ).mean() * 5  # Adjust sensitivity
+        ch2_fill_point = post_ch1_df[post_ch1_df["Resonance_Frequency_diff"].abs(
+        ) > threshold].index.min()
+
+        if pd.isna(ch2_fill_point):
+            print("ch2_fill_point not found yet. Returning -1.")
+            return -1  # If no valid point is found, return -1
+
+        return ch2_fill_point
+
 
 ###############################################################################
 # Trainer Class: Handles model training, hyperparameter tuning, and saving.
 ###############################################################################
 
+
 class QForecasterTrainer:
-    def __init__(self, numerical_features, target='Fill', save_dir=None):
+    def __init__(self, features, target='Fill', save_dir=None):
         """
         Args:
             numerical_features (list): List of numerical feature names.
             target (str): Target column name.
             save_dir (str): Directory to save trained objects.
         """
-        self.numerical_features = numerical_features
+        self.features = features
         self.target = target
         self.save_dir = save_dir
 
-        # Placeholders for trained objects.
-        self.model_short = None
-        self.model_long = None
-
-        self.preprocessors_short = None
-        self.preprocessors_long = None
-
-        self.params_short = None
-        self.params_long = None
-
-        self.transition_matrix_short = None
-        self.transition_matrix_long = None
-
-        # New: meta model and (optionally) its transition matrix.
-        self.meta_model = None
-        self.meta_transition_matrix = None
+        self.model = None
+        self.preprocessors = None
+        self.params = None
+        self.transition_matrix = None
 
     def _build_preprocessors(self, X):
         """Fit and return preprocessors for numerical data."""
         num_imputer = SimpleImputer(strategy='mean')
-        X_num = num_imputer.fit_transform(X[self.numerical_features])
+        X_num = num_imputer.fit_transform(X[self.features])
         scaler = StandardScaler()
         X_num = scaler.fit_transform(X_num)
         preprocessors = {'num_imputer': num_imputer, 'scaler': scaler}
@@ -392,12 +439,12 @@ class QForecasterTrainer:
                 dtrain,
                 num_boost_round=200,
                 nfold=5,
-                metrics={'aucpr'},
+                metrics={'auc'},
                 early_stopping_rounds=10,
                 seed=42,
                 verbose_eval=False
             )
-            best_score = cv_results['test-aucpr-mean'].max()
+            best_score = cv_results['test-auc-mean'].max()
             best_rounds = len(cv_results)
             return {'loss': -best_score, 'status': STATUS_OK, 'num_rounds': best_rounds}
 
@@ -421,7 +468,7 @@ class QForecasterTrainer:
             preprocessors (dict): Fitted preprocessors.
             params (dict): Model parameters.
         """
-        features = self.numerical_features
+        features = self.features
         X = training_data[features].copy()
         y = training_data[self.target].values
 
@@ -430,8 +477,8 @@ class QForecasterTrainer:
 
         base_params = {
             'objective': 'multi:softprob',
-            'num_class': 5,
-            'eval_metric': 'aucpr',
+            'num_class': NUM_CLASSES,
+            'eval_metric': 'auc',
             'seed': 42,
             'device': 'cuda',
         }
@@ -446,7 +493,7 @@ class QForecasterTrainer:
                 dtrain,
                 num_boost_round=200,
                 nfold=5,
-                metrics={'aucpr'},
+                metrics={'auc'},
                 early_stopping_rounds=10,
                 seed=42,
                 verbose_eval=False
@@ -462,7 +509,7 @@ class QForecasterTrainer:
         """
         X_copy = X.copy()
         X_num = preprocessors['num_imputer'].transform(
-            X_copy[self.numerical_features])
+            X_copy[self.features])
         X_num = preprocessors['scaler'].transform(X_num)
         return X_num
 
@@ -474,85 +521,14 @@ class QForecasterTrainer:
         dmatrix = xgb.DMatrix(X_processed)
         return model.predict(dmatrix)
 
-    def train_base_models(self, training_data_short, training_data_long, tune=True):
-        """
-        Train two base models (short and long) and compute their dynamic transition matrices.
-        """
-        self.transition_matrix_short = QForecasterDataprocessor.compute_dynamic_transition_matrix(
-            training_data_short)
-        self.transition_matrix_long = QForecasterDataprocessor.compute_dynamic_transition_matrix(
-            training_data_long)
+    def train_model(self, training_data, tune=True):
 
-        self.model_short, self.preprocessors_short, self.params_short = self.train_model_native(
-            training_data_short, tune=tune)
-        self.model_long, self.preprocessors_long, self.params_long = self.train_model_native(
-            training_data_long, tune=tune)
-        print("[INFO] Base model training complete.")
-
-    # --- New methods for meta model training and saving ---
-    def extract_meta_features(self, X, conf_short, conf_long, additional_info):
-        """
-        Example meta feature extraction: combines model confidences and summary statistics.
-        You can modify this to include more sophisticated features.
-        """
-        meta_features = np.column_stack([
-            np.array(conf_short),
-            np.array(conf_long),
-            np.full(len(conf_short), additional_info.get('stat_short', 0)),
-            np.full(len(conf_short), additional_info.get('stat_long', 0))
-        ])
-        return meta_features
-
-    def train_meta_model(self, training_data):
-        """
-        Train a meta model for model selection.
-        This method uses the base models' predictions on the training data and the true target
-        to label which base model performed better, then trains a meta classifier.
-        """
-        training_data = QForecasterDataprocessor.compute_additional_features(
+        self.transition_matrix = QForecasterDataprocessor.compute_dynamic_transition_matrix(
             training_data)
 
-        X = training_data.copy()
-        X.drop(columns=['Fill'], inplace=True)
-        y_true = training_data[self.target].values
-
-        prob_matrix_short = self.predict_native(
-            self.model_short, self.preprocessors_short, X)
-        prob_matrix_long = self.predict_native(
-            self.model_long, self.preprocessors_long, X)
-
-        pred_short = np.argmax(prob_matrix_short, axis=1)
-        pred_long = np.argmax(prob_matrix_long, axis=1)
-        conf_short = np.max(prob_matrix_short, axis=1)
-        conf_long = np.max(prob_matrix_long, axis=1)
-
-        # Label each sample based on which model predicted correctly,
-        # or if both are correct/incorrect, based on higher confidence.
-        meta_labels = []
-        for i in range(len(y_true)):
-            correct_short = (pred_short[i] == y_true[i])
-            correct_long = (pred_long[i] == y_true[i])
-            if correct_short and not correct_long:
-                meta_labels.append(0)  # short model is better
-            elif correct_long and not correct_short:
-                meta_labels.append(1)  # long model is better
-            else:
-                meta_labels.append(0 if conf_short[i] >= conf_long[i] else 1)
-        meta_labels = np.array(meta_labels)
-
-        # Extract meta features.
-        additional_info = {
-            'stat_short': np.std(prob_matrix_short, axis=1).mean(),
-            'stat_long': np.std(prob_matrix_long, axis=1).mean()
-        }
-        meta_features = self.extract_meta_features(
-            X, conf_short, conf_long, additional_info)
-
-        # Train a simple meta classifier, e.g., logistic regression.
-        from sklearn.linear_model import LogisticRegression
-        self.meta_model = LogisticRegression()
-        self.meta_model.fit(meta_features, meta_labels)
-        print("[INFO] Meta model training complete.")
+        self.model, self.preprocessors, self.params = self.train_model_native(
+            training_data, tune=tune)
+        print("[INFO] Base model training complete.")
 
     def save_models(self):
         """
@@ -563,155 +539,115 @@ class QForecasterTrainer:
         os.makedirs(self.save_dir, exist_ok=True)
 
         # Save short model and its objects.
-        self.model_short.save_model(os.path.join(
-            self.save_dir, "model_short.json"))
-        with open(os.path.join(self.save_dir, "preprocessors_short.pkl"), "wb") as f:
-            pickle.dump(self.preprocessors_short, f)
-        with open(os.path.join(self.save_dir, "params_short.pkl"), "wb") as f:
-            pickle.dump(self.params_short, f)
-        with open(os.path.join(self.save_dir, "transition_matrix_short.pkl"), "wb") as f:
-            pickle.dump(self.transition_matrix_short, f)
-
-        # Save long model and its objects.
-        self.model_long.save_model(os.path.join(
-            self.save_dir, "model_long.json"))
-        with open(os.path.join(self.save_dir, "preprocessors_long.pkl"), "wb") as f:
-            pickle.dump(self.preprocessors_long, f)
-        with open(os.path.join(self.save_dir, "params_long.pkl"), "wb") as f:
-            pickle.dump(self.params_long, f)
-        with open(os.path.join(self.save_dir, "transition_matrix_long.pkl"), "wb") as f:
-            pickle.dump(self.transition_matrix_long, f)
-
-        # Save meta model if it exists.
-        if self.meta_model is not None:
-            with open(os.path.join(self.save_dir, "meta_clf.pkl"), "wb") as f:
-                pickle.dump(self.meta_model, f)
-        # Optionally, save meta transition matrix if applicable.
-        if self.meta_transition_matrix is not None:
-            with open(os.path.join(self.save_dir, "meta_transition_matrix.pkl"), "wb") as f:
-                pickle.dump(self.meta_transition_matrix, f)
+        self.model.save_model(os.path.join(
+            self.save_dir, "model.json"))
+        with open(os.path.join(self.save_dir, "preprocessors.pkl"), "wb") as f:
+            pickle.dump(self.preprocessors, f)
+        with open(os.path.join(self.save_dir, "params.pkl"), "wb") as f:
+            pickle.dump(self.params, f)
+        with open(os.path.join(self.save_dir, "transition_matrix.pkl"), "wb") as f:
+            pickle.dump(self.transition_matrix, f)
 
         print("[INFO] All models and associated objects have been saved successfully.")
 
     def load_models(self):
-        """
-        Optionally, load models (base and meta) from disk.
-        """
         if not self.save_dir:
             raise ValueError("Save directory not specified.")
 
-        self.model_short = xgb.Booster()
-        self.model_short.load_model(os.path.join(
-            self.save_dir, "model_short.json"))
-        with open(os.path.join(self.save_dir, "preprocessors_short.pkl"), "rb") as f:
-            self.preprocessors_short = pickle.load(f)
-        with open(os.path.join(self.save_dir, "params_short.pkl"), "rb") as f:
-            self.params_short = pickle.load(f)
-        with open(os.path.join(self.save_dir, "transition_matrix_short.pkl"), "rb") as f:
-            self.transition_matrix_short = pickle.load(f)
-
-        self.model_long = xgb.Booster()
-        self.model_long.load_model(os.path.join(
-            self.save_dir, "model_long.json"))
-        with open(os.path.join(self.save_dir, "preprocessors_long.pkl"), "rb") as f:
-            self.preprocessors_long = pickle.load(f)
-        with open(os.path.join(self.save_dir, "params_long.pkl"), "rb") as f:
-            self.params_long = pickle.load(f)
-        with open(os.path.join(self.save_dir, "transition_matrix_long.pkl"), "rb") as f:
-            self.transition_matrix_long = pickle.load(f)
-
-        # Load meta model and its transition matrix if available.
-        meta_clf_path = os.path.join(self.save_dir, "meta_clf.pkl")
-        meta_trans_path = os.path.join(
-            self.save_dir, "meta_transition_matrix.pkl")
-        if os.path.exists(meta_clf_path):
-            with open(meta_clf_path, "rb") as f:
-                self.meta_model = pickle.load(f)
-        if os.path.exists(meta_trans_path):
-            with open(meta_trans_path, "rb") as f:
-                self.meta_transition_matrix = pickle.load(f)
+        self.model = xgb.Booster()
+        self.model.load_model(os.path.join(
+            self.save_dir, "model.json"))
+        with open(os.path.join(self.save_dir, "preprocessors.pkl"), "rb") as f:
+            self.preprocessors = pickle.load(f)
+        with open(os.path.join(self.save_dir, "params.pkl"), "rb") as f:
+            self.params = pickle.load(f)
+        with open(os.path.join(self.save_dir, "transition_matrix.pkl"), "rb") as f:
+            self.transition_matrix = pickle.load(f)
 
         print("[INFO] All models and associated objects have been loaded successfully.")
 
 
-###############################################################################
-# Predictor Class: Handles generating predictions (including live predictions).
-###############################################################################
 class QForecasterPredictor:
-    def __init__(self, numerical_features: list, categorical_features: list = None, target: str = 'Fill',
-                 save_dir: str = None, batch_threshold: int = 300):
-        """
+    """Predictor class for QForecaster that handles model loading, data accumulation, and prediction.
+
+    This class loads a pre-trained XGBoost model along with its associated preprocessors and transition
+    matrix. It provides methods to apply preprocessing to input data, generate predictions using the
+    model and Viterbi decoding, and maintain a history of predictions to assess stability.
+    """
+
+    def __init__(
+        self,
+        numerical_features: List[str] = FEATURES,
+        target: str = 'Fill',
+        save_dir: Optional[str] = None,
+        batch_threshold: int = 60
+    ) -> None:
+        """Initializes the QForecasterPredictor.
+
         Args:
-            numerical_features (list): List of numerical feature names.
-            categorical_features (list): List of categorical feature names.
-            target (str): Target column name.
-            save_dir (str): Directory from which to load saved objects.
-            batch_threshold (int): Number of new entries to accumulate before running predictions.
+            numerical_features (List[str], optional): List of feature names used for numerical processing.
+                Defaults to FEATURES.
+            target (str, optional): The target variable name. Defaults to 'Fill'.
+            save_dir (Optional[str], optional): Directory path from which to load model files and preprocessors.
+                Defaults to None.
+            batch_threshold (int, optional): The rate at which to process batches of data. Defaults to 60.
         """
-        self.numerical_features = numerical_features
-        self.target = target
-        self.save_dir = save_dir
-        self.batch_threshold = batch_threshold
+        self.numerical_features: List[str] = numerical_features
+        self.target: str = target
+        self.save_dir: Optional[str] = save_dir
+        self.batch_threshold: int = batch_threshold
 
-        # Placeholders for loaded objects.
-        self.model_short = None
-        self.model_long = None
-        self.meta_clf = None
-        self.preprocessors_short = None
-        self.preprocessors_long = None
-        self.transition_matrix_short = None
-        self.transition_matrix_long = None
-        self.meta_transition_matrix = None
+        self.model: Optional[xgb.Booster] = None
+        self.preprocessors: Optional[Dict[str, Any]] = None
+        self.transition_matrix: Optional[np.ndarray] = None
 
-        # Internal accumulator for live prediction updates.
-        self.accumulated_data = None
-        self.batch_num = 0
-        self.fig = None
-        self.axes = None
+        self.accumulated_data: Optional[pd.DataFrame] = None
+        self.batch_num: int = 0
+        self.prediction_history: Dict[int, List[Tuple[int, int]]] = {}
 
-        # Prediction history for stability detection.
-        self.prediction_history_short = {}
-        self.prediction_history_long = {}
+    def load_models(self) -> None:
+        """Loads the XGBoost model, preprocessors, and transition matrix from the specified directory.
 
-    def load_models(self):
-        """
-        Load base models, meta-classifier, and associated objects from disk.
+        The method expects to find:
+          - "model.json" for the XGBoost model,
+          - "preprocessors.pkl" for the preprocessing objects, and
+          - "transition_matrix.pkl" for the transition matrix.
+
+        Raises:
+            ValueError: If `save_dir` is not specified.
         """
         if not self.save_dir:
             raise ValueError("Save directory not specified.")
 
-        self.model_short = xgb.Booster()
-        self.model_short.load_model(os.path.join(
-            self.save_dir, "model_short.json"))
-        with open(os.path.join(self.save_dir, "preprocessors_short.pkl"), "rb") as f:
-            self.preprocessors_short = pickle.load(f)
-        with open(os.path.join(self.save_dir, "transition_matrix_short.pkl"), "rb") as f:
-            self.transition_matrix_short = pickle.load(f)
+        model_path = os.path.join(self.save_dir, "model.json")
+        self.model = xgb.Booster()
+        self.model.load_model(model_path)
 
-        self.model_long = xgb.Booster()
-        self.model_long.load_model(os.path.join(
-            self.save_dir, "model_long.json"))
-        with open(os.path.join(self.save_dir, "preprocessors_long.pkl"), "rb") as f:
-            self.preprocessors_long = pickle.load(f)
-        with open(os.path.join(self.save_dir, "transition_matrix_long.pkl"), "rb") as f:
-            self.transition_matrix_long = pickle.load(f)
+        preprocessors_path = os.path.join(self.save_dir, "preprocessors.pkl")
+        with open(preprocessors_path, "rb") as f:
+            self.preprocessors = pickle.load(f)
 
-        # Optionally, load the meta-classifier and its transition matrix if available.
-        meta_clf_path = os.path.join(self.save_dir, "meta_clf.pkl")
-        meta_trans_path = os.path.join(
-            self.save_dir, "meta_transition_matrix.pkl")
-        if os.path.exists(meta_clf_path):
-            with open(meta_clf_path, "rb") as f:
-                self.meta_clf = pickle.load(f)
-        if os.path.exists(meta_trans_path):
-            with open(meta_trans_path, "rb") as f:
-                self.meta_transition_matrix = pickle.load(f)
+        transition_matrix_path = os.path.join(
+            self.save_dir, "transition_matrix.pkl")
+        with open(transition_matrix_path, "rb") as f:
+            self.transition_matrix = pickle.load(f)
 
-        print("[INFO] All models and associated objects have been loaded successfully.")
+    def _apply_preprocessors(
+        self, X: pd.DataFrame, preprocessors: Dict[str, Any]
+    ) -> np.ndarray:
+        """Applies the loaded preprocessors to the input data.
 
-    def _apply_preprocessors(self, X, preprocessors):
-        """
-        Apply loaded preprocessors to input data.
+        The method copies the input DataFrame, extracts the numerical features, applies the numerical
+        imputer, and then scales the features.
+
+        Args:
+            X (pd.DataFrame): Input DataFrame containing the numerical features.
+            preprocessors (Dict[str, Any]): Dictionary of preprocessor objects. Must include:
+                - 'num_imputer': for imputing missing values.
+                - 'scaler': for scaling the data.
+
+        Returns:
+            np.ndarray: The preprocessed numerical features as a NumPy array.
         """
         X_copy = X.copy()
         X_num = preprocessors['num_imputer'].transform(
@@ -719,220 +655,207 @@ class QForecasterPredictor:
         X_num = preprocessors['scaler'].transform(X_num)
         return X_num
 
-    def predict_native(self, model, preprocessors, X):
+    def predict_native(
+        self, model: xgb.Booster, preprocessors: Dict[str, Any], X: pd.DataFrame
+    ) -> np.ndarray:
+        """Generates predictions using the provided XGBoost model.
+
+        The input DataFrame is filtered to contain only numerical features, preprocessed, converted to an
+        XGBoost DMatrix, and then used to produce predictions.
+
+        Args:
+            model (xgb.Booster): The pre-trained XGBoost model.
+            preprocessors (Dict[str, Any]): Dictionary containing preprocessing objects.
+            X (pd.DataFrame): Input DataFrame from which predictions are to be generated.
+
+        Returns:
+            np.ndarray: An array of prediction probabilities or scores.
         """
-        Generate predictions using a loaded XGBoost model.
-        """
-        X = X[FEATURES]
+        X = X[self.numerical_features]
         X_processed = self._apply_preprocessors(X, preprocessors)
         dmatrix = xgb.DMatrix(X_processed)
         return model.predict(dmatrix)
 
-    def reset_accumulator(self):
-        """
-        Reset the internal accumulated dataframe and batch counter.
+    def reset_accumulator(self) -> None:
+        """Resets the accumulated data and batch counter.
+
+        This method clears the internal DataFrame that accumulates new data and resets the batch number to zero.
         """
         self.accumulated_data = None
         self.batch_num = 0
 
-    def is_prediction_stable(self, pred_list, stability_window=5, frequency_threshold=0.8, confidence_threshold=0.9):
-        """
-        Determine if the predictions in pred_list are stable.
+    def is_prediction_stable(
+        self,
+        pred_list: List[Tuple[int, int]],
+        stability_window: int = 5,
+        frequency_threshold: float = 0.8,
+        location_tolerance: int = 0
+    ) -> Tuple[bool, Optional[int]]:
+        """Determines if the prediction is stable based on its occurrence frequency and location consistency.
+
+        Each element in `pred_list` is a tuple consisting of (location, prediction). A prediction is deemed
+        stable if, among the last `stability_window` entries:
+          - It appears with a frequency at least equal to `frequency_threshold`, and
+          - The difference between the maximum and minimum locations does not exceed `location_tolerance`.
 
         Args:
-            pred_list (list): A list of tuples (prediction, confidence) for recent updates.
-            stability_window (int): The number of most recent predictions to consider.
-            frequency_threshold (float): Fraction of predictions that must agree.
-            confidence_threshold (float): Minimum average confidence required.
+            pred_list (List[Tuple[int, int]]): List of tuples where each tuple is (location, prediction).
+            stability_window (int, optional): Number of recent predictions to consider for stability. Defaults to 5.
+            frequency_threshold (float, optional): Required frequency fraction for stability. Defaults to 0.8.
+            location_tolerance (int, optional): Maximum allowed difference between locations for stability.
+                Defaults to 0.
 
         Returns:
-            (bool, stable_class): Tuple where bool indicates stability and stable_class is the converged prediction.
+            Tuple[bool, Optional[int]]:
+                - A boolean indicating if a stable prediction was found.
+                - The stable prediction class if stable, otherwise None.
         """
         if len(pred_list) < stability_window:
             return False, None
 
-        # Consider only the last 'stability_window' predictions.
         recent = pred_list[-stability_window:]
-        counts = {}
-        confidences = {}
-        for pred, conf in recent:
-            counts[pred] = counts.get(pred, 0) + 1
-            confidences.setdefault(pred, []).append(conf)
+        groups: Dict[int, Dict[str, Any]] = {}
+        for loc, pred in recent:
+            if pred not in groups:
+                groups[pred] = {'count': 0, 'locations': []}
+            groups[pred]['count'] += 1
+            groups[pred]['locations'].append(loc)
 
-        for pred, count in counts.items():
-            if count / stability_window >= frequency_threshold:
-                avg_conf = np.mean(confidences[pred])
-                if avg_conf >= confidence_threshold:
+        for pred, data in groups.items():
+            frequency = data['count'] / stability_window
+            if frequency >= frequency_threshold:
+                if max(data['locations']) - min(data['locations']) <= location_tolerance:
                     return True, pred
         return False, None
 
-    # --- Methods for model selection using the meta model ---
-    def adjust_confidence(self, base_confidence, transition_matrix, current_state):
-        """
-        Adjust the model's base confidence using the dynamic transition matrix.
+    def update_predictions(
+        self,
+        new_data: pd.DataFrame,
+        stability_window: int = 5,
+        frequency_threshold: float = 0.8,
+        confidence_threshold: float = 0.6
+    ) -> Dict[str, Any]:
+        """Accumulates new data, generates predictions, and assesses prediction stability.
+
+        This method accumulates the new batch of data, computes additional features, identifies the initial
+        fill point using the QForecasterDataprocessor methods, and runs predictions on the live data (i.e.,
+        data after the fill point). Predictions before the fill point are set to a no-fill class (0). The raw
+        predictions are then offset, and Viterbi decoding is applied. Finally, the prediction history is updated,
+        and stable predictions are determined based on recent history.
 
         Args:
-            base_confidence (float): The original confidence score.
-            transition_matrix (np.array): The dynamic transition matrix for the model.
-            current_state (int): Current state index (as determined by your system logic).
+            new_data (pd.DataFrame): New batch of data to be accumulated.
+            stability_window (int, optional): Number of recent predictions considered for stability. Defaults to 5.
+            frequency_threshold (float, optional): Required frequency fraction for a prediction to be stable.
+                Defaults to 0.8.
+            confidence_threshold (float, optional): Confidence threshold used as location tolerance in the stability
+                check. Defaults to 0.6.
 
         Returns:
-            float: Adjusted confidence score.
+            Dict[str, Any]: A dictionary containing:
+                - "status" (str): "waiting" if the fill has not yet started, "completed" otherwise.
+                - "pred" (np.ndarray): Array of predictions.
+                - "conf" (np.ndarray): Array of prediction confidences.
+                - "stable_predictions" (Dict[int, int]): Mapping from data index to stable prediction class.
+                - "accumulated_data" (pd.DataFrame): The accumulated DataFrame with computed features.
+                - "accumulated_count" (int): The total number of accumulated entries.
         """
-        # Example: Multiply base confidence by a weight derived from the transition matrix.
-        weight = transition_matrix[current_state].max()
-        return base_confidence * weight
-
-    def extract_meta_features(self, X, conf_short, conf_long, additional_info):
-        """
-        Extract meta features from the input data and confidence scores.
-        For model selection, we aggregate metrics across the batch into a single feature vector.
-
-        Args:
-            X (pd.DataFrame): Input data.
-            conf_short (float): Aggregate confidence score from the short model.
-            conf_long (float): Aggregate confidence score from the long model.
-            additional_info (dict): Additional aggregated statistics.
-
-        Returns:
-            np.array: A feature vector of shape (1, n_features) for meta model prediction.
-        """
-        features = np.array([[conf_short, conf_long,
-                              additional_info.get('stat_short', 0),
-                              additional_info.get('stat_long', 0)]])
-        return features
-
-    def select_model(self, X, current_state=None):
-        """
-        Use the meta-model to decide which base model (short or long) should be used.
-        Returns 0 for short model and 1 for long model.
-        """
-        # Override: if the time delta condition is met, choose the long model.
-        if QForecasterDataprocessor.find_time_delta(X) >= 0:
-            return 1  # Always select long model
-
-        # 1. Get predictions for both models.
-        prob_matrix_short = self.predict_native(
-            self.model_short, self.preprocessors_short, X)
-        prob_matrix_long = self.predict_native(
-            self.model_long, self.preprocessors_long, X)
-
-        # 2. Compute aggregate confidence scores.
-        conf_short = np.mean(np.max(prob_matrix_short, axis=1))
-        conf_long = np.mean(np.max(prob_matrix_long, axis=1))
-
-        # Adjust based on the current state if provided.
-        if current_state is not None:
-            conf_short = self.adjust_confidence(
-                conf_short, self.transition_matrix_short, current_state)
-            conf_long = self.adjust_confidence(
-                conf_long, self.transition_matrix_long, current_state)
-
-        # 3. Extract additional summary statistics.
-        additional_info = {
-            'stat_short': np.std(prob_matrix_short, axis=1).mean(),
-            'stat_long': np.std(prob_matrix_long, axis=1).mean()
-        }
-        features = self.extract_meta_features(
-            X, conf_short, conf_long, additional_info)
-
-        # 4. Use the meta-model (meta classifier) to decide which model is likely to perform better.
-        model_choice = self.meta_clf.predict(features)[0]
-        return model_choice
-
-    def update_predictions(self, new_data, ignore_before=0, stability_window=5,
-                           frequency_threshold=0.8, confidence_threshold=0.9, current_state=None):
-        """
-        Accumulate new data and run predictions in batches. The method updates prediction
-        histories for stability detection and uses the meta-model for base model selection.
-        """
-        # Initialize accumulator if needed.
+        # Accumulate new data.
         if self.accumulated_data is None:
             self.accumulated_data = pd.DataFrame(columns=new_data.columns)
-
-        # Append the new data.
         self.accumulated_data = pd.concat(
             [self.accumulated_data, new_data], ignore_index=True)
         current_count = len(self.accumulated_data)
+
+        # Compute additional features.
         self.accumulated_data = QForecasterDataprocessor.compute_additional_features(
             self.accumulated_data)
-        if current_count < self.batch_threshold:
-            print(
-                f"[INFO] Accumulated {current_count} entries so far; waiting for {self.batch_threshold} entries to run predictions.")
+
+        # Identify the initial fill point.
+        init_fill_point = QForecasterDataprocessor.init_fill_point(
+            self.accumulated_data, baseline_window=100, threshold_factor=10)
+
+        ch1_fill_point = QForecasterDataprocessor.ch1_point(
+            self.accumulated_data, init_fill_point)
+
+        # If fill hasn't started, report all data as no_fill (0).
+        if init_fill_point == -1:
+            predictions = np.zeros(current_count, dtype=int)
+            conf = np.zeros(current_count)
+            for i in range(current_count):
+                if i not in self.prediction_history:
+                    self.prediction_history[i] = []
+                self.prediction_history[i].append((i, 0))
             return {
                 "status": "waiting",
-                "accumulated_count": current_count,
+                "pred": predictions,
+                "conf": conf,
+                "stable_predictions": {},
                 "accumulated_data": self.accumulated_data,
-                "predictions": None
+                "accumulated_count": current_count
             }
 
+        # For data after the init_fill point, run prediction using Viterbi decoding.
+        predictions = np.zeros(current_count, dtype=int)
+        conf = np.zeros(current_count)
+
+        # Data before init_fill_point are set to no_fill (0).
+        for i in range(init_fill_point):
+            if i not in self.prediction_history:
+                self.prediction_history[i] = []
+            self.prediction_history[i].append((i, 0))
+
+        # Run prediction on live data (after init_fill_point).
+        X_live = self.accumulated_data[self.numerical_features].iloc[init_fill_point:]
+        prob_matrix = self.predict_native(
+            self.model, self.preprocessors, X_live)
+
+        # Perform Viterbi decoding.
+        ml_pred = QForecasterDataprocessor.viterbi_decode(
+            prob_matrix, self.transition_matrix)
+        ml_pred_offset = ml_pred + 1  # Offset raw predictions if needed.
+
+        predictions[init_fill_point:] = ml_pred_offset
+        last_init_fill_pred = np.flatnonzero(predictions)[-1]
+        if last_init_fill_pred < ch1_fill_point:
+            ch1_fill_point = last_init_fill_pred
+            predictions[init_fill_point:ch1_fill_point] = 1
+            if np.any(predictions == 2):
+                last_ch1_pred = np.flatnonzero(predictions == 2)[-1]
+                predictions[ch1_fill_point:last_ch1_pred] = 2
+        else:
+            predictions[init_fill_point:ch1_fill_point] = 1
+            if np.any(predictions == 2):
+                last_ch1_pred = np.flatnonzero(predictions == 2)[-1]
+                predictions[ch1_fill_point:last_ch1_pred] = 2
+
+        ml_conf = np.array([prob_matrix[i, ml_pred[i]]
+                            for i in range(len(ml_pred))])
+        conf[init_fill_point:] = ml_conf
+
+        # Update prediction history and check stability.
+        for idx, p in enumerate(ml_pred_offset, start=init_fill_point):
+            if idx not in self.prediction_history:
+                self.prediction_history[idx] = []
+            self.prediction_history[idx].append((idx, p))
+        stable_predictions: Dict[int, int] = {}
+        for idx, history in self.prediction_history.items():
+            stable, stable_class = self.is_prediction_stable(
+                history, stability_window, frequency_threshold, int(confidence_threshold))
+            if stable:
+                stable_predictions[idx] = stable_class
+
         self.batch_num += 1
-        print(
-            f"\n[INFO] Running predictions on batch {self.batch_num} with {current_count} entries.")
 
-        # Optionally ignore initial rows for stabilization (only on the first run).
-        if self.batch_num == 1 and current_count > ignore_before:
-            self.accumulated_data = self.accumulated_data.iloc[ignore_before:]
-
-        features = self.numerical_features
-        X_live = self.accumulated_data[features]
-
-        # Get predictions and probability matrices from both base models.
-        prob_matrix_short = self.predict_native(
-            self.model_short, self.preprocessors_short, X_live)
-        pred_short = QForecasterDataprocessor.viterbi_decode(
-            prob_matrix_short, self.transition_matrix_short)
-        prob_matrix_long = self.predict_native(
-            self.model_long, self.preprocessors_long, X_live)
-        pred_long = QForecasterDataprocessor.viterbi_decode(
-            prob_matrix_long, self.transition_matrix_long)
-
-        # Compute per-sample confidences for each base model.
-        conf_short = np.array([prob_matrix_short[i, pred_short[i]]
-                              for i in range(len(pred_short))])
-        conf_long = np.array([prob_matrix_long[i, pred_long[i]]
-                             for i in range(len(pred_long))])
-
-        # Update prediction history for each sample in this batch.
-        for i, (p_s, p_l, c_s, c_l) in enumerate(zip(pred_short, pred_long, conf_short, conf_long)):
-            if i not in self.prediction_history_short:
-                self.prediction_history_short[i] = []
-            self.prediction_history_short[i].append((p_s, c_s))
-            if i not in self.prediction_history_long:
-                self.prediction_history_long[i] = []
-            self.prediction_history_long[i].append((p_l, c_l))
-
-        # Use the meta-model based system to select the appropriate model.
-        # selected_model = self.select_model(X_live, current_state=current_state)
-        selected_model = 0
-        # Check stable predictions for both models separately.
-        stable_predictions_short = {}
-        for idx, history in self.prediction_history_short.items():
-            stable, stable_class = self.is_prediction_stable(
-                history, stability_window, frequency_threshold, confidence_threshold)
-            if stable:
-                stable_predictions_short[idx] = stable_class
-
-        stable_predictions_long = {}
-        for idx, history in self.prediction_history_long.items():
-            stable, stable_class = self.is_prediction_stable(
-                history, stability_window, frequency_threshold, confidence_threshold)
-            if stable:
-                stable_predictions_long[idx] = stable_class
-
-        # Capture the accumulated data for plotting before resetting.
-        data_for_plot = self.accumulated_data.copy()
         return {
             "status": "completed",
-            "selected_model": selected_model,  # 0 for short, 1 for long
-            "pred_short": pred_short,
-            "pred_long": pred_long,
-            "conf_short": conf_short,
-            "conf_long": conf_long,
-            "stable_predictions_short": stable_predictions_short,
-            "stable_predictions_long": stable_predictions_long,
-            "accumulated_data": data_for_plot,
-            "accumulated_count": current_count
+            "pred": predictions,
+            "conf": conf,
+            "stable_predictions": stable_predictions,
+            "accumulated_data": self.accumulated_data,
+            "accumulated_count": current_count,
+            "init_fill_point": init_fill_point,
+            "ch1_fill_point": ch1_fill_point,
         }
 
 
@@ -992,7 +915,7 @@ class QForecasterSimulator:
 
         # If a POI file is provided, extract the actual indices.
         if poi_file is not None:
-            self.actual_poi_indices = poi_file.values
+            self.actual_poi_indices = poi_file
         else:
             self.actual_poi_indices = np.array([])
 
@@ -1014,8 +937,7 @@ class QForecasterSimulator:
                 f"[INFO] Processing batch {batch_number} with {len(batch_data)} rows.")
 
             # Update predictions using the new batch.
-            results = self.predictor.update_predictions(
-                batch_data, ignore_before=self.ignore_before)
+            results = self.predictor.update_predictions(batch_data)
 
             # Update the live plot.
             self.plot_results(results, batch_number=batch_number)
@@ -1030,8 +952,6 @@ class QForecasterSimulator:
         """
         Updates the live plot with the normalized dissipation curve overlaid with
         background shading corresponding to contiguous predicted class regions.
-        Stable prediction regions (as determined by the model selection system) are overlaid
-        with darker shading. The plot is styled with a clean, minimalist aesthetic.
         """
         self.ax.cla()  # Clear previous plot
 
@@ -1050,6 +970,22 @@ class QForecasterSimulator:
             return
 
         x_dissipation = np.arange(len(accumulated_data))
+        init_fill_point = results['init_fill_point']
+        ch1_fill_point = results['ch1_fill_point']
+        ch2_fill_point = results['ch2_fill_point']
+
+        if init_fill_point > -1:
+            self.ax.axvline(init_fill_point, color='orange',
+                            label='Initial fill location')
+
+        if ch1_fill_point > -1:
+            self.ax.axvline(ch1_fill_point, color='brown',
+                            label='Channel 1 fill location')
+
+        # if ch2_fill_point > -1:
+        #     self.ax.axvline(ch2_fill_point, color='yellow',
+        #                     label='Channel 2 fill location')
+
         self.ax.plot(
             x_dissipation,
             accumulated_data["Dissipation"],
@@ -1059,11 +995,7 @@ class QForecasterSimulator:
             label='Dissipation Curve'
         )
 
-        # Use the model selection system to determine which base model's predictions to plot.
-        if results["selected_model"] == 0:
-            preds = np.array(results["pred_short"])
-        else:
-            preds = np.array(results["pred_long"])
+        preds = np.array(results["pred"])
 
         # Define mappings for class IDs to names and colors.
         class_names = {
@@ -1124,74 +1056,8 @@ class QForecasterSimulator:
                     label='Actual POI'
                 )
 
-       # Overlay stable prediction regions for the short model as darker shaded areas.
-        if "stable_predictions_short" in results and results["stable_predictions_short"] and results['selected_model'] == 0:
-            stable_dict = results["stable_predictions_short"]
-            stable_idxs = sorted(stable_dict.keys())
-            if stable_idxs:
-                segments = []
-                current_class = stable_dict[stable_idxs[0]]
-                seg_start = stable_idxs[0]
-                prev = stable_idxs[0]
-                # Group contiguous indices with the same stable class.
-                for idx in stable_idxs[1:]:
-                    if idx == prev + 1 and stable_dict[idx] == current_class:
-                        prev = idx
-                    else:
-                        segments.append((seg_start, prev, current_class))
-                        seg_start = idx
-                        prev = idx
-                        current_class = stable_dict[idx]
-                segments.append((seg_start, prev, current_class))
-                already_labeled = {}
-                for seg_start, seg_end, cls in segments:
-                    label = f"Stable Short: {class_names[cls]}" if cls not in already_labeled else None
-                    already_labeled[cls] = True
-                    self.ax.axvspan(
-                        seg_start, seg_end,
-                        color=class_colors.get(cls, '#000000'),
-                        alpha=0.6,  # darker for short model
-                        label=label
-                    )
+        # Removed stable prediction regions plotting as per request.
 
-        # Overlay stable prediction regions for the long model as lighter shaded areas.
-        if "stable_predictions_long" in results and results["stable_predictions_long"] and results['selected_model'] == 1:
-            stable_dict = results["stable_predictions_long"]
-            stable_idxs = sorted(stable_dict.keys())
-            if stable_idxs:
-                segments = []
-                current_class = stable_dict[stable_idxs[0]]
-                seg_start = stable_idxs[0]
-                prev = stable_idxs[0]
-                # Group contiguous indices with the same stable class.
-                for idx in stable_idxs[1:]:
-                    if idx == prev + 1 and stable_dict[idx] == current_class:
-                        prev = idx
-                    else:
-                        segments.append((seg_start, prev, current_class))
-                        seg_start = idx
-                        prev = idx
-                        current_class = stable_dict[idx]
-                segments.append((seg_start, prev, current_class))
-                already_labeled = {}
-                for seg_start, seg_end, cls in segments:
-                    label = f"Stable Long: {class_names[cls]}" if cls not in already_labeled else None
-                    already_labeled[cls] = True
-                    self.ax.axvspan(
-                        seg_start, seg_end,
-                        color=class_colors.get(cls, '#000000'),
-                        alpha=0.3,  # lighter for long model
-                        label=label
-                    )
-
-        model_name = "Short Model" if results["selected_model"] == 0 else "Long Model"
-        self.ax.text(
-            0.05, 0.95, f'Model: {model_name}',
-            transform=self.ax.transAxes,
-            fontsize=12, color='black',
-            verticalalignment='top',
-            bbox=dict(facecolor='white', alpha=0.5, edgecolor='none')
-        )
         self.ax.set_title(
             f'Dissipation Curve (Batch {batch_number})', fontsize=14, weight='medium')
         self.ax.set_xlabel('Data Index', fontsize=12)
@@ -1206,22 +1072,16 @@ class QForecasterSimulator:
 
 TESTING = True
 TRAINING = False
-
 # Main execution block.
 if __name__ == '__main__':
+    SAVE_DIR = r'QModel\SavedModels\forecaster_v3'
     if TRAINING:
-        train_dir = r'content\training_data\full_fill'
-        training_data_short, training_data_long = QForecasterDataprocessor.load_and_preprocess_data_split(
-            train_dir, required_runs=140)
-        meta_training_data = pd.concat(
-            [training_data_short, training_data_long], ignore_index=True)
+        train_dir = r'content\training_data'
+        training_data = QForecasterDataprocessor.load_and_preprocess_data(
+            train_dir, num_datasets=100)
 
-        qft = QForecasterTrainer(FEATURES, TARGET,
-                                 r'QModel\SavedModels\forecaster')
-        qft.train_base_models(training_data_short=training_data_short,
-                              training_data_long=training_data_long, tune=True)
-        qft.save_models()
-        qft.train_meta_model(meta_training_data)
+        qft = QForecasterTrainer(FEATURES, TARGET, SAVE_DIR)
+        qft.train_model(training_data=training_data, tune=True)
         qft.save_models()
 
     if TESTING:
@@ -1233,24 +1093,45 @@ if __name__ == '__main__':
             end = np.random.randint(0, len(dataset))
             end = random.randint(min(end, len(dataset)),
                                  max(end, len(dataset)))
-            random_slice = dataset.iloc[0:len(dataset)-1]
-            poi_file = pd.read_csv(poi_file, header=None)
+            random_slice = dataset.iloc[0:end]
+
+            # Load the POI file which is a flat list of 6 indices from the original dataset.
+            poi_df = pd.read_csv(poi_file, header=None)
+            poi_indices_original = poi_df.to_numpy().flatten()
+
+            # Use these indices to extract the corresponding relative times from the original dataset.
+            original_relative_times = dataset.loc[poi_indices_original,
+                                                  'Relative_time'].values
 
             predictor = QForecasterPredictor(
-                FEATURES, target='Fill', save_dir='QModel/SavedModels/forecaster/')
+                FEATURES, target=TARGET, save_dir=SAVE_DIR)
             # Ensure models and preprocessors are loaded.
             predictor.load_models()
 
             delay = dataset['Relative_time'].max() / len(random_slice)
-            random_slice = random_slice[random_slice["Relative_time"] >= 1.2]
-            random_slice = random_slice.iloc[::5]
-            # Create the simulator, now passing the poi_file.
+            random_slice = random_slice[random_slice["Relative_time"] >= random.uniform(
+                SPIN_UP_TIME[0], SPIN_UP_TIME[1])]
+            # Downsample the data.
+            random_slice = random_slice.iloc[::DOWNSAMPLE_FACTOR]
+
+            # Get the downsampled relative times.
+            downsampled_times = random_slice["Relative_time"].values
+
+            # For each original relative time, find the index in the downsampled data
+            # that has the closest relative time.
+            mapped_poi_indices = []
+            for orig_time in original_relative_times:
+                idx = np.abs(downsampled_times - orig_time).argmin()
+                mapped_poi_indices.append(idx)
+            mapped_poi_indices = np.array(mapped_poi_indices)
+
+            # Create the simulator, passing the mapped POI indices.
             simulator = QForecasterSimulator(
                 predictor,
                 random_slice,
-                poi_file=poi_file,
+                poi_file=mapped_poi_indices,
                 ignore_before=50,
-                delay=delay
+                delay=delay * 5
             )
 
             # Run the simulation.
