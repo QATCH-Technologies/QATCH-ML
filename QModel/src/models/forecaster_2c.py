@@ -14,6 +14,8 @@ import pickle
 import random
 from typing import Any, Dict, List, Optional, Tuple
 from sklearn.ensemble import IsolationForest
+import ruptures as rpt
+
 FEATURES = [
     'Dissipation',
     'Dissipation_rolling_mean',
@@ -111,8 +113,7 @@ class QForecasterDataprocessor:
                 window_length = diss_length if diss_length % 2 == 1 else diss_length - 1
 
             polyorder = 2 if window_length > 2 else 1
-            # df['Dissipation'] = savgol_filter(
-            #     df['Dissipation'].values, window_length=window_length, polyorder=polyorder)
+
             df['Dissipation_rolling_mean'] = df['Dissipation'].rolling(
                 window=window, min_periods=1).mean()
             df['Dissipation_rolling_median'] = df['Dissipation'].rolling(
@@ -129,12 +130,10 @@ class QForecasterDataprocessor:
                 df['Dissipation_ewm']
             df['Dissipation_envelope'] = np.abs(
                 hilbert(df['Dissipation'].values))
+
             if "Difference" not in df.columns:
                 df['Difference'] = [0] * len(df)
-            # df['Resonance_Frequency'] = savgol_filter(
-            #     df['Resonance_Frequency'].values, window_length=window_length, polyorder=polyorder)
 
-            # Compute difference curve
             xs = df["Relative_time"]
             i = next((x for x, t in enumerate(xs) if t > 0.5), None)
             j = next((x for x, t in enumerate(xs) if t > 2.5), None)
@@ -150,10 +149,35 @@ class QForecasterDataprocessor:
                 difference_factor = 3
                 df["Difference"] = df["ys_freq"] - \
                     difference_factor * df["ys_diss"]
-            # df['Difference'] = savgol_filter(
-            #     df['Difference'].values, window_length=5, polyorder=1)
+
             df.replace([np.inf, -np.inf], np.nan, inplace=True)
             df.fillna(0, inplace=True)
+
+            # --- New Code for Combo Signal ---
+            # Normalize 'Difference', 'Dissipation', and 'Resonance_Frequency' to 0-1
+            norm_diff = (df['Difference'] - df['Difference'].min()) / \
+                (df['Difference'].max() - df['Difference'].min())
+            norm_diss = (df['Dissipation'] - df['Dissipation'].min()) / \
+                (df['Dissipation'].max() - df['Dissipation'].min())
+            norm_freq = (df['Resonance_Frequency'] - df['Resonance_Frequency'].min()) / (
+                df['Resonance_Frequency'].max() - df['Resonance_Frequency'].min())
+
+            # Sum the normalized signals
+            combo = norm_diff + norm_diss + norm_freq
+
+            # Normalize the combo signal to 0-1
+            combo_norm = (combo - combo.min()) / (combo.max() - combo.min())
+
+            # Add the new signal to the dataframe
+            df['Combo'] = combo_norm
+
+            # --- Apply Smoothing to the Combo Signal ---
+            # Using exponential smoothing with a fixed span ensures that as new data accumulates,
+            # the historical smoothed values remain stable.
+            smoothing_span = 10  # Adjust as needed for the level of smoothing desired
+            df['Combo_smoothed'] = df['Combo'].ewm(
+                span=smoothing_span, adjust=False).mean()
+            # --- End New Code ---
 
             return df
         except Exception as e:
@@ -1092,15 +1116,18 @@ class QForecasterSimulator:
         if results.get("status") == "waiting":
             self.ax.set_title(
                 f"Waiting for more data (Batch {batch_number})", fontsize=14)
-            if norm_diff is not None:
-                self.ax.plot(x, norm_diff, linestyle=":", color="#333333",
-                             linewidth=1.5, label="Difference Curve")
-            if norm_dissipation is not None:
-                self.ax.plot(x, norm_dissipation, linestyle="-",
-                             color="blue", linewidth=1.5, label="Dissipation Curve")
-            if norm_res_freq is not None:
-                self.ax.plot(x, norm_res_freq, linestyle="--", color="red",
-                             linewidth=1.5, label="Resonance Frequency")
+            self.ax.plot(x, accumulated_data['Combo_smoothed'].values, linestyle="--", color="red",
+                         linewidth=1.5, label="combo")
+
+            # if norm_diff is not None:
+            #     self.ax.plot(x, norm_diff, linestyle=":", color="#333333",
+            #                  linewidth=1.5, label="Difference Curve")
+            # if norm_dissipation is not None:
+            #     self.ax.plot(x, norm_dissipation, linestyle="-",
+            #                  color="blue", linewidth=1.5, label="Dissipation Curve")
+            # if norm_res_freq is not None:
+            #     self.ax.plot(x, norm_res_freq, linestyle="--", color="red",
+            #                  linewidth=1.5, label="Resonance Frequency")
             self.fig.canvas.draw()
             self.fig.canvas.flush_events()
             return
@@ -1131,22 +1158,18 @@ class QForecasterSimulator:
             self.ax.axvline(exit_fill_point, color="tan",
                             label="Exit location")
 
-        # Plot the normalized curves.
-        if norm_diff is not None:
-            self.ax.plot(x, norm_diff, linestyle=":", color="#333333",
-                         linewidth=1.5, label="Difference Curve")
-        if norm_dissipation is not None:
-            self.ax.plot(x, norm_dissipation, linestyle="-",
-                         color="blue", linewidth=1.5, label="Dissipation Curve")
-        if norm_res_freq is not None:
-            self.ax.plot(x, norm_res_freq, linestyle="--", color="red",
-                         linewidth=1.5, label="Resonance Frequency")
+        # # Plot the normalized curves.
+        # if norm_diff is not None:
+        #     self.ax.plot(x, norm_diff, linestyle=":", color="#333333",
+        #                  linewidth=1.5, label="Difference Curve")
+        # if norm_dissipation is not None:
+        #     self.ax.plot(x, norm_dissipation, linestyle="-",
+        #                  color="blue", linewidth=1.5, label="Dissipation Curve")
+        # if norm_res_freq is not None:
+        #     self.ax.plot(x, norm_res_freq, linestyle="--", color="red",
 
-        # Detect and plot peaks on the normalized Difference curve.
-        if norm_diff is not None:
-            diff = norm_diff.values
-            peaks, _ = find_peaks(diff, distance=100)
-            self.ax.scatter(peaks, diff[peaks], color='blue')
+        self.ax.plot(x, accumulated_data['Combo_smoothed'].values, linestyle="--", color="red",
+                     linewidth=1.5, label="combo")
 
         # Overlay shaded regions for predicted class regions.
         preds = np.array(results["pred"])
@@ -1173,13 +1196,31 @@ class QForecasterSimulator:
             label = class_names[current_class] if current_class not in already_labeled else None
             self.ax.axvspan(start_idx, end_idx, color=class_colors.get(
                 current_class, "#cccccc"), alpha=0.3, label=label)
+        combo_copy = accumulated_data['Combo_smoothed'].values
+        combo = accumulated_data['Combo_smoothed'].reset_index(drop=True)
+        combo.drop(columns=['index'])
+        data = combo.values
 
+        # Reshape data for ruptures (n_samples x 1)
+        data_reshaped = data.reshape(-1, 1)
+        # Create a change point detection model with a linear assumption
+        algo = rpt.Pelt(model="l2").fit(data_reshaped)
+        # The penalty value can be tuned depending on the data; higher penalty means fewer change points.
+        change_points = algo.predict(pen=2)
+
+        for val in change_points:
+            if val > len(combo) - 1:
+                change_points.remove(val)
+        print(change_points)
+        if change_points is not None:
+            self.ax.scatter(
+                change_points, combo_copy[change_points], marker='x')
         # Scatter actual POI indices using normalized Difference values.
-        if self.actual_poi_indices.size > 0 and norm_diff is not None:
+        if self.actual_poi_indices.size > 0 and combo is not None:
             valid_actual_indices = [
                 int(idx) for idx in self.actual_poi_indices if idx < len(accumulated_data)]
             if valid_actual_indices:
-                y_actual = norm_diff.iloc[valid_actual_indices]
+                y_actual = combo.iloc[valid_actual_indices]
                 self.ax.scatter(valid_actual_indices, y_actual, color="#2ca02c", marker="o", s=50,
                                 label=f"Actual POI {self.actual_poi_indices.size}")
 
