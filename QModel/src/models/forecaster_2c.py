@@ -1,7 +1,5 @@
 from hyperopt import fmin, tpe, hp, STATUS_OK, Trials
-from scipy.signal import hilbert
-from scipy.signal import savgol_filter
-from scipy.signal import hilbert, savgol_filter
+from scipy.signal import hilbert, savgol_filter, find_peaks
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler
 import os
@@ -15,7 +13,7 @@ from hyperopt import fmin, tpe, hp, Trials, STATUS_OK
 import pickle
 import random
 from typing import Any, Dict, List, Optional, Tuple
-
+from sklearn.ensemble import IsolationForest
 FEATURES = [
     'Dissipation',
     'Dissipation_rolling_mean',
@@ -113,8 +111,8 @@ class QForecasterDataprocessor:
                 window_length = diss_length if diss_length % 2 == 1 else diss_length - 1
 
             polyorder = 2 if window_length > 2 else 1
-            df['Dissipation'] = savgol_filter(
-                df['Dissipation'].values, window_length=window_length, polyorder=polyorder)
+            # df['Dissipation'] = savgol_filter(
+            #     df['Dissipation'].values, window_length=window_length, polyorder=polyorder)
             df['Dissipation_rolling_mean'] = df['Dissipation'].rolling(
                 window=window, min_periods=1).mean()
             df['Dissipation_rolling_median'] = df['Dissipation'].rolling(
@@ -131,6 +129,10 @@ class QForecasterDataprocessor:
                 df['Dissipation_ewm']
             df['Dissipation_envelope'] = np.abs(
                 hilbert(df['Dissipation'].values))
+            if "Difference" not in df.columns:
+                df['Difference'] = [0] * len(df)
+            # df['Resonance_Frequency'] = savgol_filter(
+            #     df['Resonance_Frequency'].values, window_length=window_length, polyorder=polyorder)
 
             # Compute difference curve
             xs = df["Relative_time"]
@@ -145,10 +147,11 @@ class QForecasterDataprocessor:
                                  avg_dissipation) * avg_resonance_frequency / 2
                 df["ys_freq"] = avg_resonance_frequency - \
                     df["Resonance_Frequency"]
-                difference_factor = 1  # Default value; can be made dynamic
+                difference_factor = 3
                 df["Difference"] = df["ys_freq"] - \
                     difference_factor * df["ys_diss"]
-
+            # df['Difference'] = savgol_filter(
+            #     df['Difference'].values, window_length=5, polyorder=1)
             df.replace([np.inf, -np.inf], np.nan, inplace=True)
             df.fillna(0, inplace=True)
 
@@ -275,24 +278,11 @@ class QForecasterDataprocessor:
 
     @staticmethod
     def init_fill_point(
-        df: pd.DataFrame, baseline_window: int = 10, threshold_factor: float = 3.0
+        df: pd.DataFrame, baseline_window: int = 10, threshold_factor: float = 3
     ) -> int:
-        """
-        Identify the first index in the Dissipation column where a significant increase
-        occurs relative to the initial baseline noise.
-
-        The baseline is estimated using the first `baseline_window` samples.
-        A significant increase is defined as a Dissipation value exceeding:
-            baseline_mean + threshold_factor * baseline_std
-
-        Args:
-            df (pd.DataFrame): DataFrame containing a 'Dissipation' column.
-            baseline_window (int): Number of initial samples used to compute the baseline.
-            threshold_factor (float): Multiplier for the baseline standard deviation.
-
-        Returns:
-            int: The index of the first significant increase, or -1 if not found.
-        """
+        # Check necessary columns exist
+        if 'Difference' not in df.columns:
+            raise ValueError("Difference column not found in DataFrame.")
         if 'Resonance_Frequency' not in df.columns:
             raise ValueError(
                 "Resonance_Frequency column not found in DataFrame.")
@@ -302,15 +292,30 @@ class QForecasterDataprocessor:
         if df['Relative_time'].max() < 3.0:
             return -1
 
+        # Calculate baseline statistics for Difference
         baseline_values = df['Resonance_Frequency'].iloc[:baseline_window]
         baseline_mean = baseline_values.mean()
         baseline_std = baseline_values.std()
         threshold = baseline_mean - threshold_factor * baseline_std
         dissipation = df['Resonance_Frequency'].values
-
+        start_index = None
         for idx, value in enumerate(dissipation):
             if value < threshold:
+                start_index = idx
+                break
+
+        # If no decrease is detected, return -1
+        if start_index is None:
+            return -1
+
+        # Search for a trough in the 'Difference' column starting from the detected index
+        difference = df['Difference'].values
+        for idx in range(max(1, start_index), len(difference) - 1):
+            if (difference[idx] < threshold and
+                difference[idx] < difference[idx - 1] and
+                    difference[idx] < difference[idx + 1]):
                 return idx
+
         return -1
 
     @staticmethod
@@ -354,108 +359,93 @@ class QForecasterDataprocessor:
 
         # Compute the slope (first difference) array.
         slopes = np.diff(dissipation)
-
+        rb_idx = -1
         # Iterate over candidate indices (using dissipation indices)
         # Note: slope[i] corresponds to the difference dissipation[i+1]-dissipation[i].
         for i in range(min_idx, n - 1):
             # Check if the slope decreases relative to the previous slope.
             if slopes[i] < slopes[i - 1]:
                 # i is the index in dissipation where the slope starts to drop.
-                return i
-
-        return -1
+                rb_idx = i
+        slice = df['Difference'].values
+        return -1 if rb_idx < 0 else np.argmax(slice[init_fill_idx:rb_idx]) + init_fill_idx
 
     @staticmethod
-    def ch2_point(df, init_fill_point, ch1_fill_point, rolling_window=20, std_threshold=1e-7):
-        """
-        Finds the index where ch2_fill_point (blue line) occurs after ch1_fill_point (red line).
-        - ch2_fill_point is detected at the start of the next plateau after an increase.
-        - Ensures it occurs near 3x the 'Relative_time' difference between init_fill_point and ch1_fill_point.
-        - Checks if the dataframe has even reached the expected Relative_time before searching.
+    def ch2_point(df, init_fill_point, ch1_fill_point, anomaly_indices):
 
-        Parameters:
-            df (pd.DataFrame): Dataframe with 'Dissipation' and 'Resonance_Frequency'.
-            init_fill_point (int): Index of init_fill_point (initial fill location).
-            ch1_fill_point (int): Index of ch1_fill_point (red line).
-            rolling_window (int): Window size for detecting plateaus.
-            std_threshold (float): Standard deviation threshold for plateau detection.
-
-        Returns:
-            int: Index of ch2_fill_point (blue line) or -1 if not found.
-        """
         if ch1_fill_point == -1 or init_fill_point == -1:
-            print(
-                "ch1_fill_point or init_fill_point not found. Cannot detect ch2_fill_point.")
             return -1
 
         # Compute expected Relative_time for ch2_fill_point
         time_diff = df.loc[ch1_fill_point, "Relative_time"] - \
             df.loc[init_fill_point, "Relative_time"]
         expected_relative_time = df.loc[ch1_fill_point,
-                                        "Relative_time"] + 3 * time_diff
+                                        "Relative_time"] + 5 * time_diff
 
         # Check if the dataframe has reached the expected Relative_time
         max_relative_time = df["Relative_time"].max()
         if max_relative_time < expected_relative_time:
-            print(
-                f"Dataframe has not reached expected Relative_time {expected_relative_time:.2f}. Returning -1.")
             return -1
 
-        # Compute rate of change and rolling statistics
-        df["Dissipation_diff"] = df["Dissipation"].diff()
-        df["Dissipation_rolling_std"] = df["Dissipation"].rolling(
-            rolling_window).std()
+        expected_index = df[df["Relative_time"]
+                            >= expected_relative_time].index.min()
 
-        # Search AFTER ch1_fill_point
-        post_ch1_df = df.loc[ch1_fill_point+1:].copy()
+        # If there are any anomalous indices, select those that are after the expected_index.
+        # if anomaly_indices is not None:
+        #     anomalies_after_expected = [
+        #         idx for idx in anomaly_indices if idx > expected_index]
+        #     if anomalies_after_expected:
+        #         nearest_anomaly = min(
+        #             anomalies_after_expected, key=lambda x: x - expected_index)
+        #         return nearest_anomaly
 
-        # Find the end of the first plateau
-        first_plateau_end = post_ch1_df[post_ch1_df["Dissipation_rolling_std"]
-                                        < std_threshold].index.min()
+        # If no valid anomaly is found, return the expected_index.
+        return expected_index
 
-        if first_plateau_end is None or pd.isna(first_plateau_end):
-            print("No first plateau detected. Returning -1.")
-            return df[df["Relative_time"] >= expected_relative_time].index.min()
+    @staticmethod
+    def ch3_point(df, init_fill_point, ch1_fill_point, anomaly_indices):
 
-        # Find the first significant increase after the plateau
-        threshold_increase = post_ch1_df["Dissipation_diff"].abs().mean() * 5
-        increase_index = post_ch1_df[post_ch1_df["Dissipation_diff"]
-                                     > threshold_increase].index.min()
+        if ch1_fill_point == -1 or init_fill_point == -1:
+            return -1
 
-        if increase_index is None or pd.isna(increase_index) or increase_index < first_plateau_end:
-            print(
-                "No significant increase detected after the first plateau. Returning -1.")
-            return df[df["Relative_time"] >= expected_relative_time].index.min()
+        # Compute expected Relative_time for ch2_fill_point
+        time_diff = df.loc[ch1_fill_point, "Relative_time"] - \
+            df.loc[init_fill_point, "Relative_time"]
+        expected_relative_time = df.loc[ch1_fill_point,
+                                        "Relative_time"] + 10 * time_diff
 
-        # Fix: Apply the filter BEFORE slicing to avoid reindexing warnings
-        plateau_candidates = post_ch1_df[post_ch1_df["Dissipation_rolling_std"] < std_threshold]
-        plateau_candidates = plateau_candidates.loc[increase_index:]
+        # Check if the dataframe has reached the expected Relative_time
+        max_relative_time = df["Relative_time"].max()
+        if max_relative_time < expected_relative_time:
+            return -1
 
-        if plateau_candidates.empty:
-            print("No second plateau detected. Returning -1.")
-            return df[df["Relative_time"] >= expected_relative_time].index.min()
+        expected_index = df[df["Relative_time"]
+                            >= expected_relative_time].index.min()
 
-        next_plateau_start = plateau_candidates.index.min()
+        # if anomaly_indices is not None:
+        #     anomalies_after_expected = [
+        #         idx for idx in anomaly_indices if idx > expected_index]
+        #     if anomalies_after_expected is not None:
+        #         nearest_anomaly = min(
+        #             anomaly_indices, key=lambda x: abs(x - expected_index))
+        #         return nearest_anomaly
 
-        if next_plateau_start is None or pd.isna(next_plateau_start):
-            print("No valid next plateau start detected. Returning -1.")
-            return df[df["Relative_time"] >= expected_relative_time].index.min()
-        # Ensure ch2_fill_point occurs near the expected Relative_time
-        relative_time_diff = abs(
-            df.loc[next_plateau_start, "Relative_time"] - expected_relative_time)
+        # If no anomalies are found, return the expected_index.
+        return expected_index
 
-        # Define a tolerance window (adjustable)
-        time_tolerance = time_diff * 0.5  # Allow 50% deviation from the expected time
+    def exit_point(df, ch3_fill_point, threshold):
+        if ch3_fill_point == -1:
+            return -1
 
-        if relative_time_diff > time_tolerance:
-            print(
-                f"Detected ch2_fill_point at index {next_plateau_start}, but it's too far from expected time. Returning expected index.")
+        if ch3_fill_point < 0 or ch3_fill_point >= len(df) - 1:
+            return -1
+        for i in range(ch3_fill_point + 1, len(df)):
+            change = df.loc[i, "Difference"] - df.loc[i - 1, "Difference"]
+            print(change)
+            if abs(change) >= threshold:
+                return i
 
-            return df[df["Relative_time"] >= expected_relative_time].index.min()
-
-        return next_plateau_start
-
-
+        return -1
 ###############################################################################
 # Trainer Class: Handles model training, hyperparameter tuning, and saving.
 ###############################################################################
@@ -677,6 +667,12 @@ class QForecasterPredictor:
         self.batch_num: int = 0
         self.prediction_history: Dict[int, List[Tuple[int, int]]] = {}
 
+        self.init_fill_points = []
+        self.ch1_fill_points = []
+        self.ch2_fill_points = []
+        self.ch3_fill_points = []
+        self.exit_fill_points = []
+
     def load_models(self) -> None:
         """Loads the XGBoost model, preprocessors, and transition matrix from the specified directory.
 
@@ -820,14 +816,45 @@ class QForecasterPredictor:
         self.accumulated_data = QForecasterDataprocessor.compute_additional_features(
             self.accumulated_data)
 
-        # Identify initial fill points
         init_fill_point = QForecasterDataprocessor.init_fill_point(
             self.accumulated_data, baseline_window=100, threshold_factor=10)
         ch1_fill_point = QForecasterDataprocessor.ch1_point(
             self.accumulated_data, init_fill_point)
-        ch2_fill_point = QForecasterDataprocessor.ch2_point(
-            self.accumulated_data, init_fill_point, ch1_fill_point)
+        diff = self.accumulated_data['Difference'].values
+        # --- Robust Anomaly Detection using IsolationForest ---
+        diff = diff[ch1_fill_point:].reshape(-1, 1)
+        ch2_fill_point = -1
+        anomaly_indices_2 = []
+        if ch1_fill_point != -1 and len(diff) > 0:
+            clf = IsolationForest(contamination=0.10, random_state=42)
+            clf.fit(diff)
+            anomaly_flags = clf.predict(diff)
+            anomaly_indices_2 = np.where(
+                anomaly_flags == -1)[0] + ch1_fill_point
+            ch2_fill_point = QForecasterDataprocessor.ch2_point(
+                self.accumulated_data, init_fill_point, ch1_fill_point, anomaly_indices_2)
 
+        ch3_fill_point = -1
+        diff = diff[ch2_fill_point:].reshape(-1, 1)
+        anomaly_indices_3 = []
+        if ch2_fill_point != -1 and len(diff) > 0:
+            # Set contamination to the expected fraction of anomalies (adjust as needed)
+            clf = IsolationForest(contamination=0.1, random_state=42)
+            clf.fit(diff)
+            anomaly_flags = clf.predict(diff)
+            anomaly_indices_3 = np.where(
+                anomaly_flags == -1)[0] + ch2_fill_point
+            ch3_fill_point = QForecasterDataprocessor.ch3_point(
+                self.accumulated_data, init_fill_point, ch1_fill_point, anomaly_indices_3)
+        exit_fill_point = QForecasterDataprocessor.exit_point(
+            self.accumulated_data, ch3_fill_point, threshold=0)
+
+        # Track the indices each time update_predictions is called
+        self.init_fill_points.append(init_fill_point)
+        self.ch1_fill_points.append(ch1_fill_point)
+        self.ch2_fill_points.append(ch2_fill_point)
+        self.ch3_fill_points.append(ch3_fill_point)
+        self.exit_fill_points.append(exit_fill_point)
         # If no fill has started, return waiting status
         if init_fill_point == -1:
             return self._return_waiting_state(current_count)
@@ -842,6 +869,17 @@ class QForecasterPredictor:
 
         self.batch_num += 1
 
+        def safe_average(values):
+            # Filter out -1 values if needed; otherwise, use all values
+            valid_values = [v for v in values if v != -1]
+            return np.median(valid_values) if valid_values else -1
+
+        avg_init = safe_average(self.init_fill_points)
+        avg_ch1 = safe_average(self.ch1_fill_points)
+        avg_ch2 = safe_average(self.ch2_fill_points)
+        avg_ch3 = safe_average(self.ch3_fill_points)
+        avg_exit = safe_average(self.exit_fill_points)
+
         return {
             "status": "completed",
             "pred": predictions,
@@ -849,9 +887,13 @@ class QForecasterPredictor:
             "stable_predictions": stable_predictions,
             "accumulated_data": self.accumulated_data,
             "accumulated_count": current_count,
-            "init_fill_point": init_fill_point,
-            "ch1_fill_point": ch1_fill_point,
-            "ch2_fill_point": ch2_fill_point,
+            "init_fill_point": avg_init,
+            "ch1_fill_point": avg_ch1,
+            "ch2_fill_point": avg_ch2,
+            "ch3_fill_point": avg_ch3,
+            "exit_fill_point": avg_exit,
+            'a_2': anomaly_indices_2,
+            'a_3': anomaly_indices_3,
         }
 
     # ------------------ Helper Methods ------------------
@@ -1001,8 +1043,8 @@ class QForecasterSimulator:
         batch_number = 0
         for batch_data in simulate_serial_stream_from_loaded(self.dataset):
             batch_number += 1
-            print(
-                f"[INFO] Processing batch {batch_number} with {len(batch_data)} rows.")
+            # print(
+            #     f"[INFO] Processing batch {batch_number} with {len(batch_data)} rows.")
 
             # Update predictions using the new batch.
             results = self.predictor.update_predictions(batch_data)
@@ -1018,8 +1060,9 @@ class QForecasterSimulator:
 
     def plot_results(self, results: dict, batch_number: int):
         """
-        Updates the live plot with the normalized dissipation curve overlaid with
-        background shading corresponding to contiguous predicted class regions.
+        Updates the live plot with the normalized curves for Difference, 
+        Dissipation, and Resonance_Frequency. Also overlays background 
+        shading for predicted class regions and plots anomalous points.
         """
         self.ax.cla()  # Clear previous plot
 
@@ -1028,28 +1071,50 @@ class QForecasterSimulator:
             print("[WARN] No accumulated data available for plotting.")
             return
 
-        x_dissipation = np.arange(len(accumulated_data))
+        # Create an x-axis for plotting
+        x = np.arange(len(accumulated_data))
 
+        # Helper function to normalize a pandas Series between 0 and 1.
+        def normalize(series):
+            min_val = series.min()
+            max_val = series.max()
+            return (series - min_val) / (max_val - min_val) if max_val - min_val != 0 else series
+
+        # Compute normalized curves if available in the DataFrame.
+        norm_diff = normalize(
+            accumulated_data["Difference"]) if "Difference" in accumulated_data.columns else None
+        norm_dissipation = normalize(
+            accumulated_data["Dissipation"]) if "Dissipation" in accumulated_data.columns else None
+        norm_res_freq = normalize(
+            accumulated_data["Resonance_Frequency"]) if "Resonance_Frequency" in accumulated_data.columns else None
+
+        # If waiting for more data, plot the normalized curves and exit.
         if results.get("status") == "waiting":
             self.ax.set_title(
                 f"Waiting for more data (Batch {batch_number})", fontsize=14)
-            self.ax.plot(
-                x_dissipation,
-                accumulated_data["Dissipation"],
-                linestyle=":",
-                color="#333333",
-                linewidth=1.5,
-                label="Dissipation Curve",
-            )
+            if norm_diff is not None:
+                self.ax.plot(x, norm_diff, linestyle=":", color="#333333",
+                             linewidth=1.5, label="Difference Curve")
+            if norm_dissipation is not None:
+                self.ax.plot(x, norm_dissipation, linestyle="-",
+                             color="blue", linewidth=1.5, label="Dissipation Curve")
+            if norm_res_freq is not None:
+                self.ax.plot(x, norm_res_freq, linestyle="--", color="red",
+                             linewidth=1.5, label="Resonance Frequency")
             self.fig.canvas.draw()
             self.fig.canvas.flush_events()
             return
 
+        # Retrieve fill points and other markers from results.
         init_fill_point = results["init_fill_point"]
         ch1_fill_point = results["ch1_fill_point"]
         ch2_fill_point = results["ch2_fill_point"]
+        ch3_fill_point = results["ch3_fill_point"]
+        exit_fill_point = results['exit_fill_point']
+        a_2 = results['a_2']
+        a_3 = results['a_3']
 
-        # Vertical lines for fill points
+        # Plot vertical lines for fill points.
         if init_fill_point > -1:
             self.ax.axvline(init_fill_point, color="orange",
                             label="Initial fill location")
@@ -1059,27 +1124,37 @@ class QForecasterSimulator:
         if ch2_fill_point > -1:
             self.ax.axvline(ch2_fill_point, color="red",
                             label="Channel 2 fill location")
+        if ch3_fill_point > -1:
+            self.ax.axvline(ch3_fill_point, color="black",
+                            label="Channel 3 fill location")
+        if exit_fill_point > -1:
+            self.ax.axvline(exit_fill_point, color="tan",
+                            label="Exit location")
 
-        # Plot Dissipation Curve
-        self.ax.plot(
-            x_dissipation,
-            accumulated_data["Difference"],
-            linestyle=":",
-            color="#333333",
-            linewidth=1.5,
-            label="Dissipation Curve",
-        )
+        # Plot the normalized curves.
+        if norm_diff is not None:
+            self.ax.plot(x, norm_diff, linestyle=":", color="#333333",
+                         linewidth=1.5, label="Difference Curve")
+        if norm_dissipation is not None:
+            self.ax.plot(x, norm_dissipation, linestyle="-",
+                         color="blue", linewidth=1.5, label="Dissipation Curve")
+        if norm_res_freq is not None:
+            self.ax.plot(x, norm_res_freq, linestyle="--", color="red",
+                         linewidth=1.5, label="Resonance Frequency")
 
+        # Detect and plot peaks on the normalized Difference curve.
+        if norm_diff is not None:
+            diff = norm_diff.values
+            peaks, _ = find_peaks(diff, distance=100)
+            self.ax.scatter(peaks, diff[peaks], color='blue')
+
+        # Overlay shaded regions for predicted class regions.
         preds = np.array(results["pred"])
-        stable_preds = results.get("stable_predictions", {})
-
-        # Define class name and color mappings
         class_names = {0: "no_fill", 1: "initial_fill",
                        2: "channel_1", 3: "channel_2", 4: "full_fill"}
         class_colors = {0: "#d3d3d3", 1: "#a6cee3",
                         2: "#b2df8a", 3: "#fdbf6f", 4: "#fb9a99"}
 
-        # Overlay shaded regions for predicted class regions
         if len(preds) > 0:
             already_labeled = {}
             current_class = preds[0]
@@ -1089,72 +1164,34 @@ class QForecasterSimulator:
                     end_idx = i - 1
                     label = class_names[current_class] if current_class not in already_labeled else None
                     already_labeled[current_class] = True
-                    self.ax.axvspan(
-                        start_idx,
-                        end_idx,
-                        color=class_colors.get(current_class, "#cccccc"),
-                        alpha=0.3,
-                        label=label,
-                    )
+                    self.ax.axvspan(start_idx, end_idx, color=class_colors.get(
+                        current_class, "#cccccc"), alpha=0.3, label=label)
                     current_class = preds[i]
                     start_idx = i
-            # Shade the final segment
+            # Shade the final segment.
             end_idx = len(preds) - 1
             label = class_names[current_class] if current_class not in already_labeled else None
-            self.ax.axvspan(
-                start_idx,
-                end_idx,
-                color=class_colors.get(current_class, "#cccccc"),
-                alpha=0.3,
-                label=label,
-            )
+            self.ax.axvspan(start_idx, end_idx, color=class_colors.get(
+                current_class, "#cccccc"), alpha=0.3, label=label)
 
-        # Scatter plot stable predictions
-        if stable_preds:
-            stable_indices = list(stable_preds.keys())
-            stable_labels = list(stable_preds.values())
-
-            # Ensure indices are within bounds
-            stable_indices = [
-                idx for idx in stable_indices if idx < len(accumulated_data)]
-            stable_labels = [stable_preds[idx] for idx in stable_indices]
-
-            if stable_indices:
-                y_stable = accumulated_data["Dissipation"].iloc[stable_indices]
-                self.ax.scatter(
-                    stable_indices,
-                    y_stable,
-                    color="blue",
-                    marker="s",
-                    s=50,
-                    label="Stable Predictions",
-                    edgecolor="black",
-                    linewidth=0.8,
-                )
-
-        # Scatter actual POI indices
-        if self.actual_poi_indices.size > 0:
+        # Scatter actual POI indices using normalized Difference values.
+        if self.actual_poi_indices.size > 0 and norm_diff is not None:
             valid_actual_indices = [
                 int(idx) for idx in self.actual_poi_indices if idx < len(accumulated_data)]
             if valid_actual_indices:
-                y_actual = accumulated_data["Dissipation"].iloc[valid_actual_indices]
-                self.ax.scatter(
-                    valid_actual_indices,
-                    y_actual,
-                    color="#2ca02c",
-                    marker="o",
-                    s=50,
-                    label=f"Actual POI {self.actual_poi_indices.size}",
-                )
+                y_actual = norm_diff.iloc[valid_actual_indices]
+                self.ax.scatter(valid_actual_indices, y_actual, color="#2ca02c", marker="o", s=50,
+                                label=f"Actual POI {self.actual_poi_indices.size}")
 
+        # Set plot title and labels.
         self.ax.set_title(
             f"Dissipation Curve (Batch {batch_number})", fontsize=14, weight="medium")
         self.ax.set_xlabel("Data Index", fontsize=12)
-        self.ax.set_ylabel(self.predictor.target, fontsize=12)
+        self.ax.set_ylabel("Normalized Value", fontsize=12)
         self.ax.tick_params(axis="both", which="major", labelsize=10)
         self.ax.legend(frameon=False, fontsize=10)
 
-        # Redraw the figure
+        # Redraw the figure.
         self.fig.canvas.draw()
         self.fig.canvas.flush_events()
 
@@ -1182,7 +1219,7 @@ if __name__ == '__main__':
             end = np.random.randint(0, len(dataset))
             end = random.randint(min(end, len(dataset)),
                                  max(end, len(dataset)))
-            random_slice = dataset.iloc[0:end]
+            random_slice = dataset.iloc[0:len(dataset)-1]
 
             # Load the POI file which is a flat list of 6 indices from the original dataset.
             poi_df = pd.read_csv(poi_file, header=None)
@@ -1220,7 +1257,7 @@ if __name__ == '__main__':
                 random_slice,
                 poi_file=mapped_poi_indices,
                 ignore_before=50,
-                delay=1
+                delay=delay
             )
 
             # Run the simulation.
