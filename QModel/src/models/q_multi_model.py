@@ -462,10 +462,17 @@ class QPredictor:
 
         lq = bounds["lq"]
         uq = bounds["uq"]
+
         adj = np.where((rel_time_norm >= lq) & (rel_time_norm <= uq), 1, 0)
-        adjustment = np.concatenate(
-            (np.zeros(i), np.array(adj), (np.zeros(len(prediction) - j)))
-        )
+        lq_idx = next((i for i, x in enumerate(adj) if x == 1), -1) + i
+        uq_idx = next((i for i, x in reversed(
+            list(enumerate(adj))) if x == 1), -1) + i
+        try:
+            adjustment = np.concatenate(
+                (np.zeros(i), np.array(adj), (np.zeros(len(prediction) - j)))
+            )
+        except ValueError as e:
+            return prediction, (lq_idx, uq_idx)
         if len(prediction) == len(adjustment):
             adj_prediction = prediction * adjustment
             lq_idx = next((i for i, x in enumerate(adj) if x == 1), -1) + i
@@ -474,9 +481,6 @@ class QPredictor:
             )
             return adj_prediction, (lq_idx, uq_idx)
 
-        lq_idx = next((i for i, x in enumerate(adj) if x == 1), -1) + i
-        uq_idx = next((i for i, x in reversed(
-            list(enumerate(adj))) if x == 1), -1) + i
         return prediction, (lq_idx, uq_idx)
 
     def find_and_sort_peaks(self, signal):
