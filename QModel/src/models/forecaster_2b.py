@@ -219,7 +219,7 @@ class QForecasterDataprocessor:
 
         threshold_diff = baseline_diff + std_diff
         threshold_rf = baseline_rf - std_rf
-        threshold_diss = baseline_diss + std_diss * 3
+        threshold_diss = baseline_diss + std_diss * 4
 
         baselines = {
             'Difference': baseline_diff,
