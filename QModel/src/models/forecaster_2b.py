@@ -1,3 +1,4 @@
+from scipy.stats import skew, kurtosis, zscore
 from scipy.signal import find_peaks  # Make sure SciPy is available
 from sklearn.svm import OneClassSVM
 import os
@@ -10,6 +11,19 @@ import random
 from typing import Any, Dict, List, Optional, Tuple
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import savgol_filter
+import numpy as np
+import pandas as pd
+from scipy.ndimage import gaussian_filter1d
+from scipy.signal import hilbert
+from sklearn.svm import OneClassSVM
+from scipy import signal
+import numpy as np
+import pandas as pd
+from scipy.ndimage import gaussian_filter1d
+from scipy.signal import welch, savgol_filter
+from scipy.stats import skew, kurtosis
+from sklearn.svm import OneClassSVM
+from sklearn.cluster import DBSCAN
 
 FEATURES = [
     'Dissipation',
@@ -89,29 +103,73 @@ class QForecasterDataprocessor:
                             "Resonance_Frequency", "Relative_time"]
         if not all(column in df.columns for column in required_columns):
             raise ValueError(
-                f"Input DataFrame must contain the following columns: {required_columns}"
-            )
+                f"Input DataFrame must contain the following columns: {required_columns}")
 
         sigma = 2
         df['Dissipation_DoG'] = gaussian_filter1d(
             df['Dissipation'], sigma=sigma, order=1)
 
-        # Estimate a baseline using a rolling median
+        # Rolling Baseline for Trends
         baseline_window = max(3, int(np.ceil(0.05 * len(df))))
         df['DoG_baseline'] = df['Dissipation_DoG'].rolling(
-            window=baseline_window, center=True, min_periods=1
-        ).median()
+            window=baseline_window, center=True, min_periods=1).median()
         df['DoG_shift'] = df['Dissipation_DoG'] - df['DoG_baseline']
 
-        # Anomaly detection with One-Class SVM
+        # 🔹 One-Class SVM for Anomaly Detection
         X_dog = df['DoG_shift'].values.reshape(-1, 1)
         ocsvm = OneClassSVM(nu=0.05, kernel='rbf',
                             gamma='scale', shrinking=False)
         ocsvm.fit(X_dog)
         df['DoG_SVM_Score'] = ocsvm.decision_function(X_dog)
-        # --- Difference Factor Computation --- #
+
+        # --- 📊 Spectral Features --- #
+        # Approximate sampling rate
+        fs = 1 / np.mean(np.diff(df['Relative_time']))
+        f, Pxx = welch(df["DoG_SVM_Score"], fs=fs, nperseg=min(256, len(df)))
+
+        df["DoG_SVM_Spectral_Entropy"] = - \
+            np.sum((Pxx / np.sum(Pxx)) * np.log2(Pxx / np.sum(Pxx)))
+        df["DoG_SVM_Dominant_Frequency"] = f[np.argmax(Pxx)]
+
+        # --- 📉 Smoothing & Signal Filtering --- #
+        # Ensure odd window size
+        window_size = min(11, len(df) - 1) if len(df) > 11 else 5
+        df["DoG_SVM_Smooth"] = savgol_filter(
+            df["DoG_SVM_Score"], window_size, polyorder=2)
+
+        # --- 📊 Rolling Statistics for Monitoring --- #
+        df["DoG_SVM_Skew"] = df["DoG_SVM_Score"].rolling(
+            baseline_window, min_periods=1).apply(skew, raw=True)
+        df["DoG_SVM_Kurtosis"] = df["DoG_SVM_Score"].rolling(
+            baseline_window, min_periods=1).apply(kurtosis, raw=True)
+        df["DoG_SVM_Variability"] = df["DoG_SVM_Score"].rolling(
+            baseline_window, min_periods=1).std()
+
+        # --- 🚨 Anomaly Monitoring with Z-Score --- #
+        df["DoG_SVM_Zscore"] = zscore(df["DoG_SVM_Score"], nan_policy="omit")
+        df["DoG_SVM_Anomaly"] = (np.abs(df["DoG_SVM_Zscore"]) > 2).astype(
+            int)  # Initial anomaly flagging
+
+        # --- 🏆 Clustering Anomalies (DBSCAN) to Reduce Noise --- #
+        anomaly_indices = df[df["DoG_SVM_Anomaly"] == 1].index
+        if len(anomaly_indices) > 0:
+            # Adjust `eps` for sensitivity
+            dbscan = DBSCAN(eps=5, min_samples=2)
+            clustered_labels = dbscan.fit_predict(
+                anomaly_indices.values.reshape(-1, 1))
+
+            # Mark only the first point of each cluster as an anomaly
+            clustered_anomalies = np.zeros(len(df))
+            for cluster in set(clustered_labels):
+                if cluster != -1:  # Ignore noise points (-1)
+                    first_index = anomaly_indices[clustered_labels == cluster][0]
+                    clustered_anomalies[first_index] = 1
+
+            df["DoG_SVM_Anomaly"] = clustered_anomalies
+
+        # --- 📈 Difference Factor Computation --- #
         if "Difference" not in df.columns:
-            df['Difference'] = [0] * len(df)
+            df["Difference"] = [0] * len(df)
 
         xs = df["Relative_time"]
         i = next((x for x, t in enumerate(xs) if t > 0.5), None)
@@ -121,10 +179,10 @@ class QForecasterDataprocessor:
             avg_resonance_frequency = df["Resonance_Frequency"][i:j].mean()
             avg_dissipation = df["Dissipation"][i:j].mean()
 
-            df["ys_diss"] = (df["Dissipation"] -
-                             avg_dissipation) * avg_resonance_frequency / 2
-            df["ys_freq"] = avg_resonance_frequency - \
-                df["Resonance_Frequency"]
+            df["ys_diss"] = (df["Dissipation"] - avg_dissipation) * \
+                avg_resonance_frequency / 2
+            df["ys_freq"] = avg_resonance_frequency - df["Resonance_Frequency"]
+
             difference_factor = 3
             df["Difference"] = df["ys_freq"] - \
                 difference_factor * df["ys_diss"]
@@ -468,7 +526,7 @@ class QForecasterSimulator:
         plt.ioff()  # Turn off interactive mode.
         plt.show()
 
-    def plot_results(self, results: dict, batch_number: int, column_to_plot='DoG_SVM_Score'):
+    def plot_results(self, results: dict, batch_number: int, column_to_plot='DoG_SVM_Anomaly'):
         """
         Updates the live plot with two subplots:
         - Top subplot: Normalized curve for the specified column (e.g., DoG_SVM_Score).
