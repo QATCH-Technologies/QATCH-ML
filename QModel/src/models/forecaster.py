@@ -45,17 +45,22 @@ class ForasterTrainer:
 
     def build_model(self):
         """
-        Builds and compiles a simple LSTM-based model.
+        Builds and compiles a modified LSTM-based model for multi-class (6-class) sequence labeling.
         """
         model = tf.keras.models.Sequential([
-            tf.keras.layers.LSTM(64, input_shape=(
+            tf.keras.layers.LSTM(128, input_shape=(
                 None, self.num_features), return_sequences=True),
+            tf.keras.layers.Dropout(0.3),
+            tf.keras.layers.LSTM(64, return_sequences=True),
             tf.keras.layers.TimeDistributed(
-                tf.keras.layers.Dense(1, activation='sigmoid'))
+                tf.keras.layers.Dense(len(self.classes), activation='softmax')
+            )
         ])
+
         model.compile(optimizer='adam',
-                      loss='binary_crossentropy', metrics=['accuracy'])
-        logging.info("LSTM model built and compiled.")
+                      loss='sparse_categorical_crossentropy',
+                      metrics=['accuracy'])
+        logging.info("Modified multi-class LSTM model built and compiled.")
         return model
 
     def load_datasets(self, training_directory: str, validation_directory: str):
@@ -85,17 +90,18 @@ class ForasterTrainer:
         y_seq = y_np[1:]
         X_seq = X_seq.reshape(1, X_seq.shape[0], X_seq.shape[1])
         y_seq = y_seq.reshape(1, y_seq.shape[0], 1)
-        results = self.model.train_on_batch(X_seq, y_seq)
+        results = self.model.train_on_batch(X_seq, y_seq, reset_metrics=False)
         return results
 
     def get_slices(self, data_file: str, poi_file: str, slice_size: int = 100):
         data_df = pd.read_csv(data_file)
+
         start_idx = 0
         total_rows = len(data_df)
         slices = []
         while start_idx < total_rows:
             end_idx = min(start_idx + slice_size, total_rows)
-            current_slice = data_df.iloc[start_idx:end_idx]
+            current_slice = data_df.iloc[0:end_idx]
             processed_slice = DataProcessor.preprocess_data(
                 current_slice, poi_file)
             start_idx = end_idx
@@ -108,7 +114,8 @@ class ForasterTrainer:
               validation_directory: str = r'content/test_data'):
         self.load_datasets(training_directory=training_directory,
                            validation_directory=validation_directory)
-        logging.info('Beginning training')
+        logging.info(
+            f'Beginning training on {len(self.train_content)} datasets.')
 
         if self.live_plot_enabled:
             plt.ion()  # Turn on interactive mode for live updates
@@ -117,8 +124,10 @@ class ForasterTrainer:
             losses = []
             accuracies = []
 
-        for data_file, poi_file in self.train_content:
+        for i, (data_file, poi_file) in enumerate(self.train_content):
             slices = self.get_slices(data_file, poi_file)
+            if slices is None:
+                continue
             for processed_slice in slices:
                 result = self.train_on_slice(processed_slice)
                 if result is None:
@@ -152,7 +161,8 @@ class ForasterTrainer:
                     plt.draw()
                     plt.pause(0.001)
 
-            logging.info('Beginning next dataset...')
+            logging.info(
+                f'Beginning next dataset {i}/{len(self.train_content)}')
 
         logging.info("Training completed.")
         if self.live_plot_enabled:
@@ -181,11 +191,6 @@ class ForasterTrainer:
                 X_seq = X_seq.reshape(1, X_seq.shape[0], X_seq.shape[1])
                 y_seq = y_seq.reshape(1, y_seq.shape[0], 1)
                 result = self.model.test_on_batch(X_seq, y_seq)
-                pred = self.model.predict(X_seq)
-                plt.figure()
-                plt.plot(pred, c='r')
-                plt.plot(X['Dissipation'].values, c='b')
-                plt.show()
                 if result is not None:
                     batch_loss, batch_accuracy = result[0], result[1]
                     total_loss += batch_loss
@@ -222,7 +227,7 @@ class Forecaster:
 
 
 if __name__ == "__main__":
-    ft = ForasterTrainer(num_features=9, classes=[0, 1, 2, 3, 4])
+    ft = ForasterTrainer(num_features=9, classes=[0, 1, 2, 3, 4, 6])
     ft.toggle_live_plot(True)  # Enable live plotting
 
     ft.train()

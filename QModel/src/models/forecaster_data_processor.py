@@ -30,11 +30,19 @@ class DataProcessor:
             for f in files:
                 if f.endswith(".csv") and not f.endswith("_poi.csv") and not f.endswith("_lower.csv"):
                     poi_file = f.replace(".csv", "_poi.csv")
-                    if len(loaded_content) >= num_datasets:
-                        return loaded_content
-                    loaded_content.append(
-                        (os.path.join(root, f), os.path.join(root, poi_file))
-                    )
+
+                    poi_df = pd.read_csv(os.path.join(
+                        root, poi_file), header=None)
+                    poi_values = poi_df.values
+                    if len(poi_values) != len(np.unique(poi_values)):
+                        logging.warning(
+                            f'POI file contains duplicate indices: {poi_df}.')
+                    else:
+                        if len(loaded_content) >= num_datasets:
+                            return loaded_content
+                        loaded_content.append(
+                            (os.path.join(root, f), os.path.join(root, poi_file))
+                        )
         return loaded_content
 
     @staticmethod
@@ -156,10 +164,26 @@ class DataProcessor:
     @staticmethod
     def preprocess_data(df: pd.DataFrame, poi_file: str):
 
-        def process_fill(poi_file: str) -> pd.DataFrame:
+        def process_fill(poi_file: str, length_df: int) -> pd.DataFrame:
             fill_df = pd.read_csv(poi_file, header=None)
-            poi_vector = []
-            return poi_vector
+            fill_values = fill_df.values
+            len0 = fill_values[0][0]
+            len1 = fill_values[2][0] - fill_values[0][0]
+            len2 = fill_values[3][0] - fill_values[2][0]
+            len3 = fill_values[4][0] - fill_values[3][0]
+            len4 = fill_values[5][0] - fill_values[4][0]
+            if length_df > fill_values[5][0]:
+                len5 = length_df - fill_values[5][0]
+            else:
+                len5 = 0
+            seg0 = np.full(len0, 0, dtype=int)
+            seg1 = np.full(len1, 1, dtype=int)
+            seg2 = np.full(len2, 2, dtype=int)
+            seg3 = np.full(len3, 3, dtype=int)
+            seg4 = np.full(len4, 4, dtype=int)
+            seg5 = np.full(len5, 5, dtype=int)
+            fill_arr = np.concatenate([seg0, seg1, seg2, seg3, seg4, seg5])
+            return fill_arr
 
         # Load the dataset
         required_cols = ["Relative_time", "Dissipation", "Resonance_Frequency"]
@@ -168,23 +192,21 @@ class DataProcessor:
                 "The dataset is empty or missing required columns.")
         df = df[required_cols].copy()
         try:
-            fill_arr = process_fill(poi_file)
+            fill_arr = process_fill(poi_file, len(df))
             df['Fill'] = fill_arr[:len(df)]
-            print(np.unique(fill_arr))
-
         except FileNotFoundError:
             raise ValueError("POI file not found.")
         # Filter and downsample the data
         df = df[df["Relative_time"] >= random.uniform(
             SPIN_UP_TIME[0], SPIN_UP_TIME[1])]
         df = df.iloc[::DOWNSAMPLE_FACTOR]
-        df = df.reset_index(drop=True)
-        if df.empty:
-            return None
         shift_idx = DataProcessor.find_sampling_shift(df)
         df['Sampling_shift'] = 0
         if shift_idx > -1:
             df.loc[df.index >= shift_idx, 'Sampling_shift'] = 1
+        df = df.reset_index(drop=True)
+        if df.empty:
+            return None
         # Generate features and clean up the DataFrame
         df = DataProcessor.generate_features(df)
         df.reset_index(drop=True, inplace=True)
