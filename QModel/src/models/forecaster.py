@@ -28,7 +28,7 @@ if gpus:
     for gpu in gpus:
         tf.config.experimental.set_memory_growth(gpu, True)
 else:
-    logging.info("No GPU detected, runnin on CPU.")
+    logging.info("No GPU detected, running on CPU.")
 
 
 class ForcasterTrainer:
@@ -57,7 +57,6 @@ class ForcasterTrainer:
     def build_model(self):
         inputs = Input(shape=(None, self.num_features))
         x = Masking()(inputs)
-        # Bidirectional LSTM with recurrent dropout
         x = Bidirectional(
             LSTM(128, return_sequences=True, recurrent_dropout=0.2))(x)
         x = BatchNormalization()(x)
@@ -120,21 +119,28 @@ class ForcasterTrainer:
             slices.append(processed_slice)
         return slices
 
+    def moving_average(self, data, window_size=20):
+        """Compute the moving average of a list of numbers."""
+        if len(data) < window_size:
+            return data  # Not enough data to compute the moving average.
+        return np.convolve(data, np.ones(window_size)/window_size, mode='valid')
+
     def train(self, training_directory: str = r'content/training_data/full_fill',
               validation_directory: str = r'content/test_data'):
         self.load_datasets(training_directory=training_directory,
                            validation_directory=validation_directory)
-        logging.info(
-            f'Beginning training on {len(self.train_content)} datasets.')
 
         if self.live_plot_enabled:
             plt.ion()  # Turn on interactive mode for live updates
-            fig, ax1 = plt.subplots()
+            fig, ax1 = plt.subplots(figsize=(12, 6))
             ax2 = ax1.twinx()  # Secondary y-axis for accuracy
             losses = []
             accuracies = []
+            sma_window = 20  # Smoothing window for the moving average
 
         for i, (data_file, poi_file) in enumerate(self.train_content):
+            logging.info(
+                f'Beginning next dataset {i + 1}/{len(self.train_content)}.')
             slices = self.get_slices(data_file, poi_file)
             if slices is None:
                 continue
@@ -149,15 +155,33 @@ class ForcasterTrainer:
 
                     losses.append(batch_loss)
                     accuracies.append(batch_accuracy)
+
+                    # Calculate smoothed metrics (moving averages) if enough data is available.
+                    smooth_losses = self.moving_average(losses, sma_window)
+                    smooth_accuracies = self.moving_average(
+                        accuracies, sma_window)
+
+                    # Clear previous plots
                     ax1.clear()
                     ax2.clear()
-                    ax1.plot(losses, label='Training Loss', color='blue')
+
+                    # Plot raw loss as a dotted line and smoothed loss as a solid line
+                    ax1.plot(losses, label='Training Loss (raw)',
+                             linestyle=':', color='blue')
+                    if len(losses) >= sma_window:
+                        ax1.plot(range(sma_window - 1, len(losses)), smooth_losses,
+                                 label='Training Loss (smoothed)', color='blue')
                     ax1.set_xlabel("Batch Number")
                     ax1.set_ylabel("Loss", color='blue')
                     ax1.tick_params(axis='y', labelcolor='blue')
+                    ax1.grid(True, linestyle='--', alpha=0.5)
 
-                    # Plot training accuracy on ax2 (right y-axis)
-                    ax2.plot(accuracies, label='Training Accuracy', color='red')
+                    # Plot raw accuracy as a dotted line and smoothed accuracy as a solid line
+                    ax2.plot(accuracies, label='Training Accuracy (raw)',
+                             linestyle=':', color='red')
+                    if len(accuracies) >= sma_window:
+                        ax2.plot(range(sma_window - 1, len(accuracies)), smooth_accuracies,
+                                 label='Training Accuracy (smoothed)', color='red')
                     ax2.set_ylabel("Accuracy", color='red')
                     ax2.tick_params(axis='y', labelcolor='red')
 
@@ -170,9 +194,6 @@ class ForcasterTrainer:
 
                     plt.draw()
                     plt.pause(0.001)
-
-            logging.info(
-                f'Beginning next dataset {i}/{len(self.train_content)}')
 
         logging.info("Training completed.")
         if self.live_plot_enabled:
