@@ -5,6 +5,9 @@ from forecaster_data_processor import DataProcessor
 import numpy as np
 import pandas as pd
 import tensorflow as tf
+from keras.layers import LSTM, Dropout, TimeDistributed, Dense, BatchNormalization, Masking, Bidirectional, Input
+from keras.models import Model
+
 import matplotlib.pyplot as plt
 import os
 # '2' to filter out warnings and info messages; use '3' to show only errors.
@@ -19,8 +22,16 @@ logging.getLogger('PIL').setLevel(logging.WARNING)
 TEST_SIZE = 0.2
 RANDOM_STATE = 42
 
+gpus = tf.config.list_physical_devices('GPU')
+if gpus:
+    logging.info(f"Hardware detected: {gpus}")
+    for gpu in gpus:
+        tf.config.experimental.set_memory_growth(gpu, True)
+else:
+    logging.info("No GPU detected, runnin on CPU.")
 
-class ForasterTrainer:
+
+class ForcasterTrainer:
     def __init__(self, classes, num_features):
         """
         Args:
@@ -44,23 +55,22 @@ class ForasterTrainer:
         self.live_plot_enabled = enabled
 
     def build_model(self):
-        """
-        Builds and compiles a modified LSTM-based model for multi-class (6-class) sequence labeling.
-        """
-        model = tf.keras.models.Sequential([
-            tf.keras.layers.LSTM(128, input_shape=(
-                None, self.num_features), return_sequences=True),
-            tf.keras.layers.Dropout(0.3),
-            tf.keras.layers.LSTM(64, return_sequences=True),
-            tf.keras.layers.TimeDistributed(
-                tf.keras.layers.Dense(len(self.classes), activation='softmax')
-            )
-        ])
+        inputs = Input(shape=(None, self.num_features))
+        x = Masking()(inputs)
+        # Bidirectional LSTM with recurrent dropout
+        x = Bidirectional(
+            LSTM(128, return_sequences=True, recurrent_dropout=0.2))(x)
+        x = BatchNormalization()(x)
+        x = Dropout(0.3)(x)
+        x = Bidirectional(
+            LSTM(64, return_sequences=True, recurrent_dropout=0.2))(x)
+        x = BatchNormalization()(x)
+        outputs = TimeDistributed(
+            Dense(len(self.classes), activation='softmax'))(x)
+        model = Model(inputs, outputs)
 
-        model.compile(optimizer='adam',
-                      loss='sparse_categorical_crossentropy',
-                      metrics=['accuracy'])
-        logging.info("Modified multi-class LSTM model built and compiled.")
+        model.compile(
+            optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
         return model
 
     def load_datasets(self, training_directory: str, validation_directory: str):
@@ -227,8 +237,9 @@ class Forecaster:
 
 
 if __name__ == "__main__":
-    ft = ForasterTrainer(num_features=9, classes=[0, 1, 2, 3, 4, 6])
-    ft.toggle_live_plot(True)  # Enable live plotting
+    with tf.device('/GPU:0'):
+        ft = ForcasterTrainer(num_features=9, classes=[0, 1, 2, 3, 4, 5])
+        ft.toggle_live_plot(True)  # Enable live plotting
 
-    ft.train()
-    ft.test()
+        ft.train()
+        ft.test()
