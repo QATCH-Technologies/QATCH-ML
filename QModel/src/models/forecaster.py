@@ -1,660 +1,229 @@
-#!/usr/bin/env python
-"""
-Integrated System: Dual Fill Prediction Models with Additional Run-Type Classification
-"""
-
-from scipy.signal import hilbert, savgol_filter
-from xgboost import XGBClassifier
-from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-import os
-import random
-import time
+import logging
+from typing import Optional, List, Tuple
+from sklearn.model_selection import train_test_split
+from forecaster_data_processor import DataProcessor
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
+import tensorflow as tf
 import matplotlib.pyplot as plt
-import xgboost as xgb  # Replacing RandomForestClassifier
-from hyperopt import fmin, tpe, hp, Trials, STATUS_OK
-import pickle
+import os
+# '2' to filter out warnings and info messages; use '3' to show only errors.
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logging.getLogger('matplotlib').setLevel(logging.WARNING)
+logging.getLogger('PIL').setLevel(logging.WARNING)
+TEST_SIZE = 0.2
+RANDOM_STATE = 42
 
 
-# ---------------------------
-# Global Settings
-# ---------------------------
-TRAINING = False
-TESTING = True
+class ForasterTrainer:
+    def __init__(self, classes, num_features):
+        """
+        Args:
+            classes: A list of class labels.
+            num_features: The number of features in the processed data (excluding the 'Fill' column).
+        """
+        self.classes = classes
+        self.num_features = num_features
+        self.model = self.build_model()
+        self.label_to_index = {label: idx for idx, label in enumerate(classes)}
+        self.content: Optional[List[Tuple[str, str]]] = None
+        self.train_content: Optional[List[Tuple[str, str]]] = None
+        self.test_content: Optional[List[Tuple[str, str]]] = None
+        self.validation_content: Optional[List[Tuple[str, str]]] = None
 
-DATA_TO_LOAD = 50  # adjust as needed
-IGNORE_BEFORE = 50
-FEATURES = [
-    'Relative_time',
-    'Dissipation',
-    'Dissipation_rolling_mean',
-    'Dissipation_rolling_median',
-    'Dissipation_ewm',
-    'Dissipation_rolling_std',
-    'Dissipation_diff',
-    'Dissipation_pct_change',
-    'Dissipation_rate',
-    'Dissipation_ratio_to_mean',
-    'Dissipation_ratio_to_ewm',
-    'Dissipation_envelope',
-    'Time_shift'
-]
+        # Toggle flag for live plotting (default is off)
+        self.live_plot_enabled = False
 
-# ---------------------------
-# Helper Functions: Feature Computation and Data Loading
-# ---------------------------
+    def toggle_live_plot(self, enabled: bool = True):
+        """Toggle live plotting on or off."""
+        self.live_plot_enabled = enabled
 
+    def build_model(self):
+        """
+        Builds and compiles a simple LSTM-based model.
+        """
+        model = tf.keras.models.Sequential([
+            tf.keras.layers.LSTM(64, input_shape=(
+                None, self.num_features), return_sequences=True),
+            tf.keras.layers.TimeDistributed(
+                tf.keras.layers.Dense(1, activation='sigmoid'))
+        ])
+        model.compile(optimizer='adam',
+                      loss='binary_crossentropy', metrics=['accuracy'])
+        logging.info("LSTM model built and compiled.")
+        return model
 
-def load_and_preprocess_data_split(data_dir: str, required_runs=20):
-    """
-    Load each CSV (run) separately and split into two groups based on find_time_delta:
-      - short_runs: runs where find_time_delta returns an index (i.e. != -1)
-      - long_runs: runs where find_time_delta returns -1
-    Continue loading data until exactly 'required_runs' are collected for each group.
-    """
-    short_runs = []
-    long_runs = []
-    content = load_content(data_dir)
-    # Shuffle the list for random ordering.
-    random.shuffle(content)
+    def load_datasets(self, training_directory: str, validation_directory: str):
+        """
+        Loads and splits the training data.
+        """
+        self.content = DataProcessor.load_content(
+            training_directory, num_datasets=10)
+        self.train_content, self.test_content = train_test_split(
+            self.content, test_size=TEST_SIZE, random_state=RANDOM_STATE, shuffle=True)
+        self.validation_content = DataProcessor.load_content(
+            validation_directory, num_datasets=10)
+        logging.info("Datasets loaded.")
 
-    for file, poi_file in content:
-        # Break early if both groups have reached the required number of runs.
-        if len(short_runs) >= required_runs and len(long_runs) >= required_runs:
-            break
+    def train_on_slice(self, data_slice: pd.DataFrame):
+        """
+        Trains the model on one slice of data.
+        """
+        y = data_slice['Fill']
+        X = data_slice.drop(columns=['Fill'])
+        X_np = X.to_numpy()
+        y_np = y.to_numpy()
+        if len(X_np) < 2:
+            return None  # Not enough data
 
-        df = pd.read_csv(file)
-        if df.empty or not all(col in df.columns for col in ["Relative_time", "Resonance_Frequency", "Dissipation"]):
-            continue  # Skip files missing required columns
+        X_seq = X_np[:-1]
+        y_seq = y_np[1:]
+        X_seq = X_seq.reshape(1, X_seq.shape[0], X_seq.shape[1])
+        y_seq = y_seq.reshape(1, y_seq.shape[0], 1)
+        results = self.model.train_on_batch(X_seq, y_seq)
+        return results
 
-        df = df[["Relative_time", "Resonance_Frequency", "Dissipation"]]
-        df = compute_additional_features(df)
+    def get_slices(self, data_file: str, poi_file: str, slice_size: int = 100):
+        data_df = pd.read_csv(data_file)
+        start_idx = 0
+        total_rows = len(data_df)
+        slices = []
+        while start_idx < total_rows:
+            end_idx = min(start_idx + slice_size, total_rows)
+            current_slice = data_df.iloc[start_idx:end_idx]
+            processed_slice = DataProcessor.preprocess_data(
+                current_slice, poi_file)
+            start_idx = end_idx
+            if processed_slice is None:
+                continue
+            slices.append(processed_slice)
+        return slices
 
-        Fill_df = pd.read_csv(poi_file, header=None)
-        if "Fill" in Fill_df.columns:
-            df["Fill"] = Fill_df["Fill"]
-        else:
-            # If the Fill information is not in a header, initialize with 0 and update using indices.
-            df["Fill"] = 0
-            change_indices = sorted(Fill_df.iloc[:, 0].values)
-            for idx in change_indices:
-                df.loc[idx:, "Fill"] += 1
+    def train(self, training_directory: str = r'content/training_data/full_fill',
+              validation_directory: str = r'content/test_data'):
+        self.load_datasets(training_directory=training_directory,
+                           validation_directory=validation_directory)
+        logging.info('Beginning training')
 
-        df["Fill"] = pd.Categorical(df["Fill"]).codes
-        unique_Fill = sorted(df["Fill"].unique())
-        if len(unique_Fill) != 7:
-            print(
-                f"[WARNING] File {file} does not have 7 unique Fill values; skipping.")
-            continue
+        if self.live_plot_enabled:
+            plt.ion()  # Turn on interactive mode for live updates
+            fig, ax1 = plt.subplots()
+            ax2 = ax1.twinx()  # Secondary y-axis for accuracy
+            losses = []
+            accuracies = []
 
-        # Reassign regions and map to numeric values.
-        df['Fill'] = df['Fill'].apply(reassign_region)
-        mapping = {'no_fill': 0, 'init_fill': 1,
-                   'ch_1': 2, 'ch_2': 3, 'full_fill': 4}
-        df['Fill'] = df['Fill'].map(mapping)
-
-        # Determine if the run is short (time delta detected) or long.
-        delta_idx = find_time_delta(df)
-        if delta_idx == -1:
-            if len(short_runs) < required_runs:
-                short_runs.append(df)
-        else:
-            if len(long_runs) < required_runs:
-                long_runs.append(df)
-
-        if len(df) > IGNORE_BEFORE:
-            df = df.iloc[IGNORE_BEFORE:]
-
-    if len(short_runs) < required_runs or len(long_runs) < required_runs:
-        raise ValueError(
-            f"Not enough runs found. Required: {required_runs} short and {required_runs} long, found: {len(short_runs)} short and {len(long_runs)} long.")
-
-    training_data_short = pd.concat(short_runs).sort_values(
-        "Relative_time").reset_index(drop=True)
-    training_data_long = pd.concat(long_runs).sort_values(
-        "Relative_time").reset_index(drop=True)
-    return training_data_short, training_data_long
-
-
-def compute_additional_features(df: pd.DataFrame) -> pd.DataFrame:
-    # Define parameters for rolling and EWMA calculations
-    window = 10
-    span = 10
-    run_length = len(df)
-    window_length = int(np.ceil(0.01 * run_length))
-    # Ensure the window length is odd and at least 3
-    if window_length % 2 == 0:
-        window_length += 1
-    if window_length < 3:
-        window_length = 3
-    polyorder = 2 if window_length > 2 else 1
-
-    df['Dissipation'] = savgol_filter(
-        df['Dissipation'].values, window_length=window_length, polyorder=polyorder)
-    df['Dissipation_rolling_mean'] = df['Dissipation'].rolling(
-        window=window, min_periods=1).mean()
-    df['Dissipation_rolling_median'] = df['Dissipation'].rolling(
-        window=window, min_periods=1).median()
-    df['Dissipation_ewm'] = df['Dissipation'].ewm(
-        span=span, adjust=False).mean()
-    df['Dissipation_rolling_std'] = df['Dissipation'].rolling(
-        window=window, min_periods=1).std()
-    df['Dissipation_diff'] = df['Dissipation'].diff()
-    df['Dissipation_pct_change'] = df['Dissipation'].pct_change()
-    df['Relative_time_diff'] = df['Relative_time'].diff().replace(0, np.nan)
-    df['Dissipation_rate'] = df['Dissipation_diff'] / df['Relative_time_diff']
-    df['Dissipation_ratio_to_mean'] = df['Dissipation'] / \
-        df['Dissipation_rolling_mean']
-    df['Dissipation_ratio_to_ewm'] = df['Dissipation'] / df['Dissipation_ewm']
-    df['Dissipation_envelope'] = np.abs(hilbert(df['Dissipation'].values))
-
-    if 'Resonance_Frequency' in df.columns:
-        df.drop(columns=['Resonance_Frequency'], inplace=True)
-
-    t_delta = find_time_delta(df)
-    if t_delta == -1:
-        df['Time_shift'] = 0
-    else:
-        df.loc[t_delta:, 'Time_shift'] = 1
-
-    return df
-
-
-def reassign_region(Fill):
-    if Fill == 0:
-        return 'no_fill'
-    elif Fill in [1, 2, 3]:
-        return 'init_fill'
-    elif Fill == 4:
-        return 'ch_1'
-    elif Fill == 5:
-        return 'ch_2'
-    elif Fill == 6:
-        return 'full_fill'
-    else:
-        return Fill  # fallback if needed
-
-
-def load_content(data_dir: str) -> list:
-    print(f"[INFO] Loading content from {data_dir}")
-    loaded_content = []
-    for data_root, _, data_files in tqdm(os.walk(data_dir), desc='Loading files...'):
-        for f in data_files:
-            if f.endswith(".csv") and not f.endswith("_poi.csv") and not f.endswith("_lower.csv"):
-                matched_poi_file = f.replace(".csv", "_poi.csv")
-                loaded_content.append(
-                    (os.path.join(data_root, f), os.path.join(data_root, matched_poi_file)))
-    return loaded_content
-
-
-def find_time_delta(df) -> int:
-    time_df = pd.DataFrame()
-    time_df["Delta"] = df["Relative_time"].diff()
-    threshold = 0.032
-    rolling_avg = time_df["Delta"].expanding(min_periods=2).mean()
-    time_df["Significant_change"] = (
-        time_df["Delta"] - rolling_avg).abs() > threshold
-    change_indices = time_df.index[time_df["Significant_change"]].tolist()
-    return change_indices[0] if change_indices else -1
-
-
-def load_and_preprocess_single(data_file: str, poi_file: str):
-    df = pd.read_csv(data_file)
-    required_cols = ["Relative_time", "Resonance_Frequency", "Dissipation"]
-    if df.empty or not all(col in df.columns for col in required_cols):
-        raise ValueError(
-            "Data file is empty or missing required sensor columns.")
-    df = df[required_cols]
-    poi_df = pd.read_csv(poi_file, header=None)
-    if "Fill" in poi_df.columns:
-        df["Fill"] = poi_df["Fill"]
-    else:
-        df["Fill"] = 0
-        change_indices = sorted(poi_df.iloc[:, 0].values)
-        for idx in change_indices:
-            df.loc[idx:, "Fill"] += 1
-    df["Fill"] = pd.Categorical(df["Fill"]).codes
-    unique_Fill = sorted(df["Fill"].unique())
-    df["Fill"] = df["Fill"].apply(reassign_region)
-    mapping = {'no_fill': 0, 'init_fill': 1,
-               'ch_1': 2, 'ch_2': 3, 'full_fill': 4}
-    df["Fill"] = df["Fill"].map(mapping)
-    print("[INFO] Preprocessed single-file data sample:")
-    print(df.head())
-    return df
-
-
-# ---------------------------
-# Model Training and Prediction for Fill
-# ---------------------------
-
-
-def train_model_native(training_data, numerical_features=FEATURES, categorical_features=None, target='Fill', tune=True):
-    features = numerical_features + \
-        (categorical_features if categorical_features else [])
-    X = training_data[features].copy()
-    y = training_data[target].values
-
-    num_imputer = SimpleImputer(strategy='mean')
-    X_num = num_imputer.fit_transform(X[numerical_features])
-    scaler = StandardScaler()
-    X_num = scaler.fit_transform(X_num)
-
-    if categorical_features:
-        cat_imputer = SimpleImputer(strategy='most_frequent')
-        X_cat = cat_imputer.fit_transform(X[categorical_features])
-        encoder = OneHotEncoder(handle_unknown='ignore', sparse=False)
-        X_cat = encoder.fit_transform(X_cat)
-        X_processed = np.hstack([X_num, X_cat])
-    else:
-        X_processed = X_num
-
-    dtrain = xgb.DMatrix(X_processed, label=y)
-    base_params = {
-        'objective': 'multi:softprob',
-        'num_class': 5,
-        'eval_metric': 'aucpr',
-        'seed': 42,
-        'device': 'cuda',
-    }
-
-    if tune:
-        space = {
-            'max_depth': hp.quniform('max_depth', 3, 10, 1),
-            'learning_rate': hp.uniform('learning_rate', 0.01, 0.2),
-            'subsample': hp.uniform('subsample', 0.5, 1.0),
-            'colsample_bytree': hp.uniform('colsample_bytree', 0.5, 1.0),
-            'min_child_weight': hp.quniform('min_child_weight', 1, 10, 1)
-        }
-
-        def objective(hyperparams):
-            params = base_params.copy()
-            params['max_depth'] = int(hyperparams['max_depth'])
-            params['min_child_weight'] = int(hyperparams['min_child_weight'])
-            params['learning_rate'] = hyperparams['learning_rate']
-            params['subsample'] = hyperparams['subsample']
-            params['colsample_bytree'] = hyperparams['colsample_bytree']
-
-            cv_results = xgb.cv(
-                params,
-                dtrain,
-                num_boost_round=200,
-                nfold=5,
-                metrics={'aucpr'},
-                early_stopping_rounds=10,
-                seed=42,
-                verbose_eval=False
-            )
-            best_score = cv_results['test-aucpr-mean'].max()
-            best_rounds = len(cv_results)
-            return {'loss': -best_score, 'status': STATUS_OK, 'num_rounds': best_rounds}
-
-        trials = Trials()
-        best = fmin(fn=objective, space=space, algo=tpe.suggest,
-                    max_evals=10, trials=trials)
-        best['max_depth'] = int(best['max_depth'])
-        best['min_child_weight'] = int(best['min_child_weight'])
-        params = base_params.copy()
-        params.update(best)
-        best_trial = min(trials.results, key=lambda x: x['loss'])
-        optimal_rounds = best_trial['num_rounds']
-    else:
-        params = base_params.copy()
-        params.update({'max_depth': 5, 'learning_rate': 0.1})
-        cv_results = xgb.cv(
-            params,
-            dtrain,
-            num_boost_round=200,
-            nfold=5,
-            metrics={'aucpr'},
-            early_stopping_rounds=10,
-            seed=42,
-            verbose_eval=False
-        )
-        optimal_rounds = len(cv_results)
-
-    model = xgb.train(params, dtrain, num_boost_round=optimal_rounds)
-    preprocessors = {'num_imputer': num_imputer, 'scaler': scaler}
-    if categorical_features:
-        preprocessors.update({'cat_imputer': cat_imputer, 'encoder': encoder})
-    return model, preprocessors, params
-
-
-def predict_native(model, preprocessors, X, numerical_features=FEATURES, categorical_features=None):
-    X = X.copy()
-    X_num = preprocessors['num_imputer'].transform(X[numerical_features])
-    X_num = preprocessors['scaler'].transform(X_num)
-    if categorical_features:
-        X_cat = preprocessors['cat_imputer'].transform(X[categorical_features])
-        X_cat = preprocessors['encoder'].transform(X_cat)
-        X_processed = np.hstack([X_num, X_cat])
-    else:
-        X_processed = X_num
-    dmatrix = xgb.DMatrix(X_processed)
-    prob_matrix = model.predict(dmatrix)
-    return prob_matrix
-
-# ---------------------------
-# Live Monitor Plotting and Prediction Loop
-# ---------------------------
-
-
-def simulate_serial_stream_from_loaded(loaded_data, batch_size=100):
-    num_rows = len(loaded_data)
-    for start_idx in range(0, num_rows, batch_size):
-        yield loaded_data.iloc[start_idx:start_idx+batch_size]
-
-
-def viterbi_decode(prob_matrix, transition_matrix):
-    T, N = prob_matrix.shape
-    dp = np.full((T, N), -np.inf)
-    backpointer = np.zeros((T, N), dtype=int)
-    dp[0, 0] = np.log(prob_matrix[0, 0])
-    for t in range(1, T):
-        for j in range(N):
-            allowed_prev = [0] if j == 0 else [j-1, j]
-            best_state = allowed_prev[0]
-            best_score = dp[t-1, best_state] + \
-                np.log(transition_matrix[best_state, j])
-            for i in allowed_prev:
-                if transition_matrix[i, j] <= 0:
+        for data_file, poi_file in self.train_content:
+            slices = self.get_slices(data_file, poi_file)
+            for processed_slice in slices:
+                result = self.train_on_slice(processed_slice)
+                if result is None:
                     continue
-                score = dp[t-1, i] + np.log(transition_matrix[i, j])
-                if score > best_score:
-                    best_score = score
-                    best_state = i
-            dp[t, j] = np.log(prob_matrix[t, j]) + best_score
-            backpointer[t, j] = best_state
-    best_path = np.zeros(T, dtype=int)
-    best_path[T-1] = np.argmax(dp[T-1])
-    for t in range(T-2, -1, -1):
-        best_path[t] = backpointer[t+1, best_path[t+1]]
-    return best_path
+
+                if self.live_plot_enabled:
+                    batch_loss = result[0]      # Training loss
+                    batch_accuracy = result[1]  # Training accuracy
+
+                    losses.append(batch_loss)
+                    accuracies.append(batch_accuracy)
+                    ax1.clear()
+                    ax2.clear()
+                    ax1.plot(losses, label='Training Loss', color='blue')
+                    ax1.set_xlabel("Batch Number")
+                    ax1.set_ylabel("Loss", color='blue')
+                    ax1.tick_params(axis='y', labelcolor='blue')
+
+                    # Plot training accuracy on ax2 (right y-axis)
+                    ax2.plot(accuracies, label='Training Accuracy', color='red')
+                    ax2.set_ylabel("Accuracy", color='red')
+                    ax2.tick_params(axis='y', labelcolor='red')
+
+                    ax1.set_title("Live Training Metrics")
+                    # Combine legends from both axes
+                    lines1, labels1 = ax1.get_legend_handles_labels()
+                    lines2, labels2 = ax2.get_legend_handles_labels()
+                    ax1.legend(lines1 + lines2, labels1 +
+                               labels2, loc='upper right')
+
+                    plt.draw()
+                    plt.pause(0.001)
+
+            logging.info('Beginning next dataset...')
+
+        logging.info("Training completed.")
+        if self.live_plot_enabled:
+            plt.ioff()
+            plt.show()
+
+    def tune(self):
+        pass
+
+    def test(self):
+        logging.info("Starting testing on validation data.")
+        total_loss = 0.0
+        total_accuracy = 0.0
+        count = 0
+        for data_file, poi_file in self.validation_content:
+            slices = self.get_slices(data_file, poi_file)
+            for processed_slice in slices:
+                y = processed_slice['Fill']
+                X = processed_slice.drop(columns=['Fill'])
+                X_np = X.to_numpy()
+                y_np = y.to_numpy()
+                if len(X_np) < 2:
+                    continue
+                X_seq = X_np[:-1]
+                y_seq = y_np[1:]
+                X_seq = X_seq.reshape(1, X_seq.shape[0], X_seq.shape[1])
+                y_seq = y_seq.reshape(1, y_seq.shape[0], 1)
+                result = self.model.test_on_batch(X_seq, y_seq)
+                pred = self.model.predict(X_seq)
+                plt.figure()
+                plt.plot(pred, c='r')
+                plt.plot(X['Dissipation'].values, c='b')
+                plt.show()
+                if result is not None:
+                    batch_loss, batch_accuracy = result[0], result[1]
+                    total_loss += batch_loss
+                    total_accuracy += batch_accuracy
+                    count += 1
+
+        if count > 0:
+            avg_loss = total_loss / count
+            avg_accuracy = total_accuracy / count
+            logging.info(
+                f"Validation Loss: {avg_loss:.4f}, Validation Accuracy: {avg_accuracy:.4f}")
+            print(
+                f"Validation Loss: {avg_loss:.4f}, Validation Accuracy: {avg_accuracy:.4f}")
+        else:
+            logging.warning("No valid slices found in the validation data.")
 
 
-def compute_dynamic_transition_matrix(training_data, num_states=5, smoothing=1e-6):
-    states = training_data["Fill"].values
-    transition_counts = np.zeros((num_states, num_states))
-    for i in range(num_states):
-        transition_counts[i, i] = smoothing
-        if i + 1 < num_states:
-            transition_counts[i, i+1] = smoothing
-    for i in range(len(states) - 1):
-        current_state = states[i]
-        next_state = states[i + 1]
-        if next_state == current_state or next_state == current_state + 1:
-            transition_counts[current_state, next_state] += 1
-    row_sums = transition_counts.sum(axis=1, keepdims=True)
-    row_sums[row_sums == 0] = 1
-    return transition_counts / row_sums
+class Forecaster:
+    def __init__(self):
+        self.accumulated_buffer = None
+        self.feature_vector = None
+        self.model = None
+
+    def extend_buffer(self, new_buffer: pd.DataFrame):
+        if self.accumulated_buffer is None:
+            self.accumulated_buffer = pd.DataFrame(columns=new_buffer.columns)
+        self.accumulated_buffer = pd.concat(
+            [self.accumulated_buffer, new_buffer], ignore_index=True)
+        self.feature_vector = DataProcessor.generate_features(
+            self.accumulated_buffer)
+
+    def reset_buffer(self):
+        self.accumulated_buffer = pd.DataFrame()
 
 
-# ---------------------------
-# Main Execution: Training and Testing
-# ---------------------------
-# ---------------------------
-# Meta-Classifier Functions
-# ---------------------------
-def train_meta_classifier(training_data, model_short, preprocessors_short, model_long, preprocessors_long, meta_model_type='xgb'):
-    """
-    Train a meta-classifier that learns to combine the outputs of the short and long models.
-    It uses the predicted probability distributions (for each Fill class) as features.
-    """
-    # Use the same features as in the base models
-    X_input = training_data[FEATURES]
-    # Get probability predictions (each of shape [n_samples, 5])
-    prob_matrix_short = predict_native(
-        model_short, preprocessors_short, X_input, numerical_features=FEATURES)
-    prob_matrix_long = predict_native(
-        model_long, preprocessors_long, X_input, numerical_features=FEATURES)
-    # Concatenate along the feature axis (resulting in 10 features per sample)
-    X_meta = np.hstack([prob_matrix_short, prob_matrix_long])
-    y_meta = training_data['Fill'].values
-
-    if meta_model_type == 'xgb':
-        meta_clf = XGBClassifier(
-            random_state=42, use_label_encoder=False, eval_metric='auc')
-        meta_clf.fit(X_meta, y_meta)
-    elif meta_model_type == 'logistic':
-        from sklearn.linear_model import LogisticRegression
-        meta_clf = LogisticRegression(max_iter=1000, random_state=42)
-        meta_clf.fit(X_meta, y_meta)
-    else:
-        raise ValueError("Unsupported meta_model_type")
-    return meta_clf
-
-# ---------------------------
-# Update Live Monitor Plotting to Include Meta Prediction
-# ---------------------------
-
-
-def update_live_monitor_two_models(accumulated_data, pred_short, pred_long, final_preds, conf_short, conf_long, final_conf, delta_idx, axes, delay, run_type_info=None):
-    indices = np.arange(len(accumulated_data))
-    axes[0].cla()
-    axes[0].plot(indices, accumulated_data["Fill"], label="Actual",
-                 color='blue', marker='o', linestyle='--', markersize=3)
-    axes[0].plot(indices, pred_short, label="Short Model",
-                 color='red', marker='x', linestyle='-', markersize=3)
-    axes[0].plot(indices, pred_long, label="Long Model",
-                 color='green', marker='^', linestyle='-.', markersize=3)
-    axes[0].plot(indices, final_preds, label="Meta-Ensemble",
-                 color='black', marker='s', linestyle='-', markersize=3)
-    if delta_idx != -1:
-        axes[0].axvline(x=delta_idx, color='purple',
-                        linestyle=':', label="Time Delta Detected")
-
-    # Optionally annotate changes in meta predictions with confidence values
-    change_indices_meta = np.where(np.diff(final_preds) != 0)[0] + 1
-    for idx in change_indices_meta:
-        conf_percent = final_conf[idx] * 100
-        y_val = final_preds[idx]
-        axes[0].annotate(f"M: {conf_percent:.0f}%", (idx, y_val),
-                         textcoords="offset points", xytext=(0, -25),
-                         ha='center', fontsize=8, color='black')
-
-    axes[0].set_title("Predicted vs Actual Fill")
-    axes[0].set_xlabel("Data Point Index")
-    axes[0].set_ylabel("Fill Category (numeric)")
-    axes[0].legend()
-    axes[0].set_ylim(-0.5, 4.5)
-
-    axes[1].cla()
-    axes[1].plot(indices, accumulated_data["Dissipation"],
-                 label="Dissipation", color='green')
-    if delta_idx != -1:
-        axes[1].axvline(x=delta_idx, color='purple',
-                        linestyle=':', label="Time Delta")
-    axes[1].set_title("Dissipation Curve")
-    axes[1].set_xlabel("Data Point Index")
-    axes[1].set_ylabel("Dissipation")
-    axes[1].legend()
-
-    if run_type_info is not None:
-        run_label, confidence = run_type_info
-        label_str = "short" if run_label == 0 else "long"
-        axes[0].text(0.02, 0.85, f"Run type: {label_str} ({confidence*100:.1f}%)",
-                     transform=axes[0].transAxes, fontsize=10, color='black',
-                     bbox=dict(facecolor='white', alpha=0.6))
-    plt.pause(delay)
-
-# ---------------------------
-# Updated Live Prediction Loop Including the Meta-Classifier
-# ---------------------------
-
-
-def live_prediction_loop_two_models(model_short, preprocessors_short, model_long, preprocessors_long,
-                                    transition_matrix_short, transition_matrix_long,
-                                    loaded_data, meta_clf, meta_transition_matrix,
-                                    batch_size=100, delay=0.1):
-    accumulated_data = pd.DataFrame(columns=loaded_data.columns)
-    plt.ion()
-    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
-    stream_generator = simulate_serial_stream_from_loaded(
-        loaded_data, batch_size=batch_size)
-    batch_num = 0
-
-    for batch in stream_generator:
-        batch_num += 1
-        print(
-            f"\n[INFO] Streaming batch {batch_num} with {len(batch)} data points...")
-        time.sleep(delay)
-        accumulated_data = pd.concat(
-            [accumulated_data, batch], ignore_index=True)
-        accumulated_data = compute_additional_features(accumulated_data)
-        if len(accumulated_data) > IGNORE_BEFORE and batch_num == 1:
-            accumulated_data = accumulated_data.iloc[IGNORE_BEFORE:]
-        X_live = accumulated_data[FEATURES]
-
-        # Get probability predictions from both base models
-        prob_matrix_short = predict_native(
-            model_short, preprocessors_short, X_live, numerical_features=FEATURES)
-        pred_short = viterbi_decode(prob_matrix_short, transition_matrix_short)
-        prob_matrix_long = predict_native(
-            model_long, preprocessors_long, X_live, numerical_features=FEATURES)
-        pred_long = viterbi_decode(prob_matrix_long, transition_matrix_long)
-
-        conf_short = np.array([prob_matrix_short[i, pred_short[i]]
-                              for i in range(len(pred_short))])
-        conf_long = np.array([prob_matrix_long[i, pred_long[i]]
-                             for i in range(len(pred_long))])
-
-        # Combine the base model outputs to form meta features
-        meta_features = np.hstack([prob_matrix_short, prob_matrix_long])
-        # Get meta classifier probabilities
-        meta_prob_matrix = meta_clf.predict_proba(meta_features)
-        # Apply Viterbi decoding to the meta probabilities using the meta transition matrix
-        final_preds = viterbi_decode(meta_prob_matrix, meta_transition_matrix)
-        final_conf = np.array([meta_prob_matrix[i, final_preds[i]]
-                              for i in range(len(final_preds))])
-
-        delta_idx = find_time_delta(accumulated_data)
-
-        # Updated monitor plot to include meta-decoded predictions
-        update_live_monitor_two_models(accumulated_data, pred_short, pred_long, final_preds,
-                                       conf_short, conf_long, final_conf,
-                                       delta_idx, axes, delay)
-        print(
-            f"[INFO] Updated live monitor after batch {batch_num}. Total points: {len(accumulated_data)}")
-    plt.ioff()
-    plt.show()
-
-
-# ---------------------------
-# Main Execution: Training and Testing (Modified Sections)
-# ---------------------------
 if __name__ == "__main__":
-    save_dir = r"QModel\SavedModels\forecaster"
-    os.makedirs(save_dir, exist_ok=True)
-    training_data_dir = r"content\training_data\full_fill"  # Update as needed
+    ft = ForasterTrainer(num_features=9, classes=[0, 1, 2, 3, 4])
+    ft.toggle_live_plot(True)  # Enable live plotting
 
-    if TRAINING:
-        # Load and split training data into separate groups for fill prediction
-        training_data_short, training_data_long = load_and_preprocess_data_split(
-            training_data_dir, required_runs=145)
-
-        # Compute dynamic transition matrices
-        transition_matrix_short = compute_dynamic_transition_matrix(
-            training_data_short)
-        transition_matrix_long = compute_dynamic_transition_matrix(
-            training_data_long)
-
-        # Train the two fill prediction models
-        model_short, preprocessors_short, params_short = train_model_native(
-            training_data_short)
-        model_long, preprocessors_long, params_long = train_model_native(
-            training_data_long)
-        # Combine training data from both groups to form meta training data.
-
-        print("[INFO] Base model training complete.\n")
-        meta_training_data = pd.concat([training_data_short, training_data_long]).sort_values(
-            "Relative_time").reset_index(drop=True)
-
-        # Train the meta classifier.
-        meta_clf = train_meta_classifier(
-            meta_training_data, model_short, preprocessors_short, model_long, preprocessors_long, meta_model_type='xgb')
-
-        # Compute the meta transition matrix based on ground-truth Fill labels.
-        meta_transition_matrix = compute_dynamic_transition_matrix(
-            meta_training_data)
-
-        # Save the meta classifier and meta transition matrix.
-        with open(os.path.join(save_dir, "meta_classifier.pkl"), "wb") as f:
-            pickle.dump(meta_clf, f)
-        with open(os.path.join(save_dir, "meta_transition_matrix.pkl"), "wb") as f:
-            pickle.dump(meta_transition_matrix, f)
-
-        print("[INFO] Base models, transition matrices, run-type classifier, meta-classifier, and meta transition matrix have been saved successfully.")
-
-        # Save base models and associated objects (as before) ...
-        model_short.save_model(os.path.join(save_dir, "model_short.json"))
-        with open(os.path.join(save_dir, "preprocessors_short.pkl"), "wb") as f:
-            pickle.dump(preprocessors_short, f)
-        with open(os.path.join(save_dir, "params_short.pkl"), "wb") as f:
-            pickle.dump(params_short, f)
-        with open(os.path.join(save_dir, "transition_matrix_short.pkl"), "wb") as f:
-            pickle.dump(transition_matrix_short, f)
-
-        model_long.save_model(os.path.join(save_dir, "model_long.json"))
-        with open(os.path.join(save_dir, "preprocessors_long.pkl"), "wb") as f:
-            pickle.dump(preprocessors_long, f)
-        with open(os.path.join(save_dir, "params_long.pkl"), "wb") as f:
-            pickle.dump(params_long, f)
-        with open(os.path.join(save_dir, "transition_matrix_long.pkl"), "wb") as f:
-            pickle.dump(transition_matrix_long, f)
-
-        # ---------
-        # Train Meta-Classifier
-        # ---------
-        # Combine training data from both groups to form meta training data.
-        meta_training_data = pd.concat([training_data_short, training_data_long]).sort_values(
-            "Relative_time").reset_index(drop=True)
-        meta_clf = train_meta_classifier(
-            meta_training_data, model_short, preprocessors_short, model_long, preprocessors_long, meta_model_type='xgb')
-        with open(os.path.join(save_dir, "meta_classifier.pkl"), "wb") as f:
-            pickle.dump(meta_clf, f)
-
-        print("[INFO] Base models, transition matrices, run-type classifier, and meta-classifier have been saved successfully.")
-
-    if TESTING:
-        # Load fill prediction models and their objects (base models) ...
-        model_short = xgb.Booster()
-        model_short.load_model(os.path.join(save_dir, "model_short.json"))
-        with open(os.path.join(save_dir, "preprocessors_short.pkl"), "rb") as f:
-            preprocessors_short = pickle.load(f)
-        with open(os.path.join(save_dir, "params_short.pkl"), "rb") as f:
-            params_short = pickle.load(f)
-        with open(os.path.join(save_dir, "transition_matrix_short.pkl"), "rb") as f:
-            transition_matrix_short = pickle.load(f)
-
-        model_long = xgb.Booster()
-        model_long.load_model(os.path.join(save_dir, "model_long.json"))
-        with open(os.path.join(save_dir, "preprocessors_long.pkl"), "rb") as f:
-            preprocessors_long = pickle.load(f)
-        with open(os.path.join(save_dir, "params_long.pkl"), "rb") as f:
-            params_long = pickle.load(f)
-        with open(os.path.join(save_dir, "transition_matrix_long.pkl"), "rb") as f:
-            transition_matrix_long = pickle.load(f)
-        # Load the meta-classifier and meta transition matrix
-        with open(os.path.join(save_dir, "meta_classifier.pkl"), "rb") as f:
-            meta_clf = pickle.load(f)
-        with open(os.path.join(save_dir, "meta_transition_matrix.pkl"), "rb") as f:
-            meta_transition_matrix = pickle.load(f)
-
-        # Load test data and simulate live predictions
-        test_dir = r"content\training_data\channel_1"
-        test_content = load_content(test_dir)
-        random.shuffle(test_content)
-        for data_file, poi_file in test_content:
-            df_test = pd.read_csv(data_file)
-            delay = df_test['Relative_time'].max(
-            ) / len(df_test["Relative_time"].values)
-            loaded_data = load_and_preprocess_single(data_file, poi_file)
-            live_prediction_loop_two_models(model_short, preprocessors_short, model_long, preprocessors_long,
-                                            transition_matrix_short, transition_matrix_long,
-                                            loaded_data, meta_clf, meta_transition_matrix,
-                                            batch_size=100, delay=delay/2)
-            print("\n[INFO] Live prediction simulation complete for one test run.")
-        print("\n[INFO] All live prediction simulations complete.")
+    ft.train()
+    ft.test()
