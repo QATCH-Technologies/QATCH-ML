@@ -30,7 +30,9 @@ class DataProcessor:
             for f in files:
                 if f.endswith(".csv") and not f.endswith("_poi.csv") and not f.endswith("_lower.csv"):
                     poi_file = f.replace(".csv", "_poi.csv")
-
+                    if not os.path.exists(os.path.join(
+                            root, poi_file)):
+                        continue
                     poi_df = pd.read_csv(os.path.join(
                         root, poi_file), header=None)
                     poi_values = poi_df.values
@@ -38,12 +40,15 @@ class DataProcessor:
                         logging.warning(
                             f'POI file contains duplicate indices: {poi_df}.')
                     else:
-                        if len(loaded_content) >= num_datasets:
-                            return loaded_content
                         loaded_content.append(
                             (os.path.join(root, f), os.path.join(root, poi_file))
                         )
-        return loaded_content
+
+        random.shuffle(loaded_content)
+        if num_datasets == np.inf:
+            return loaded_content
+
+        return loaded_content[:num_datasets]
 
     @staticmethod
     def find_sampling_shift(df: pd.DataFrame) -> int:
@@ -137,9 +142,13 @@ class DataProcessor:
         return pd.Series(0, index=df.index)
 
     @staticmethod
-    def generate_features(df: pd.DataFrame) -> pd.DataFrame:
-        required_columns = ["Dissipation",
-                            "Resonance_Frequency", "Relative_time", "Fill"]
+    def generate_features(df: pd.DataFrame, live=True) -> pd.DataFrame:
+        if live:
+            required_columns = ["Dissipation",
+                                "Resonance_Frequency", "Relative_time"]
+        else:
+            required_columns = ["Dissipation",
+                                "Resonance_Frequency", "Relative_time", "Fill"]
         if not all(column in df.columns for column in required_columns):
             raise ValueError(
                 f"Input DataFrame must contain the following columns: {required_columns}")
@@ -208,7 +217,7 @@ class DataProcessor:
         if df.empty:
             return None
         # Generate features and clean up the DataFrame
-        df = DataProcessor.generate_features(df)
+        df = DataProcessor.generate_features(df, live=False)
         df.reset_index(drop=True, inplace=True)
         df.drop(columns=['Relative_time'], inplace=True)
 
