@@ -166,6 +166,11 @@ class DataProcessor:
         df["DoG_SVM_Anomaly"] = DataProcessor.cluster_anomalies(
             df["DoG_SVM_Anomaly"])
         df["Difference"] = DataProcessor.compute_difference_factor(df)
+        # shift_idx = DataProcessor.find_sampling_shift(df)
+        # df['Sampling_shift'] = 0
+        # if shift_idx > -1:
+        #     df.loc[df.index >= shift_idx, 'Sampling_shift'] = 1
+
         df.replace([np.inf, -np.inf], np.nan, inplace=True)
         df.fillna(0, inplace=True)
         return df
@@ -209,13 +214,9 @@ class DataProcessor:
         df = df[df["Relative_time"] >= random.uniform(
             SPIN_UP_TIME[0], SPIN_UP_TIME[1])]
         df = df.iloc[::DOWNSAMPLE_FACTOR]
-        shift_idx = DataProcessor.find_sampling_shift(df)
-        df['Sampling_shift'] = 0
-        if shift_idx > -1:
-            df.loc[df.index >= shift_idx, 'Sampling_shift'] = 1
-        df = df.reset_index(drop=True)
         if df.empty:
             return None
+        df = df.reset_index(drop=True)
         # Generate features and clean up the DataFrame
         df = DataProcessor.generate_features(df, live=False)
         df.reset_index(drop=True, inplace=True)

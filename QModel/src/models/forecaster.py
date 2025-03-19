@@ -102,11 +102,11 @@ class ForcasterTrainer:
         Loads and splits the training data.
         """
         self.content = DataProcessor.load_content(
-            training_directory, num_datasets=20)
+            training_directory, num_datasets=100)
         self.train_content, self.test_content = train_test_split(
             self.content, test_size=TEST_SIZE, random_state=RANDOM_STATE, shuffle=True)
         self.validation_content = DataProcessor.load_content(
-            validation_directory, num_datasets=20)
+            validation_directory, num_datasets=10)
         logging.info("Datasets loaded.")
 
     def train_on_slice(self, data_slice):
@@ -128,7 +128,7 @@ class ForcasterTrainer:
 
         # Define class weights, increasing the importance of classes 1-5.
         # For example, class 0 has weight 1.0 and classes 1,2,3,4,5 have weight 2.0.
-        class_weights = {0: 1.0, 1: 2.0, 2: 2.0, 3: 2.0, 4: 2.0, 5: 2.0}
+        class_weights = {0: 1.0, 1: 3.0, 2: 2.0, 3: 2.0, 4: 2.0, 5: 2.0}
 
         # Create a sample weight array for each label in the sequence.
         # Flatten y_seq, then map each label to its weight.
@@ -539,6 +539,8 @@ if __name__ == "__main__":
         except Exception as e:
             logging.error(f"Error reading test data file: {e}")
             exit(1)
+
+        full_data = full_data.iloc[::5]
 
         # Set up interactive plotting.
         plt.ion()
