@@ -1,7 +1,7 @@
 import numpy as np
 import logging
 import tensorflow as tf
-from keras.layers import Input, Masking, Bidirectional, LSTM, BatchNormalization, Dropout, TimeDistributed, Dense, GRU
+from keras.layers import Input, Masking, LSTM, Bidirectional, Dense, TimeDistributed, Dropout, Layer, Multiply, Permute, Activation, Lambda, GRU
 from keras.models import Model
 from keras.optimizers import Adam
 import logging
@@ -12,6 +12,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from collections import deque
 import random
+from sklearn.utils.class_weight import compute_class_weight
+from keras import regularizers
 import os
 # '2' to filter out warnings and info messages; use '3' to show only errors.
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
@@ -60,16 +62,24 @@ class ForcasterTrainer:
         # Toggle flag for live plotting (default is off)
         self.live_plot_enabled: bool = False
 
+    def moving_average(self, data, window_size=20):
+        """Compute the moving average of a list of numbers."""
+        if len(data) < window_size:
+            return data  # Not enough data to compute the moving average.
+        return np.convolve(data, np.ones(window_size)/window_size, mode='valid')
+
     def toggle_live_plot(self, enabled: bool = True):
         """Toggle live plotting on or off."""
         self.live_plot_enabled = enabled
 
     def build_model(self):
+
         inputs = Input(shape=(None, self.num_features))
         x = Masking()(inputs)
-        # Using a single bidirectional GRU layer with fewer units
-        x = Bidirectional(LSTM(32, return_sequences=True, dropout=0.3))(x)
-        outputs = Dense(len(self.classes), activation='softmax')(x)
+        x = LSTM(32, return_sequences=True, dropout=0.1,
+                 kernel_regularizer=regularizers.l2(0.0001))(x)
+        outputs = Dense(len(self.classes), activation='softmax',
+                        kernel_regularizer=regularizers.l2(0.001))(x)
         model = Model(inputs, outputs)
         model.compile(optimizer='adam',
                       loss='sparse_categorical_crossentropy',
@@ -103,7 +113,7 @@ class ForcasterTrainer:
         Loads and splits the training data.
         """
         self.content = DataProcessor.load_content(
-            training_directory, num_datasets=10)
+            training_directory, num_datasets=25)
         self.train_content, self.test_content = train_test_split(
             self.content, test_size=TEST_SIZE, random_state=RANDOM_STATE, shuffle=True)
         self.validation_content = DataProcessor.load_content(
@@ -125,17 +135,20 @@ class ForcasterTrainer:
         X_seq = X_np[:-1]
         y_seq = y_np[1:]
         X_seq = X_seq.reshape(1, X_seq.shape[0], X_seq.shape[1])
+        # Remove the extra dimension
         y_seq = y_seq.reshape(1, y_seq.shape[0], 1)
 
-        # Compute class weights dynamically
-        unique, counts = np.unique(y_np, return_counts=True)
-        total_samples = sum(counts)
-        class_weights = {cls: total_samples /
-                         (len(unique) * count) for cls, count in zip(unique, counts)}
+        # Compute class weights using sklearn
+        from sklearn.utils.class_weight import compute_class_weight
+        classes = np.unique(y_np)
+        weights_array = compute_class_weight(
+            class_weight='balanced', classes=classes, y=y_np)
+        class_weights = dict(zip(classes, weights_array))
 
-        # Apply sample weights per batch (optional if your model supports it)
-        sample_weights = np.array([class_weights[y]
-                                  for y in y_seq.flatten()]).reshape(y_seq.shape)
+        # Apply sample weights per batch
+        sample_weights = np.array(
+            [class_weights[y_val] for y_val in y_seq.flatten()]
+        ).reshape(y_seq.shape)
 
         results = self.model.train_on_batch(
             X_seq, y_seq, sample_weight=sample_weights, reset_metrics=False
@@ -147,22 +160,22 @@ class ForcasterTrainer:
         start_idx = 0
         total_rows = len(data_df)
         slices = []
-        while start_idx < total_rows:
-            end_idx = min(start_idx + slice_size, total_rows)
-            current_slice = data_df.iloc[0:end_idx]
-            processed_slice = DataProcessor.preprocess_data(
-                current_slice, poi_file)
-            start_idx = end_idx
-            if processed_slice is None:
-                continue
-            slices.append(processed_slice)
-        return slices
 
-    def moving_average(self, data, window_size=20):
-        """Compute the moving average of a list of numbers."""
-        if len(data) < window_size:
-            return data  # Not enough data to compute the moving average.
-        return np.convolve(data, np.ones(window_size)/window_size, mode='valid')
+        try:
+            fill_arr = DataProcessor.process_fill(poi_file, len(data_df))
+            data_df['Fill'] = fill_arr
+            while start_idx < total_rows:
+                end_idx = min(start_idx + slice_size, total_rows)
+                current_slice = data_df.iloc[start_idx:end_idx]
+                processed_slice = DataProcessor.preprocess_data(
+                    current_slice, poi_file)
+                start_idx = end_idx
+                if processed_slice is None:
+                    continue
+                slices.append(processed_slice)
+            return slices
+        except FileNotFoundError:
+            raise ValueError("POI file not found.")
 
     def train(self, training_directory: str = r'content/training_data/full_fill',
               validation_directory: str = r'content/test_data'):
@@ -232,7 +245,7 @@ class ForcasterTrainer:
 
                     # Create a colormap with as many distinct colors as there are unique fill values.
                     # Here, 'tab10' is used, but you can change it to another colormap like 'tab20' if needed.
-                    colormap = plt.cm.get_cmap('tab10', len(unique_fills))
+                    colormap = plt.get_cmap('tab10', len(unique_fills))
 
                     # Map each unique fill value to a distinct color
                     fill_to_color = {fill: colormap(
@@ -586,11 +599,18 @@ if __name__ == "__main__":
         plt.ion()
         fig, ax = plt.subplots(figsize=(12, 6))
 
+        # Initialize cumulative storage for x-values, normalized dissipation and predictions.
+        cumulative_x = []
+        cumulative_dissipation = []
+        cumulative_pred = []
+
         # Generate slices of increasing size (100 rows, 200 rows, etc.)
+        start_idx = 0
         for end_idx in range(100, len(full_data) + 1, 100):
-            slice_df = full_data.iloc[:end_idx]
-            # Reset the internal buffer so that each slice is processed independently.
-            # f.reset_buffer()
+            slice_df = full_data.iloc[start_idx:end_idx]
+            start_idx = end_idx
+
+            # Process the current slice.
             try:
                 predicted_classes = f.predict_batch(slice_df)
             except Exception as e:
@@ -598,7 +618,7 @@ if __name__ == "__main__":
                     f"Error during prediction for slice ending at row {end_idx}: {e}")
                 continue
 
-            # Get the feature vector generated by DataProcessor (assumed to include 'Dissipation').
+            # Get the feature vector (assumed to include 'Dissipation').
             features = f.feature_vector
             if features is None or features.empty:
                 logging.warning(
@@ -613,38 +633,48 @@ if __name__ == "__main__":
             x_values = list(range(len(features)))
             dissipation_values = features["Dissipation"].to_numpy()
 
-            # Normalize dissipation using min-max normalization.
-            min_val = dissipation_values.min()
-            max_val = dissipation_values.max()
-            if max_val - min_val == 0:
-                norm_dissipation = np.zeros_like(dissipation_values)
-            else:
-                norm_dissipation = (dissipation_values -
-                                    min_val) / (max_val - min_val)
-
             # Flatten predictions (assumes output shape is (1, sequence_length) after argmax)
             pred = predicted_classes.flatten()
 
             # Align lengths in case of mismatch.
-            min_len = min(len(norm_dissipation), len(pred))
+            min_len = min(len(dissipation_values), len(pred))
             x_values = x_values[:min_len]
-            norm_dissipation = norm_dissipation[:min_len]
+            dissipation_values = dissipation_values[:min_len]
             pred = pred[:min_len]
 
-            # Plot the current slice.
+            # Adjust x_values to continue from the previous slice.
+            if cumulative_x:
+                # Shift current x_values by the last x value + 1.
+                last_x = cumulative_x[-1]
+                x_values = [x + last_x + 1 for x in x_values]
+
+            # Append current slice to cumulative lists.
+            cumulative_x.extend(x_values)
+            cumulative_dissipation.extend(dissipation_values)
+            cumulative_pred.extend(pred)
+
+            # Plot the cumulative data.
             ax.clear()
-            ax.plot(x_values, norm_dissipation,
-                    label="Normalized Dissipation", marker="o")
-            ax.plot(x_values, pred, label="Predictions",
-                    linestyle="--", marker="x")
+            ax.plot(cumulative_x, cumulative_dissipation,
+                    label="Normalized Dissipation")
             ax.set_title(
-                f"Normalized Dissipation and Predictions (Slice size: {end_idx})")
+                f"Concatenated Normalized Dissipation and Predictions (Slice up to row: {end_idx})")
             ax.set_xlabel("Time Step")
             ax.set_ylabel("Value")
             ax.legend()
             ax.grid(True, linestyle='--', alpha=0.5)
+
+            # Display the value of the current predicted class on the plot.
+            current_pred_class = pred[-1] if len(pred) > 0 else None
+            if current_pred_class is not None:
+                # Place the text in the top right corner using axes coordinates.
+                ax.text(
+                    0.95, 0.95, f'Predicted: {current_pred_class}', transform=ax.transAxes,
+                    ha='right', va='top', fontsize=12, color='red'
+                )
+
             plt.draw()
-            plt.pause(0.01)  # Pause for 1 second to observe the plot
+            plt.pause(1)  # Adjust pause as needed for visualization speed.
 
         # End interactive mode.
         plt.ioff()
