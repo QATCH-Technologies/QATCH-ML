@@ -10,6 +10,8 @@ from sklearn.model_selection import train_test_split
 from forecaster_data_processor import DataProcessor
 import pandas as pd
 import matplotlib.pyplot as plt
+from collections import deque
+import random
 import os
 # '2' to filter out warnings and info messages; use '3' to show only errors.
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
@@ -66,9 +68,8 @@ class ForcasterTrainer:
         inputs = Input(shape=(None, self.num_features))
         x = Masking()(inputs)
         # Using a single bidirectional GRU layer with fewer units
-        x = Bidirectional(GRU(64, return_sequences=True, dropout=0.2))(x)
-        outputs = TimeDistributed(
-            Dense(len(self.classes), activation='softmax'))(x)
+        x = Bidirectional(LSTM(32, return_sequences=True, dropout=0.3))(x)
+        outputs = Dense(len(self.classes), activation='softmax')(x)
         model = Model(inputs, outputs)
         model.compile(optimizer='adam',
                       loss='sparse_categorical_crossentropy',
@@ -83,8 +84,8 @@ class ForcasterTrainer:
         x = Masking()(inputs)
         # Use a single bidirectional GRU layer instead of stacked LSTMs
         x = Bidirectional(
-            GRU(units, return_sequences=True, dropout=dropout_rate,
-                recurrent_dropout=recurrent_dropout)
+            LSTM(units, return_sequences=True, dropout=dropout_rate,
+                 recurrent_dropout=recurrent_dropout)
         )(x)
         outputs = TimeDistributed(
             Dense(len(self.classes), activation='softmax')
@@ -102,7 +103,7 @@ class ForcasterTrainer:
         Loads and splits the training data.
         """
         self.content = DataProcessor.load_content(
-            training_directory, num_datasets=100)
+            training_directory, num_datasets=10)
         self.train_content, self.test_content = train_test_split(
             self.content, test_size=TEST_SIZE, random_state=RANDOM_STATE, shuffle=True)
         self.validation_content = DataProcessor.load_content(
@@ -111,7 +112,7 @@ class ForcasterTrainer:
 
     def train_on_slice(self, data_slice):
         """
-        Trains the model on one slice of data with class weighting.
+        Trains the model on one slice of data with dynamic class weighting.
         """
         y = data_slice['Fill']
         X = data_slice.drop(columns=['Fill'])
@@ -126,20 +127,19 @@ class ForcasterTrainer:
         X_seq = X_seq.reshape(1, X_seq.shape[0], X_seq.shape[1])
         y_seq = y_seq.reshape(1, y_seq.shape[0], 1)
 
-        # Define class weights, increasing the importance of classes 1-5.
-        # For example, class 0 has weight 1.0 and classes 1,2,3,4,5 have weight 2.0.
-        class_weights = {0: 1.0, 1: 3.0, 2: 2.0, 3: 2.0, 4: 2.0, 5: 2.0}
+        # Compute class weights dynamically
+        unique, counts = np.unique(y_np, return_counts=True)
+        total_samples = sum(counts)
+        class_weights = {cls: total_samples /
+                         (len(unique) * count) for cls, count in zip(unique, counts)}
 
-        # Create a sample weight array for each label in the sequence.
-        # Flatten y_seq, then map each label to its weight.
-        sample_weights = np.array(
-            [class_weights.get(int(label), 1.0) for label in y_seq.flatten()])
-        # Reshape to match the batch shape (batch_size, sequence_length).
-        sample_weights = sample_weights.reshape(1, -1)
+        # Apply sample weights per batch (optional if your model supports it)
+        sample_weights = np.array([class_weights[y]
+                                  for y in y_seq.flatten()]).reshape(y_seq.shape)
 
-        # Pass the sample weights to train_on_batch.
         results = self.model.train_on_batch(
-            X_seq, y_seq, sample_weight=sample_weights, reset_metrics=False)
+            X_seq, y_seq, sample_weight=sample_weights, reset_metrics=False
+        )
         return results
 
     def get_slices(self, data_file: str, poi_file: str, slice_size: int = 100):
@@ -182,23 +182,36 @@ class ForcasterTrainer:
             dissipation_values = []  # To store Dissipation values
             sma_window = 20
 
+        # Maintain a small buffer of past slices
+        buffer_size = 10
+        slice_buffer = deque(maxlen=buffer_size)
+
         for i, (data_file, poi_file) in enumerate(self.train_content):
             logging.info(
-                f'Beginning next dataset {i + 1}/{len(self.train_content)}.')
+                f'Processing dataset {i + 1}/{len(self.train_content)}.')
+
             slices = self.get_slices(data_file, poi_file)
             if slices is None:
                 continue
+
             for processed_slice in slices:
-                result = self.train_on_slice(processed_slice)
-                if result is None:
-                    continue
+                slice_buffer.append(processed_slice)
+
+                # Sample from buffer for better balance
+                sampled_slices = random.sample(
+                    slice_buffer, min(len(slice_buffer), 3))
+
+                for sample in sampled_slices:
+                    result = self.train_on_slice(sample)
+                    if result is None:
+                        continue
 
                 # Extract the dissipation value from the processed_slice.
                 # Adjust this line as needed: here we assume it's a scalar or you may take a mean, etc.
                 diss_value = processed_slice['Dissipation'].values
                 dissipation_values = diss_value
 
-                if self.live_plot_enabled:
+                if self.live_plot_enabled and result is not None:
                     batch_loss = result[0]
                     batch_accuracy = result[1]
                     losses.append(batch_loss)
@@ -211,6 +224,33 @@ class ForcasterTrainer:
                     ax_diss.clear()
                     ax_metrics.clear()
                     ax_acc.clear()
+                    # Assume processed_slice is your DataFrame with 'Dissipation' and 'Fill' columns
+                    fill_values = processed_slice['Fill'].values
+
+                    # Get the unique fill values
+                    unique_fills = np.unique(fill_values)
+
+                    # Create a colormap with as many distinct colors as there are unique fill values.
+                    # Here, 'tab10' is used, but you can change it to another colormap like 'tab20' if needed.
+                    colormap = plt.cm.get_cmap('tab10', len(unique_fills))
+
+                    # Map each unique fill value to a distinct color
+                    fill_to_color = {fill: colormap(
+                        i) for i, fill in enumerate(unique_fills)}
+
+                    # Loop through fill values to add vertical spans when the fill value changes.
+                    start_idx = 0
+                    current_fill = fill_values[0]
+                    for idx, fill in enumerate(fill_values):
+                        if fill != current_fill:
+                            # Draw a vertical span from start_idx to the current index with the color assigned to current_fill.
+                            ax_diss.axvspan(
+                                start_idx, idx, facecolor=fill_to_color[current_fill], alpha=0.3, zorder=1)
+                            current_fill = fill
+                            start_idx = idx
+                    # Draw the final span for the last segment.
+                    ax_diss.axvspan(start_idx, len(
+                        fill_values) - 1, facecolor=fill_to_color[current_fill], alpha=0.3, zorder=1)
 
                     # --- Update the Dissipation plot (upper subplot) ---
                     ax_diss.plot(dissipation_values,
@@ -516,11 +556,11 @@ TESTING = True
 if __name__ == "__main__":
     if TRAINING:
         with tf.device('/GPU:0'):
-            ft = ForcasterTrainer(num_features=9, classes=[0, 1, 2, 3, 4, 5])
+            ft = ForcasterTrainer(num_features=9, classes=[0, 1, 2])
             ft.toggle_live_plot(True)  # Enable live plotting
             # ft.tune()
             ft.train()
-            # ft.test()
+            ft.test()
             ft.save_model(save_path=r'QModel/SavedModels/tf_forecaster')
 
     if TESTING:

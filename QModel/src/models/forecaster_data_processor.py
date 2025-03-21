@@ -192,10 +192,10 @@ class DataProcessor:
                 len5 = 0
             seg0 = np.full(len0, 0, dtype=int)
             seg1 = np.full(len1, 1, dtype=int)
-            seg2 = np.full(len2, 2, dtype=int)
-            seg3 = np.full(len3, 3, dtype=int)
-            seg4 = np.full(len4, 4, dtype=int)
-            seg5 = np.full(len5, 5, dtype=int)
+            seg2 = np.full(len2, 1, dtype=int)
+            seg3 = np.full(len3, 1, dtype=int)
+            seg4 = np.full(len4, 1, dtype=int)
+            seg5 = np.full(len5, 2, dtype=int)
             fill_arr = np.concatenate([seg0, seg1, seg2, seg3, seg4, seg5])
             return fill_arr
 
