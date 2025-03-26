@@ -1,3 +1,7 @@
+from typing import List, Dict, Tuple, Optional
+from xgboost import XGBClassifier
+from sklearn.metrics import log_loss, accuracy_score
+from collections import deque
 import numpy as np
 import logging
 import tensorflow as tf
@@ -10,9 +14,9 @@ from sklearn.model_selection import train_test_split
 from forecaster_data_processor import DataProcessor
 import pandas as pd
 import matplotlib.pyplot as plt
-from collections import deque
-import random
 import os
+from collections import defaultdict, deque
+import random
 # '2' to filter out warnings and info messages; use '3' to show only errors.
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
@@ -34,14 +38,18 @@ else:
     logging.info("No GPU detected, running on CPU.")
 
 
+# Assume that DataProcessor, train_test_split, TEST_SIZE, and RANDOM_STATE are defined elsewhere.
+
+# Assume that DataProcessor, train_test_split, TEST_SIZE, and RANDOM_STATE are defined elsewhere.
+
+
 class ForcasterTrainer:
     def __init__(self, classes: List, num_features: int) -> None:
         """
         Args:
             classes (List[str]): A list of class labels.
-            num_features (int): The number of features in the processed data (excluding the 'Fill' column).
+            num_features (int): The number of features in the processed data.
         """
-        # Type checking for constructor arguments
         if not isinstance(classes, list):
             raise TypeError("classes must be a list")
         if not isinstance(num_features, int):
@@ -49,7 +57,7 @@ class ForcasterTrainer:
 
         self.classes: List = classes
         self.num_features: int = num_features
-        self.model: Model = self.build_model()  # initial default model
+        self.model = self.build_model()  # Build GPU-enabled XGBoost model
         self.label_to_index: Dict[str, int] = {
             label: idx for idx, label in enumerate(classes)}
         self.content: Optional[List[Tuple[str, str]]] = None
@@ -65,36 +73,19 @@ class ForcasterTrainer:
         self.live_plot_enabled = enabled
 
     def build_model(self):
-        inputs = Input(shape=(None, self.num_features))
-        x = Masking()(inputs)
-        # Using a single bidirectional GRU layer with fewer units
-        x = Bidirectional(LSTM(32, return_sequences=True, dropout=0.3))(x)
-        outputs = Dense(len(self.classes), activation='softmax')(x)
-        model = Model(inputs, outputs)
-        model.compile(optimizer='adam',
-                      loss='sparse_categorical_crossentropy',
-                      metrics=['accuracy'])
-        return model
-
-    def build_model_with_hyperparams(self, units, dropout_rate, recurrent_dropout, learning_rate):
         """
-        Build a lightweight model with specified hyperparameters.
+        Build an XGBoost classifier configured to use CUDA.
+        For multi-class classification, we use 'multi:softprob' as the objective.
+        The GPU acceleration is enabled by setting tree_method and predictor.
         """
-        inputs = Input(shape=(None, self.num_features))
-        x = Masking()(inputs)
-        # Use a single bidirectional GRU layer instead of stacked LSTMs
-        x = Bidirectional(
-            LSTM(units, return_sequences=True, dropout=dropout_rate,
-                 recurrent_dropout=recurrent_dropout)
-        )(x)
-        outputs = TimeDistributed(
-            Dense(len(self.classes), activation='softmax')
-        )(x)
-        model = Model(inputs, outputs)
-        model.compile(
-            optimizer=Adam(learning_rate=learning_rate),
-            loss='sparse_categorical_crossentropy',
-            metrics=['accuracy']
+        model = XGBClassifier(
+            objective='multi:softprob',
+            num_class=len(self.classes),
+            n_estimators=50,      # Adjust the number of trees as needed
+            learning_rate=0.1,
+            eval_metric='mlogloss',
+            tree_method='hist',      # Use GPU accelerated histogram algorithm
+            device='cuda'   # Use GPU for prediction
         )
         return model
 
@@ -103,44 +94,12 @@ class ForcasterTrainer:
         Loads and splits the training data.
         """
         self.content = DataProcessor.load_content(
-            training_directory, num_datasets=10)
+            training_directory, num_datasets=150)
         self.train_content, self.test_content = train_test_split(
             self.content, test_size=TEST_SIZE, random_state=RANDOM_STATE, shuffle=True)
         self.validation_content = DataProcessor.load_content(
             validation_directory, num_datasets=10)
         logging.info("Datasets loaded.")
-
-    def train_on_slice(self, data_slice):
-        """
-        Trains the model on one slice of data with dynamic class weighting.
-        """
-        y = data_slice['Fill']
-        X = data_slice.drop(columns=['Fill'])
-        X_np = X.to_numpy()
-        y_np = y.to_numpy()
-        if len(X_np) < 2:
-            return None  # Not enough data
-
-        # Create input/output sequences:
-        X_seq = X_np[:-1]
-        y_seq = y_np[1:]
-        X_seq = X_seq.reshape(1, X_seq.shape[0], X_seq.shape[1])
-        y_seq = y_seq.reshape(1, y_seq.shape[0], 1)
-
-        # Compute class weights dynamically
-        unique, counts = np.unique(y_np, return_counts=True)
-        total_samples = sum(counts)
-        class_weights = {cls: total_samples /
-                         (len(unique) * count) for cls, count in zip(unique, counts)}
-
-        # Apply sample weights per batch (optional if your model supports it)
-        sample_weights = np.array([class_weights[y]
-                                  for y in y_seq.flatten()]).reshape(y_seq.shape)
-
-        results = self.model.train_on_batch(
-            X_seq, y_seq, sample_weight=sample_weights, reset_metrics=False
-        )
-        return results
 
     def get_slices(self, data_file: str, poi_file: str, slice_size: int = 100):
         data_df = pd.read_csv(data_file)
@@ -149,7 +108,7 @@ class ForcasterTrainer:
         slices = []
         while start_idx < total_rows:
             end_idx = min(start_idx + slice_size, total_rows)
-            current_slice = data_df.iloc[0:end_idx]
+            current_slice = data_df.iloc[start_idx:end_idx]
             processed_slice = DataProcessor.preprocess_data(
                 current_slice, poi_file)
             start_idx = end_idx
@@ -158,11 +117,62 @@ class ForcasterTrainer:
             slices.append(processed_slice)
         return slices
 
+    def train_on_slice(self, data_slice):
+        """
+        Train the model on one slice of data with dynamic class weighting.
+        Ensures that the feature matrix and label vector have matching numbers of rows.
+        """
+        y = data_slice['Fill']
+        X = data_slice.drop(columns=['Fill'])
+
+        # Map labels to indices if necessary
+        y = y.map(lambda x: self.label_to_index.get(x, x))
+        X_np = X.to_numpy()
+        y_np = y.to_numpy()
+
+        # Check that the number of samples in features and labels match
+        if X_np.shape[0] != y_np.shape[0]:
+            logging.error(
+                f"Mismatch between features and labels: X has {X_np.shape[0]} samples but y has {y_np.shape[0]} samples. Skipping this slice.")
+            return None
+
+        if X_np.shape[0] < 2:
+            return None  # Not enough data
+
+        # Compute dynamic class weights
+        unique, counts = np.unique(y_np, return_counts=True)
+        total_samples = sum(counts)
+        class_weights = {cls: total_samples /
+                         (len(unique) * count) for cls, count in zip(unique, counts)}
+        sample_weights = np.array([class_weights[val] for val in y_np])
+
+        try:
+            if not hasattr(self, "initial_fit_done") or not self.initial_fit_done:
+                # First time: perform a normal fit without incremental training
+                self.model.fit(X_np, y_np, sample_weight=sample_weights)
+                self.initial_fit_done = True
+            else:
+                # Subsequent times: perform incremental training using the current booster
+                self.model.fit(X_np, y_np,
+                               sample_weight=sample_weights,
+                               xgb_model=self.model.get_booster())
+        except Exception as e:
+            logging.error(f"Error training on slice: {e}")
+            return None
+
+        # Evaluate on the current slice
+        y_pred_proba = self.model.predict_proba(X_np)
+        loss = log_loss(y_np, y_pred_proba)
+        y_pred = self.model.predict(X_np)
+        accuracy = accuracy_score(y_np, y_pred)
+
+        return loss, accuracy
+
     def moving_average(self, data, window_size=20):
         """Compute the moving average of a list of numbers."""
         if len(data) < window_size:
-            return data  # Not enough data to compute the moving average.
-        return np.convolve(data, np.ones(window_size)/window_size, mode='valid')
+            return data
+        return np.convolve(data, np.ones(window_size) / window_size, mode='valid')
 
     def train(self, training_directory: str = r'content/training_data/full_fill',
               validation_directory: str = r'content/test_data'):
@@ -171,292 +181,97 @@ class ForcasterTrainer:
 
         if self.live_plot_enabled:
             plt.ion()
-            # Create two subplots: one for Dissipation, one for Loss/Accuracy
-            fig, (ax_diss, ax_metrics) = plt.subplots(
+            fig, (ax_loss, ax_acc) = plt.subplots(
                 nrows=2, ncols=1, figsize=(12, 10))
-            # Create a twin axis on the bottom plot for Accuracy
-            ax_acc = ax_metrics.twinx()
-
             losses = []
             accuracies = []
-            dissipation_values = []  # To store Dissipation values
             sma_window = 20
 
-        # Maintain a small buffer of past slices
+        # Use a buffer to store recent slices
         buffer_size = 10
         slice_buffer = deque(maxlen=buffer_size)
 
         for i, (data_file, poi_file) in enumerate(self.train_content):
             logging.info(
                 f'Processing dataset {i + 1}/{len(self.train_content)}.')
-
             slices = self.get_slices(data_file, poi_file)
             if slices is None:
                 continue
 
             for processed_slice in slices:
                 slice_buffer.append(processed_slice)
-
-                # Sample from buffer for better balance
+                # Randomly sample slices from the buffer
                 sampled_slices = random.sample(
                     slice_buffer, min(len(slice_buffer), 3))
-
                 for sample in sampled_slices:
                     result = self.train_on_slice(sample)
                     if result is None:
                         continue
+                    batch_loss, batch_accuracy = result
 
-                # Extract the dissipation value from the processed_slice.
-                # Adjust this line as needed: here we assume it's a scalar or you may take a mean, etc.
-                diss_value = processed_slice['Dissipation'].values
-                dissipation_values = diss_value
+                    if self.live_plot_enabled:
+                        losses.append(batch_loss)
+                        accuracies.append(batch_accuracy)
+                        smooth_losses = self.moving_average(losses, sma_window)
+                        smooth_accuracies = self.moving_average(
+                            accuracies, sma_window)
 
-                if self.live_plot_enabled and result is not None:
-                    batch_loss = result[0]
-                    batch_accuracy = result[1]
-                    losses.append(batch_loss)
-                    accuracies.append(batch_accuracy)
-                    smooth_losses = self.moving_average(losses, sma_window)
-                    smooth_accuracies = self.moving_average(
-                        accuracies, sma_window)
+                        ax_loss.clear()
+                        ax_loss.plot(losses, label='Training Loss (raw)')
+                        if len(losses) >= sma_window:
+                            ax_loss.plot(range(sma_window - 1, len(losses)), smooth_losses,
+                                         label='Training Loss (smoothed)')
+                        ax_loss.set_title("Training Loss")
+                        ax_loss.set_xlabel("Batch Number")
+                        ax_loss.set_ylabel("Loss")
+                        ax_loss.legend()
 
-                    # Clear previous plots
-                    ax_diss.clear()
-                    ax_metrics.clear()
-                    ax_acc.clear()
-                    # Assume processed_slice is your DataFrame with 'Dissipation' and 'Fill' columns
-                    fill_values = processed_slice['Fill'].values
+                        ax_acc.clear()
+                        ax_acc.plot(
+                            accuracies, label='Training Accuracy (raw)')
+                        if len(accuracies) >= sma_window:
+                            ax_acc.plot(range(sma_window - 1, len(accuracies)), smooth_accuracies,
+                                        label='Training Accuracy (smoothed)')
+                        ax_acc.set_title("Training Accuracy")
+                        ax_acc.set_xlabel("Batch Number")
+                        ax_acc.set_ylabel("Accuracy")
+                        ax_acc.legend()
 
-                    # Get the unique fill values
-                    unique_fills = np.unique(fill_values)
-
-                    # Create a colormap with as many distinct colors as there are unique fill values.
-                    # Here, 'tab10' is used, but you can change it to another colormap like 'tab20' if needed.
-                    colormap = plt.cm.get_cmap('tab10', len(unique_fills))
-
-                    # Map each unique fill value to a distinct color
-                    fill_to_color = {fill: colormap(
-                        i) for i, fill in enumerate(unique_fills)}
-
-                    # Loop through fill values to add vertical spans when the fill value changes.
-                    start_idx = 0
-                    current_fill = fill_values[0]
-                    for idx, fill in enumerate(fill_values):
-                        if fill != current_fill:
-                            # Draw a vertical span from start_idx to the current index with the color assigned to current_fill.
-                            ax_diss.axvspan(
-                                start_idx, idx, facecolor=fill_to_color[current_fill], alpha=0.3, zorder=1)
-                            current_fill = fill
-                            start_idx = idx
-                    # Draw the final span for the last segment.
-                    ax_diss.axvspan(start_idx, len(
-                        fill_values) - 1, facecolor=fill_to_color[current_fill], alpha=0.3, zorder=1)
-
-                    # --- Update the Dissipation plot (upper subplot) ---
-                    ax_diss.plot(dissipation_values,
-                                 label='Dissipation', color='green')
-                    ax_diss.set_title("Dissipation Monitoring")
-                    ax_diss.set_ylabel("Dissipation", color='green')
-                    ax_diss.tick_params(axis='y', labelcolor='green')
-                    ax_diss.grid(True, linestyle='--', alpha=0.5)
-
-                    # --- Update the Loss/Accuracy plot (lower subplot) ---
-                    ax_metrics.plot(
-                        losses, label='Training Loss (raw)', linestyle=':', color='blue')
-                    if len(losses) >= sma_window:
-                        ax_metrics.plot(range(sma_window - 1, len(losses)), smooth_losses,
-                                        label='Training Loss (smoothed)', color='blue')
-                    ax_metrics.set_xlabel("Batch Number")
-                    ax_metrics.set_ylabel("Loss", color='blue')
-                    ax_metrics.tick_params(axis='y', labelcolor='blue')
-                    ax_metrics.grid(True, linestyle='--', alpha=0.5)
-
-                    ax_acc.plot(
-                        accuracies, label='Training Accuracy (raw)', linestyle=':', color='red')
-                    if len(accuracies) >= sma_window:
-                        ax_acc.plot(range(sma_window - 1, len(accuracies)), smooth_accuracies,
-                                    label='Training Accuracy (smoothed)', color='red')
-                    ax_acc.set_ylabel("Accuracy", color='red')
-                    ax_acc.tick_params(axis='y', labelcolor='red')
-
-                    ax_metrics.set_title("Live Training Metrics")
-                    # Combine legends from both axes for the lower subplot
-                    lines1, labels1 = ax_metrics.get_legend_handles_labels()
-                    lines2, labels2 = ax_acc.get_legend_handles_labels()
-                    ax_metrics.legend(
-                        lines1 + lines2, labels1 + labels2, loc='upper right')
-
-                    plt.draw()
-                    plt.pause(0.001)
+                        plt.pause(0.001)
 
         logging.info("Training completed.")
         if self.live_plot_enabled:
             plt.ioff()
             plt.show()
 
-    def tune(self, training_directory: str = r'content/training_data/full_fill',
-             validation_directory: str = r'content/test_data', num_epochs: int = 1,
-             max_batches: int = 5):
-        """
-        Hyperparameter tuning using a basic grid search for the lightweight GRU-based model.
-        For each combination in the grid, the model is built, trained on a limited number of batches,
-        and then evaluated on the validation set.
-        Live plotting shows the average validation loss for each hyperparameter combination as well as
-        the best loss so far.
-        """
-        # Load datasets (both training and validation)
-        self.load_datasets(training_directory, validation_directory)
-
-        # Setup live plotting if enabled
-        if self.live_plot_enabled:
-            import matplotlib.pyplot as plt
-            plt.ion()
-            fig, ax = plt.subplots(figsize=(8, 6))
-            ax.set_xlabel("Tuning Iteration")
-            ax.set_ylabel("Average Validation Loss")
-            tuning_iter = []
-            val_losses_list = []
-
-        # Define the hyperparameter grid for the lightweight model
-        from itertools import product
-        hp_grid = {
-            'units': [64, 128],
-            'dropout_rate': [0.3, 0.5],
-            'recurrent_dropout': [0.2, 0.3],
-            'learning_rate': [0.001, 0.0005]
-        }
-
-        best_val_loss = float('inf')
-        best_hp = None
-        all_results = []
-        iteration = 0
-
-        # Iterate over all combinations in the grid
-        for units, dropout_rate, rec_dropout, lr in product(
-                hp_grid['units'], hp_grid['dropout_rate'],
-                hp_grid['recurrent_dropout'], hp_grid['learning_rate']):
-            iteration += 1
-            logging.info(f"Testing hyperparameters: Units={units}, Dropout={dropout_rate}, "
-                         f"Recurrent Dropout={rec_dropout}, LR={lr}")
-            # Build a new model with the current hyperparameters
-            model = self.build_model_with_hyperparams(
-                units, dropout_rate, rec_dropout, lr)
-
-            # Train for a limited number of batches
-            batch_count = 0
-            for data_file, poi_file in self.train_content:
-                slices = self.get_slices(data_file, poi_file)
-                if slices is None:
-                    continue
-                for data_slice in slices:
-                    # Prepare slice data (same logic as in train_on_slice)
-                    y = data_slice['Fill']
-                    X = data_slice.drop(columns=['Fill'])
-                    X_np = X.to_numpy()
-                    y_np = y.to_numpy()
-                    if len(X_np) < 2:
-                        continue
-                    X_seq = X_np[:-1].reshape(1, -1, self.num_features)
-                    y_seq = y_np[1:].reshape(1, -1, 1)
-                    for epoch in range(num_epochs):
-                        model.train_on_batch(X_seq, y_seq)
-                    batch_count += 1
-                    if batch_count >= max_batches:
-                        break
-                if batch_count >= max_batches:
-                    break
-
-            # Evaluate on the validation set
-            val_losses = []
-            for data_file, poi_file in self.validation_content:
-                slices = self.get_slices(data_file, poi_file)
-                if slices is None:
-                    continue
-                for data_slice in slices:
-                    y = data_slice['Fill']
-                    X = data_slice.drop(columns=['Fill'])
-                    X_np = X.to_numpy()
-                    y_np = y.to_numpy()
-                    if len(X_np) < 2:
-                        continue
-                    X_seq = X_np[:-1].reshape(1, -1, self.num_features)
-                    y_seq = y_np[1:].reshape(1, -1, 1)
-                    loss, _ = model.evaluate(X_seq, y_seq, verbose=0)
-                    val_losses.append(loss)
-            avg_val_loss = np.mean(val_losses) if val_losses else float('inf')
-            logging.info(f"Hyperparameters: Units={units}, Dropout={dropout_rate}, "
-                         f"Recurrent Dropout={rec_dropout}, LR={lr} -> Avg Val Loss={avg_val_loss}")
-
-            # Save results for this hyperparameter combination
-            current_hp = {
-                'units': units,
-                'dropout_rate': dropout_rate,
-                'recurrent_dropout': rec_dropout,
-                'learning_rate': lr,
-                'avg_val_loss': avg_val_loss
-            }
-            all_results.append(current_hp)
-
-            # Update best hyperparameters if current combination is better
-            if avg_val_loss < best_val_loss:
-                best_val_loss = avg_val_loss
-                best_hp = current_hp
-
-            # Update live plot if enabled
-            if self.live_plot_enabled:
-                tuning_iter.append(iteration)
-                val_losses_list.append(avg_val_loss)
-                ax.clear()
-                ax.plot(tuning_iter, val_losses_list,
-                        'bo-', label="Avg Val Loss")
-                ax.axhline(best_val_loss, color='green',
-                           linestyle='--', label="Best Loss So Far")
-                ax.set_xlabel("Tuning Iteration")
-                ax.set_ylabel("Average Validation Loss")
-                ax.legend()
-                plt.draw()
-                plt.pause(0.001)
-
-        logging.info(f"Best hyperparameters: {best_hp}")
-        # Optionally, update self.model with the best hyperparameters found
-        self.model = self.build_model_with_hyperparams(
-            best_hp['units'],
-            best_hp['dropout_rate'],
-            best_hp['recurrent_dropout'],
-            best_hp['learning_rate']
-        )
-
-        if self.live_plot_enabled:
-            plt.ioff()
-            plt.show()
-        self.hyperparams = best_hp
-        self.tuning_results = all_results
-        return best_hp, all_results
-
     def test(self):
+        """
+        Evaluate the model on the validation data.
+        """
         logging.info("Starting testing on validation data.")
         total_loss = 0.0
         total_accuracy = 0.0
         count = 0
+
         for data_file, poi_file in self.validation_content:
             slices = self.get_slices(data_file, poi_file)
             for processed_slice in slices:
                 y = processed_slice['Fill']
                 X = processed_slice.drop(columns=['Fill'])
+                y = y.map(lambda x: self.label_to_index.get(x, x))
                 X_np = X.to_numpy()
                 y_np = y.to_numpy()
                 if len(X_np) < 2:
                     continue
-                X_seq = X_np[:-1]
-                y_seq = y_np[1:]
-                X_seq = X_seq.reshape(1, X_seq.shape[0], X_seq.shape[1])
-                y_seq = y_seq.reshape(1, y_seq.shape[0], 1)
-                result = self.model.test_on_batch(X_seq, y_seq)
-                if result is not None:
-                    batch_loss, batch_accuracy = result[0], result[1]
-                    total_loss += batch_loss
-                    total_accuracy += batch_accuracy
-                    count += 1
+
+                y_pred_proba = self.model.predict_proba(X_np)
+                loss = log_loss(y_np, y_pred_proba)
+                y_pred = self.model.predict(X_np)
+                accuracy = accuracy_score(y_np, y_pred)
+
+                total_loss += loss
+                total_accuracy += accuracy
+                count += 1
 
         if count > 0:
             avg_loss = total_loss / count
@@ -471,12 +286,10 @@ class ForcasterTrainer:
     def save_model(self, save_path: str):
         """
         Save the current model to the specified path.
-
-        Args:
-            save_path (str): The file path where the model should be saved.
         """
         try:
-            self.model.save(save_path)
+            # Save the model using XGBoost's built-in save_model method.
+            self.model.save_model(save_path)
             logging.info(f"Model successfully saved to {save_path}")
         except Exception as e:
             logging.error(f"Error saving model: {e}")
@@ -551,12 +364,12 @@ class Forecaster:
 
 
 TRAINING = True
-TESTING = True
+TESTING = False
 
 if __name__ == "__main__":
     if TRAINING:
         with tf.device('/GPU:0'):
-            ft = ForcasterTrainer(num_features=9, classes=[0, 1, 2])
+            ft = ForcasterTrainer(num_features=16, classes=[0, 1, 2, 3, 4, 5])
             ft.toggle_live_plot(True)  # Enable live plotting
             # ft.tune()
             ft.train()
