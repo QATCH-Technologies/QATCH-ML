@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 import pandas as pd
 from scipy.ndimage import gaussian_filter1d
-from scipy.signal import welch, savgol_filter
+from scipy.signal import welch, savgol_filter, argrelextrema
 from scipy.stats import skew, kurtosis, zscore
 from sklearn.svm import OneClassSVM
 from sklearn.cluster import DBSCAN
@@ -126,7 +126,7 @@ class DataProcessor:
             return pd.Series(clustered_anomalies, index=anomaly_flags.index)
         return anomaly_flags
 
-    def compute_difference_factor(df: pd.DataFrame) -> pd.Series:
+    def compute_difference_curve(df: pd.DataFrame) -> pd.Series:
         xs = df["Relative_time"]
         i = next((x for x, t in enumerate(xs) if t > 0.5), None)
         j = next((x for x, t in enumerate(xs) if t > 2.5), None)
@@ -138,7 +138,6 @@ class DataProcessor:
             ys_freq = avg_res_freq - df["Resonance_Frequency"]
             difference_factor = 3
             return ys_freq - difference_factor * ys_diss
-        # Fallback: if indices not found, return a zero series
         return pd.Series(0, index=df.index)
 
     @staticmethod
@@ -165,12 +164,32 @@ class DataProcessor:
         df["DoG_SVM_Anomaly"] = anomaly
         df["DoG_SVM_Anomaly"] = DataProcessor.cluster_anomalies(
             df["DoG_SVM_Anomaly"])
-        df["Difference"] = DataProcessor.compute_difference_factor(df)
-        # shift_idx = DataProcessor.find_sampling_shift(df)
-        # df['Sampling_shift'] = 0
-        # if shift_idx > -1:
-        #     df.loc[df.index >= shift_idx, 'Sampling_shift'] = 1
+        df["Difference"] = DataProcessor.compute_difference_curve(df)
+        # Smooth signal
+        smooth_factor = 21
+        if len(df) > smooth_factor:
+            smoothed_DoG = savgol_filter(
+                df['DoG_SVM_Score'], window_length=smooth_factor, polyorder=3)
+        else:
+            smoothed_DoG = df['DoG_SVM_Score'].values
 
+        # First derivative (change rate)
+        df['DoG_derivative'] = np.gradient(smoothed_DoG)
+
+        # Signal slope (same as derivative or could be a longer trend-based slope)
+        df['DoG_slope'] = pd.Series(smoothed_DoG).rolling(window=10).apply(
+            lambda x: np.polyfit(range(len(x)), x, 1)[0], raw=False)
+
+        # Sliding window features — we'll extract mean, std, min, max in each window
+        window_size = 20
+        df['DoG_win_mean'] = pd.Series(
+            smoothed_DoG).rolling(window=window_size).mean()
+        df['DoG_win_std'] = pd.Series(
+            smoothed_DoG).rolling(window=window_size).std()
+        df['DoG_win_min'] = pd.Series(
+            smoothed_DoG).rolling(window=window_size).min()
+        df['DoG_win_max'] = pd.Series(
+            smoothed_DoG).rolling(window=window_size).max()
         df.replace([np.inf, -np.inf], np.nan, inplace=True)
         df.fillna(0, inplace=True)
         return df
@@ -180,25 +199,23 @@ class DataProcessor:
 
         def process_fill(poi_file: str, length_df: int) -> pd.DataFrame:
             fill_df = pd.read_csv(poi_file, header=None)
-            fill_values = fill_df.values
-            len0 = fill_values[0][0]
-            len1 = fill_values[2][0] - fill_values[0][0]
-            len2 = fill_values[3][0] - fill_values[2][0]
-            len3 = fill_values[4][0] - fill_values[3][0]
-            len4 = fill_values[5][0] - fill_values[4][0]
-            if length_df > fill_values[5][0]:
-                len5 = length_df - fill_values[5][0]
-            else:
-                len5 = 0
-            seg0 = np.full(len0, 0, dtype=int)
-            seg1 = np.full(len1, 1, dtype=int)
-            seg2 = np.full(len2, 1, dtype=int)
-            seg3 = np.full(len3, 1, dtype=int)
-            seg4 = np.full(len4, 1, dtype=int)
-            seg5 = np.full(len5, 2, dtype=int)
-            fill_arr = np.concatenate([seg0, seg1, seg2, seg3, seg4, seg5])
-            return fill_arr
+            fill_positions = fill_df[0].astype(int).values
+            labels = np.zeros(length_df, dtype=int)
 
+            for i, pos in enumerate(fill_positions):
+                start = max(0, pos - 100)
+                end = min(length_df, pos + 100 + 1)
+
+                if i < 4:
+                    label = 1
+                elif i == 4:
+                    label = 2
+                else:  # i == 5
+                    label = 3
+
+                labels[start:end] = label
+
+            return pd.DataFrame(labels, columns=['Fill'])
         # Load the dataset
         required_cols = ["Relative_time", "Dissipation", "Resonance_Frequency"]
         if df.empty or not all(col in df.columns for col in required_cols):
