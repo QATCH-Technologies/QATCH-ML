@@ -38,7 +38,7 @@ class DataProcessor:
                     poi_values = poi_df.values
                     if len(poi_values) != len(np.unique(poi_values)):
                         logging.warning(
-                            f'POI file contains duplicate indices: {poi_df}.')
+                            f'POI file contains duplicate indices.')
                     else:
                         loaded_content.append(
                             (os.path.join(root, f), os.path.join(root, poi_file))
@@ -195,48 +195,51 @@ class DataProcessor:
         return df
 
     @staticmethod
-    def preprocess_data(df: pd.DataFrame, poi_file: str):
+    def process_fill(poi_file: str, length_df: int) -> pd.DataFrame:
+        # Read the positions from the CSV file
+        fill_df = pd.read_csv(poi_file, header=None)
+        fill_positions = fill_df[0].astype(int).values
 
-        def process_fill(poi_file: str, length_df: int) -> pd.DataFrame:
-            fill_df = pd.read_csv(poi_file, header=None)
-            fill_positions = fill_df[0].astype(int).values
-            labels = np.zeros(length_df, dtype=int)
+        # Initialize an empty labels array
+        labels = np.empty(length_df, dtype=int)
 
-            for i, pos in enumerate(fill_positions):
-                start = max(0, pos - 100)
-                end = min(length_df, pos + 100 + 1)
+        # Segment 0: From the start to the first position -> label 0
+        labels[:fill_positions[0]] = 0
 
-                if i < 4:
-                    label = 1
-                elif i == 4:
-                    label = 2
-                else:  # i == 5
-                    label = 3
+        # Segment 1: From the first position to the fourth position -> label 1
+        labels[fill_positions[0]:fill_positions[3]] = 1
 
-                labels[start:end] = label
+        # Segment 2: From the fourth position to the fifth position -> label 2
+        labels[fill_positions[3]:fill_positions[4]] = 2
 
-            return pd.DataFrame(labels, columns=['Fill'])
+        # Segment 3: From the fifth position to the sixth position -> label 3
+        labels[fill_positions[4]:fill_positions[5]] = 3
+
+        # Segment 4: From the sixth position to the end of the data -> label 4
+        labels[fill_positions[5]:] = 4
+
+        # Return the labels as a DataFrame
+        return pd.DataFrame(labels)
+
+    @staticmethod
+    def preprocess_data(df: pd.DataFrame):
         # Load the dataset
-        required_cols = ["Relative_time", "Dissipation", "Resonance_Frequency"]
+        required_cols = ["Relative_time", "Dissipation",
+                         "Resonance_Frequency", "Fill"]
         if df.empty or not all(col in df.columns for col in required_cols):
             raise ValueError(
                 "The dataset is empty or missing required columns.")
         df = df[required_cols].copy()
-        try:
-            fill_arr = process_fill(poi_file, len(df))
-            df['Fill'] = fill_arr[:len(df)]
-        except FileNotFoundError:
-            raise ValueError("POI file not found.")
-        # Filter and downsample the data
-        df = df[df["Relative_time"] >= random.uniform(
-            SPIN_UP_TIME[0], SPIN_UP_TIME[1])]
-        df = df.iloc[::DOWNSAMPLE_FACTOR]
         if df.empty:
             return None
         df = df.reset_index(drop=True)
+
         # Generate features and clean up the DataFrame
         df = DataProcessor.generate_features(df, live=False)
         df.reset_index(drop=True, inplace=True)
         df.drop(columns=['Relative_time'], inplace=True)
+
+        # Replace any NaNs or infinities with 0
+        df = df.replace([np.inf, -np.inf], np.nan).fillna(0)
 
         return df
