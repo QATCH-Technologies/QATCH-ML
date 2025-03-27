@@ -173,8 +173,11 @@ class DataProcessor:
         else:
             smoothed_DoG = df['DoG_SVM_Score'].values
 
-        # First derivative (change rate)
-        df['DoG_derivative'] = np.gradient(smoothed_DoG)
+        # Compute the derivative only if the array has at least 2 elements
+        if smoothed_DoG.size < 2:
+            df['DoG_derivative'] = np.zeros_like(smoothed_DoG)
+        else:
+            df['DoG_derivative'] = np.gradient(smoothed_DoG)
 
         # Signal slope (same as derivative or could be a longer trend-based slope)
         df['DoG_slope'] = pd.Series(smoothed_DoG).rolling(window=10).apply(
@@ -196,29 +199,14 @@ class DataProcessor:
 
     @staticmethod
     def process_fill(poi_file: str, length_df: int) -> pd.DataFrame:
-        # Read the positions from the CSV file
         fill_df = pd.read_csv(poi_file, header=None)
         fill_positions = fill_df[0].astype(int).values
-
-        # Initialize an empty labels array
         labels = np.empty(length_df, dtype=int)
-
-        # Segment 0: From the start to the first position -> label 0
         labels[:fill_positions[0]] = 0
-
-        # Segment 1: From the first position to the fourth position -> label 1
-        labels[fill_positions[0]:fill_positions[3]] = 1
-
-        # Segment 2: From the fourth position to the fifth position -> label 2
-        labels[fill_positions[3]:fill_positions[4]] = 2
-
-        # Segment 3: From the fifth position to the sixth position -> label 3
-        labels[fill_positions[4]:fill_positions[5]] = 3
-
-        # Segment 4: From the sixth position to the end of the data -> label 4
-        labels[fill_positions[5]:] = 4
-
-        # Return the labels as a DataFrame
+        labels[fill_positions[0]:fill_positions[3]] = 0
+        labels[fill_positions[3]:fill_positions[4]] = 0
+        labels[fill_positions[4]:fill_positions[5]] = 0
+        labels[fill_positions[5]:] = 1
         return pd.DataFrame(labels)
 
     @staticmethod

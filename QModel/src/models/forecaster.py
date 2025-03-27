@@ -1,16 +1,17 @@
-from IPython.display import clear_output
 from typing import List, Dict, Tuple, Optional
 import xgboost as xgb
-from sklearn.metrics import log_loss, accuracy_score
 from sklearn.model_selection import train_test_split
-from collections import deque, defaultdict
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
 import random
 import logging
-from tqdm import tqdm
+from collections import Counter
+from imblearn.over_sampling import SMOTE
+import optuna
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 
 from forecaster_data_processor import DataProcessor  # assuming this exists
 
@@ -25,28 +26,43 @@ RANDOM_STATE = 42
 DOWNSAMPLE_FACTOR = 5
 SLICE_SIZE = 100
 
+EVAL_METRIC = "mae"
+OBJECTIVE = "binary:logistic"
+DIRECTION = "minimize"
+
+TRAIN_PATH = os.path.join("content", "training_data", "full_fill")
+TEST_PATH = os.path.join("content", "test_data")
+
+
+# Make sure these globals/constants are defined somewhere in your code:
+# EVAL_METRIC, SLICE_SIZE, TEST_SIZE, RANDOM_STATE, DOWNSAMPLE_FACTOR, etc.
+
 
 class ForcasterTrainer:
     def __init__(self,
-                 classes: List,
+                 classes: list,
                  num_features: int,
-                 training_directory: str = r'content/training_data/full_fill',
-                 validation_directory: str = r'content/test_data') -> None:
+                 training_directory: str = TRAIN_PATH,
+                 validation_directory: str = TEST_PATH) -> None:
         if not isinstance(classes, list):
             raise TypeError("classes must be a list")
         if not isinstance(num_features, int):
             raise TypeError("num_features must be an integer")
 
-        self.classes: List = classes
+        self.classes: list = classes
         self.num_features: int = num_features
-        self.params: Dict = self.build_params()  # set up booster parameters
-        self.booster: Optional[xgb.Booster] = None
-        self.label_to_index: Dict[str, int] = {
+        self.params: dict = self.build_params()  # set up booster parameters
+        self.booster: xgb.Booster = None
+        self.label_to_index: dict = {
             str(label): idx for idx, label in enumerate(classes)}
-        self.content: Optional[List[Tuple[str, str]]] = None
-        self.train_content: Optional[List[Tuple[str, str]]] = None
-        self.test_content: Optional[List[Tuple[str, str]]] = None
-        self.validation_content: Optional[List[Tuple[str, str]]] = None
+        self.content: list = None
+        self.train_content: list = None
+        self.test_content: list = None
+        self.validation_content: list = None
+
+        self.training_slices = None
+        self.validation_slices = None
+        self.test_slices = None
 
         # Toggle flag for live plotting (default is off)
         self.live_plot_enabled: bool = False
@@ -57,17 +73,12 @@ class ForcasterTrainer:
         """Toggle live plotting on or off."""
         self.live_plot_enabled = enabled
 
-    def build_params(self) -> Dict:
-        """
-        Build parameters dictionary for xgb.train using GPU-accelerated methods.
-        """
+    def build_params(self) -> dict:
         params = {
-            "objective": "multi:softprob",
-            "num_class": len(self.classes),
+            "objective": "binary:logistic",  # changed from multi:softprob to binary:logistic
             "learning_rate": 0.1,
-            "eval_metric": "mlogloss",
-            "tree_method": "hist",    # Use GPU-accelerated histogram algorithm
-            # "predictor": "gpu_predictor"   # Use GPU for prediction
+            "eval_metric": EVAL_METRIC,
+            "tree_method": "hist",
             "device": "cuda"
         }
         return params
@@ -77,39 +88,41 @@ class ForcasterTrainer:
         Loads and splits the training data.
         """
         self.content = DataProcessor.load_content(
-            training_directory, num_datasets=20)
+            training_directory, num_datasets=200)
         self.train_content, self.test_content = train_test_split(
             self.content, test_size=TEST_SIZE, random_state=RANDOM_STATE, shuffle=True)
         self.validation_content = DataProcessor.load_content(
-            validation_directory, num_datasets=5)
+            validation_directory, num_datasets=100)
         logging.info("Datasets loaded.")
 
     def get_slices(self, data_file: str, poi_file: str, slice_size: int = SLICE_SIZE):
-        data_df = pd.read_csv(data_file)
-        start_idx = 0
         try:
+            data_df = pd.read_csv(data_file)
             fill_df = DataProcessor.process_fill(
                 poi_file, length_df=len(data_df))
             data_df['Fill'] = fill_df
             data_df = data_df[::DOWNSAMPLE_FACTOR]
             total_rows = len(data_df)
+
             slices = []
-            while start_idx < total_rows:
-                end_idx = min(start_idx + slice_size, total_rows)
-                current_slice = data_df.iloc[:end_idx]
-                processed_slice = DataProcessor.preprocess_data(current_slice)
-                start_idx = end_idx
-                if processed_slice is None:
-                    continue
-                slices.append(processed_slice)
+            with ThreadPoolExecutor() as executor:
+                futures = {
+                    executor.submit(DataProcessor.preprocess_data, data_df.iloc[0:i+slice_size]): i
+                    for i in range(0, total_rows, slice_size)
+                }
+                for future in as_completed(futures):
+                    result = future.result()
+                    if result is not None:
+                        slices.append(result)
             return slices
         except FileNotFoundError as e:
-            logging.error(f'POI file not found.')
+            logging.error('POI file not found.')
 
     def get_training_set(self):
         all_slices = []
         for i, (data_file, poi_file) in enumerate(self.train_content):
-            logging.info(f'[{i + 1}] Processing training dataset {data_file}')
+            logging.info(
+                f'[{i + 1}] Processing training dataset `{data_file}`')
             slices = self.get_slices(
                 data_file=data_file, poi_file=poi_file, slice_size=SLICE_SIZE)
             if slices is None:
@@ -122,7 +135,7 @@ class ForcasterTrainer:
         all_slices = []
         for i, (data_file, poi_file) in enumerate(self.validation_content):
             logging.info(
-                f'[{i + 1}] Processing validation dataset: {data_file}')
+                f'[{i + 1}] Processing validation dataset: `{data_file}`')
             slices = self.get_slices(
                 data_file=data_file, poi_file=poi_file, slice_size=SLICE_SIZE)
             if slices is None:
@@ -133,42 +146,61 @@ class ForcasterTrainer:
 
     def train(self):
         # Prepare training and validation slices
-        train_slices = self.get_training_set()
-        val_slices = self.get_validation_set()
-        logging.info(f'Number of training slices loaded: {len(train_slices)}')
-        logging.info(f'Number of validation slices loaded: {len(val_slices)}')
+        # Prepare training and validation data (same as in train())
+        if self.training_slices is None:
+            self.training_slices = self.get_training_set()
+        if self.validation_slices is None:
+            self.validation_slices = self.get_validation_set()
+        if not self.training_slices or not self.validation_slices:
+            logging.error("Training or validation slices not found.")
+            return
+        logging.info(
+            f'Number of training slices loaded: {len(self.training_slices)}')
+        logging.info(
+            f'Number of validation slices loaded: {len(self.validation_slices)}')
 
         # Build training arrays from slices
         X_train_list, y_train_list = [], []
-        for df in train_slices:
+        for df in self.training_slices:
             y_train_list.append(df['Fill'].values)
-            df.drop(columns=['Fill'])
-            X_train_list.append(df)
-            # Converting labels to string keys to match self.label_to_index dictionary keys
-
+            df = df.drop(columns=['Fill'])
+            X_train_list.append(df.values)
         X_train = np.vstack(X_train_list)
         y_train = np.hstack(y_train_list)
 
-        X_val_list, y_val_list = [], []
-        for df in val_slices:
-            y_val_list.append(df['Fill'].values)
-            df.drop(columns=['Fill'])
-            X_val_list.append(df)
+        # Measure class distribution before applying SMOTE
+        initial_distribution = Counter(y_train)
+        logging.info(
+            f"Class distribution before SMOTE: {initial_distribution}")
 
+        # Balance the training set using SMOTE
+        smote = SMOTE(random_state=RANDOM_STATE)
+        X_train_res, y_train_res = smote.fit_resample(X_train, y_train)
+        balanced_distribution = Counter(y_train_res)
+        logging.info(
+            f"Class distribution after SMOTE: {balanced_distribution}")
+
+        # Build validation arrays from slices
+        X_val_list, y_val_list = [], []
+        for df in self.validation_slices:
+            y_val_list.append(df['Fill'].values)
+            df = df.drop(columns=['Fill'])
+            X_val_list.append(df.values)
         X_val = np.vstack(X_val_list)
         y_val = np.hstack(y_val_list)
 
-        dtrain = xgb.DMatrix(X_train, label=y_train)
+        # Create XGBoost DMatrix objects using the resampled training data
+        dtrain = xgb.DMatrix(X_train_res, label=y_train_res)
         dval = xgb.DMatrix(X_val, label=y_val)
 
-        total_rounds = 50  # total number of boosting rounds
-        losses = []  # To store (train_loss, val_loss) for each round
+        total_rounds = 50  # Total number of boosting rounds
+        losses = []       # To store (train_loss, val_loss) for each round
 
         if self.live_plot_enabled:
             plt.ion()
             fig, ax = plt.subplots(figsize=(8, 6))
 
-        booster = self.booster  # initially None
+        booster = self.booster  # Initially None
         for round in range(total_rounds):
             evals_result = {}
             booster = xgb.train(
@@ -179,12 +211,11 @@ class ForcasterTrainer:
                 evals_result=evals_result,
                 xgb_model=booster
             )
-            # Extract losses for the current round
-            train_loss = evals_result["train"]["mlogloss"][0]
-            val_loss = evals_result["val"]["mlogloss"][0]
+            train_loss = evals_result["train"][EVAL_METRIC][0]
+            val_loss = evals_result["val"][EVAL_METRIC][0]
             losses.append((train_loss, val_loss))
             logging.info(
-                f"Round {round+1}: train mlogloss={train_loss}, val mlogloss={val_loss}")
+                f"Round {round+1}: train {EVAL_METRIC}={train_loss}, val {EVAL_METRIC}={val_loss}")
 
             if self.live_plot_enabled:
                 ax.clear()
@@ -194,13 +225,13 @@ class ForcasterTrainer:
                 ax.plot(rounds_range, val_losses, label="Val Loss")
                 ax.legend()
                 ax.set_xlabel("Boosting Round")
-                ax.set_ylabel("mlogloss")
+                ax.set_ylabel(EVAL_METRIC)
                 ax.set_title("Training vs. Validation Loss")
                 fig.canvas.draw()
                 fig.canvas.flush_events()
                 plt.pause(0.1)
 
-        self.booster = booster  # Save the final booster
+        self.booster = booster
         logging.info("Training completed.")
         if self.live_plot_enabled:
             plt.ioff()
@@ -216,7 +247,7 @@ class ForcasterTrainer:
         for i, (data_file, poi_file) in enumerate(self.test_content):
             logging.info(f'[{i + 1}] Processing test dataset: {data_file}')
             slices = self.get_slices(
-                data_file=data_file, poi_file=poi_file, slice_size=100)
+                data_file=data_file, poi_file=poi_file, slice_size=SLICE_SIZE)
             if slices is None:
                 continue
             test_slices.extend(slices)
@@ -225,35 +256,74 @@ class ForcasterTrainer:
             logging.warning("No test slices found.")
             return
 
+        total_correct = 0
+        total_samples = 0
+        all_predictions = []
+        all_labels = []
         slice_accuracies = []
+
         if self.live_plot_enabled:
             plt.ion()
-            fig, ax = plt.subplots(figsize=(6, 4))
+            fig, (ax1, ax2) = plt.subplots(nrows=2, ncols=1, figsize=(6, 8))
 
         for i, df in enumerate(test_slices):
+            y_slice = df['Fill']
             X_slice = df.drop(columns=['Fill']).values
-            y_slice = df['Fill'].astype(str).map(self.label_to_index).values
             dtest = xgb.DMatrix(X_slice)
-            # Get predicted probabilities then choose the class with highest probability
             pred_probs = self.booster.predict(dtest)
-            predictions = np.argmax(pred_probs, axis=1)
-            acc = np.mean(predictions == y_slice)
-            slice_accuracies.append(acc)
+
+            if pred_probs.ndim == 1:
+                predictions = (pred_probs > 0.5).astype(int)
+            else:
+                predictions = np.argmax(pred_probs, axis=1)
+
+            correct = np.sum(predictions == y_slice)
+            total_correct += correct
+            total_samples += len(y_slice)
+
+            all_predictions.extend(predictions)
+            all_labels.extend(y_slice)
+
+            slice_acc = correct / len(y_slice)
+            slice_accuracies.append(slice_acc)
+
             if self.live_plot_enabled:
-                ax.clear()
-                ax.plot(slice_accuracies, marker='o')
-                ax.set_title("Test Slice Accuracy")
-                ax.set_xlabel("Slice Number")
-                ax.set_ylabel("Accuracy")
+                ax1.clear()
+                ax2.clear()
+                x_vals = np.arange(len(df))
+                ax1.plot(x_vals, df['Dissipation'], label="Dissipation")
+                ax1.set_title("Dissipation with Predicted Classes")
+                ax1.set_xlabel("Index")
+                ax1.set_ylabel("Dissipation")
+                unique_classes = np.unique(predictions)
+                cmap = plt.cm.get_cmap('Set1', len(unique_classes))
+                for idx, cls in enumerate(unique_classes):
+                    mask = (predictions == cls)
+                    ax1.fill_between(x_vals, df['Dissipation'], alpha=0.3,
+                                     where=mask,
+                                     color=cmap(idx),
+                                     label=f"Predicted Class {cls}")
+                ax1.legend()
+                ax2.plot(slice_accuracies)
+                ax2.set_title("Test Slice Accuracy")
+                ax2.set_xlabel("Slice Number")
+                ax2.set_ylabel("Accuracy")
                 fig.canvas.draw()
                 fig.canvas.flush_events()
                 plt.pause(0.1)
 
-        overall_accuracy = np.mean(slice_accuracies)
+        overall_accuracy = total_correct / total_samples
         logging.info(f"Test accuracy: {overall_accuracy * 100:.2f}%")
+        from sklearn.metrics import classification_report, confusion_matrix
+        logging.info(
+            f"Classification Report:\n{classification_report(all_labels, all_predictions)}")
+        logging.info(
+            f"Confusion Matrix:\n{confusion_matrix(all_labels, all_predictions)}")
+
         if self.live_plot_enabled:
             plt.ioff()
             plt.show()
+
         return overall_accuracy
 
     def save_model(self, save_path: str):
@@ -263,6 +333,100 @@ class ForcasterTrainer:
             return
         self.booster.save_model(save_path)
         logging.info(f"Model saved to {save_path}")
+
+    def tune(self,
+             n_trials: int = 50,
+             num_boost_round: int = 50,
+             early_stopping_rounds: int = 10):
+        """
+        Tunes hyperparameters using Optuna, including determining the optimal number of boosting rounds.
+
+        Args:
+            n_trials (int): Number of Optuna trials.
+            num_boost_round (int): Maximum number of boosting rounds per trial.
+            early_stopping_rounds (int): Early stopping rounds for each trial.
+        """
+        # Prepare training and validation data (same as in train())
+        if not hasattr(self, "training_slices") or self.training_slices is None:
+            self.training_slices = self.get_training_set()
+        if not hasattr(self, "validation_slices") or self.validation_slices is None:
+            self.validation_slices = self.get_validation_set()
+        if not self.training_slices or not self.validation_slices:
+            logging.error("Training or validation slices not found.")
+            return
+
+        # Build training arrays
+        X_train_list, y_train_list = [], []
+        for df in self.training_slices:
+            y_train_list.append(df['Fill'].values)
+            df = df.drop(columns=['Fill'])
+            X_train_list.append(df.values)
+        X_train = np.vstack(X_train_list)
+        y_train = np.hstack(y_train_list)
+
+        # Balance the training set using SMOTE
+        smote = SMOTE(random_state=RANDOM_STATE)
+        X_train_res, y_train_res = smote.fit_resample(X_train, y_train)
+
+        # Build validation arrays
+        X_val_list, y_val_list = [], []
+        for df in self.validation_slices:
+            y_val_list.append(df['Fill'].values)
+            df = df.drop(columns=['Fill'])
+            X_val_list.append(df.values)
+        X_val = np.vstack(X_val_list)
+        y_val = np.hstack(y_val_list)
+
+        # Create DMatrix objects for XGBoost
+        dtrain = xgb.DMatrix(X_train_res, label=y_train_res)
+        dval = xgb.DMatrix(X_val, label=y_val)
+        evals = [(dtrain, "train"), (dval, "val")]
+
+        def objective(trial):
+            # Suggest hyperparameters
+            trial_params = self.params.copy()
+            trial_params["learning_rate"] = trial.suggest_float(
+                "learning_rate", 0.01, 0.2, log=True)
+            trial_params["max_depth"] = trial.suggest_int("max_depth", 3, 10)
+            trial_params["subsample"] = trial.suggest_float(
+                "subsample", 0.5, 1.0)
+            trial_params["colsample_bytree"] = trial.suggest_float(
+                "colsample_bytree", 0.5, 1.0)
+            # Suggest the maximum number of boosting rounds for this trial (lower bound fixed to 10)
+            trial_n_boost_round = trial.suggest_int(
+                "n_boost_round", 10, num_boost_round)
+
+            # Train with early stopping; early stopping will determine the optimal iteration
+            booster = xgb.train(
+                trial_params,
+                dtrain,
+                num_boost_round=trial_n_boost_round,
+                evals=evals,
+                early_stopping_rounds=early_stopping_rounds,
+                verbose_eval=False
+            )
+            # Record the actual optimal number of boosting rounds from early stopping
+            optimal_rounds = booster.best_iteration
+            trial.set_user_attr("optimal_boost_rounds", optimal_rounds)
+            # Return the best validation score (assumes lower is better)
+            return booster.best_score
+
+        # Create and run the Optuna study
+        study = optuna.create_study(direction="minimize")
+        study.optimize(objective, n_trials=n_trials)
+
+        logging.info(f"Best trial: {study.best_trial.number}")
+        logging.info(f"Best score: {study.best_trial.value}")
+        logging.info(f"Best parameters: {study.best_trial.params}")
+
+        # Retrieve the optimal boosting rounds determined by early stopping from the best trial.
+        optimal_boost_rounds = study.best_trial.user_attrs.get(
+            "optimal_boost_rounds")
+        logging.info(
+            f"Optimal boosting rounds determined: {optimal_boost_rounds}")
+
+        # Update the trainer with the best parameters found
+        self.params.update(study.best_trial.params)
 
 
 class Forecaster:
@@ -302,16 +466,19 @@ TESTING = False
 if __name__ == "__main__":
     if TRAINING:
         ft = ForcasterTrainer(num_features=16, classes=[
-                              "no_fill", "init_fill", "ch1", "ch2", "full_fill"])
+                              "no_fill", "filling", "full_fill"])
         ft.toggle_live_plot(True)  # Enable live plotting
+        ft.tune()
         ft.train()
         ft.test()
-        ft.save_model(save_path=r'QModel/SavedModels/bff')
+        ft.save_model(save_path=os.path.join(
+            "QModel", "SavedModels", "bff.json"))
 
     if TESTING:
         f = Forecaster()
         try:
-            f.load_model(model_path=r'QModel/SavedModels/bff')
+            f.load_model(model_path=os.path.join(
+                "QModel", "SavedModels", "bff.json"))
         except Exception as e:
             logging.error(f"Could not load model: {e}")
             exit(1)
