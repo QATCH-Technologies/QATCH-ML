@@ -101,11 +101,11 @@ class ForcasterTrainer:
         Loads and splits the training data.
         """
         self.content = DataProcessor.load_content(
-            training_directory, num_datasets=10)
+            training_directory, num_datasets=400)
         self.train_content, self.validation_content = train_test_split(
             self.content, test_size=TEST_SIZE, random_state=RANDOM_STATE, shuffle=True)
         self.test_content = DataProcessor.load_content(
-            test_directory, num_datasets=10)
+            test_directory, num_datasets=400)
         logging.info("Datasets loaded.")
 
     def get_slices(self, data_file: str, poi_file: str, slice_size: int = SLICE_SIZE):
@@ -559,11 +559,11 @@ if __name__ == "__main__":
         ft = ForcasterTrainer(num_features=12, classes=[
                               "no_fill", "full_fill"])
         ft.toggle_live_plot(True)  # Enable live plotting
-        # ft.search_best_objective_eval_combo()
-        # ft.tune()
-        # ft.train()
-        # ft.save_model(save_path=os.path.join(
-        #     "QModel", "SavedModels", "bff.json"))
+        ft.search_best_objective_eval_combo()
+        ft.tune()
+        ft.train()
+        ft.save_model(save_path=os.path.join(
+            "QModel", "SavedModels", "bff.json"))
         ft.test(os.path.join(
             "QModel", "SavedModels", "bff.json"))
 

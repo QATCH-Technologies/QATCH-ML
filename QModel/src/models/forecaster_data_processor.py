@@ -10,6 +10,7 @@ from scipy.stats import skew, kurtosis, zscore
 from sklearn.svm import OneClassSVM
 from sklearn.cluster import DBSCAN
 import random
+from sklearn.preprocessing import MinMaxScaler
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -148,9 +149,11 @@ class DataProcessor:
         else:
             required_columns = ["Dissipation",
                                 "Resonance_Frequency", "Relative_time", "Fill"]
+
         if not all(column in df.columns for column in required_columns):
             raise ValueError(
                 f"Input DataFrame must contain the following columns: {required_columns}")
+
         df = df[required_columns].copy()
         df['Dissipation_DoG'] = DataProcessor.compute_dissipation_dog(df)
         baseline_window = max(3, int(np.ceil(0.05 * len(df))))
@@ -160,13 +163,13 @@ class DataProcessor:
             df['DoG_shift'])
         df['DoG_SVM_Score_Smooth'] = gaussian_filter1d(
             df['DoG_SVM_Score'], sigma=5)
+
         z_scores, anomaly = DataProcessor.compute_anomaly_zscore(
-            df["DoG_SVM_Score"])
+            df["DoG_SVM_Score_Smooth"])
         df["DoG_SVM_Zscore"] = z_scores
-        df["DoG_SVM_Anomaly"] = anomaly
-        df["DoG_SVM_Anomaly"] = DataProcessor.cluster_anomalies(
-            df["DoG_SVM_Anomaly"])
+        df["DoG_SVM_Anomaly"] = DataProcessor.cluster_anomalies(anomaly)
         df["Difference"] = DataProcessor.compute_difference_curve(df)
+
         # Smooth signal
         smooth_factor = 21
         if len(df) > smooth_factor:
@@ -175,17 +178,14 @@ class DataProcessor:
         else:
             smoothed_DoG = df['DoG_SVM_Score'].values
 
-        # Compute the derivative only if the array has at least 2 elements
         if smoothed_DoG.size < 2:
             df['DoG_derivative'] = np.zeros_like(smoothed_DoG)
         else:
             df['DoG_derivative'] = np.gradient(smoothed_DoG)
 
-        # Signal slope (same as derivative or could be a longer trend-based slope)
         df['DoG_slope'] = pd.Series(smoothed_DoG).rolling(window=10).apply(
             lambda x: np.polyfit(range(len(x)), x, 1)[0], raw=False)
 
-        # Sliding window features — we'll extract mean, std, min, max in each window
         window_size = 20
         df['DoG_win_mean'] = pd.Series(
             smoothed_DoG).rolling(window=window_size).mean()
@@ -195,9 +195,17 @@ class DataProcessor:
             smoothed_DoG).rolling(window=window_size).min()
         df['DoG_win_max'] = pd.Series(
             smoothed_DoG).rolling(window=window_size).max()
+
         df.replace([np.inf, -np.inf], np.nan, inplace=True)
         df.fillna(0, inplace=True)
-        return df
+
+        # Normalize entire dataframe
+        scaler = MinMaxScaler()
+        scaled_array = scaler.fit_transform(df)
+        normalized_df = pd.DataFrame(
+            scaled_array, columns=df.columns, index=df.index)
+
+        return normalized_df
 
     @staticmethod
     def process_fill(poi_file: str, length_df: int) -> pd.DataFrame:
