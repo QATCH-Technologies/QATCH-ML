@@ -158,6 +158,8 @@ class DataProcessor:
             df['Dissipation_DoG'], baseline_window)
         df['DoG_SVM_Score'] = DataProcessor.compute_ocsvm_score(
             df['DoG_shift'])
+        df['DoG_SVM_Score_Smooth'] = gaussian_filter1d(
+            df['DoG_SVM_Score'], sigma=5)
         z_scores, anomaly = DataProcessor.compute_anomaly_zscore(
             df["DoG_SVM_Score"])
         df["DoG_SVM_Zscore"] = z_scores
