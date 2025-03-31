@@ -1,3 +1,6 @@
+import matplotlib.pyplot as plt
+from scipy.stats import entropy
+import logging
 from tqdm import tqdm
 import os
 import logging as logging
@@ -6,11 +9,11 @@ import numpy as np
 import pandas as pd
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import welch, savgol_filter, argrelextrema
-from scipy.stats import skew, kurtosis, zscore
+from scipy.stats import skew, kurtosis, zscore, entropy
 from sklearn.svm import OneClassSVM
+from sklearn.preprocessing import MinMaxScaler
 from sklearn.cluster import DBSCAN
 import random
-from sklearn.preprocessing import MinMaxScaler
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -23,16 +26,16 @@ BASELINE_WINDOW = 100
 
 class DataProcessor:
     @staticmethod
-    def load_content(data_dir: str, num_datasets: int = np.inf) -> list:
+    def load_content(data_dir: str, num_datasets: int = np.inf, column: str = 'Dissipation') -> list:
         logging.info(f"Loading content from {data_dir}")
         loaded_content = []
 
+        # Step 1: Collect (file, poi) pairs
         for root, _, files in tqdm(os.walk(data_dir), desc='Loading files...'):
             for f in files:
                 if f.endswith(".csv") and not f.endswith("_poi.csv") and not f.endswith("_lower.csv"):
                     poi_file = f.replace(".csv", "_poi.csv")
-                    if not os.path.exists(os.path.join(
-                            root, poi_file)):
+                    if not os.path.exists(os.path.join(root, poi_file)):
                         continue
                     poi_df = pd.read_csv(os.path.join(
                         root, poi_file), header=None)
@@ -45,11 +48,119 @@ class DataProcessor:
                             (os.path.join(root, f), os.path.join(root, poi_file))
                         )
 
-        random.shuffle(loaded_content)
         if num_datasets == np.inf:
             return loaded_content
 
-        return loaded_content[:num_datasets]
+        result = DataProcessor.optimize_sample(
+            loaded_content, column=column, max_size=num_datasets
+        )
+
+        return result['sampled_files']
+
+    @staticmethod
+    def compute_file_variance(file_path, column='Dissipation'):
+        try:
+            df = pd.read_csv(file_path)
+            return np.var(df[column])
+        except Exception as e:
+            logging.warning(f"Skipping {file_path}: {e}")
+            return None
+
+    @staticmethod
+    def get_variance_df(file_list, column):
+        data = []
+        for f, poi in file_list:
+            var = DataProcessor.compute_file_variance(f, column)
+            if var is not None:
+                data.append((f, poi, var))
+        return pd.DataFrame(data, columns=['file', 'poi', 'variance'])
+
+    @staticmethod
+    def balanced_file_sample(all_files, sample_size=12, column='Dissipation', bins=4):
+        df = DataProcessor.get_variance_df(all_files, column)
+        if df.empty:
+            raise ValueError("No valid files with computed variance.")
+
+        df['bin'] = pd.qcut(df['variance'], q=bins,
+                            labels=False, duplicates='drop')
+        bin_counts = df['bin'].value_counts().sort_index()
+        samples_per_bin = (bin_counts / bin_counts.sum()
+                           * sample_size).astype(int)
+
+        while samples_per_bin.sum() < sample_size:
+            samples_per_bin[samples_per_bin.idxmax()] += 1
+
+        sampled = []
+        for bin_idx, count in samples_per_bin.items():
+            bin_group = df[df['bin'] == bin_idx]
+            if len(bin_group) < count:
+                raise ValueError(
+                    f"Not enough files in bin {bin_idx} to sample {count} files.")
+            sampled.append(bin_group.sample(n=count, random_state=42))
+
+        sampled_df = pd.concat(sampled)
+        return list(sampled_df[['file', 'poi']].itertuples(index=False, name=None))
+
+    @staticmethod
+    def optimize_sample(
+        all_files,
+        column='Dissipation',
+        min_bins=2,
+        max_bins=10,
+        min_size=20,
+        max_size=300,
+        step=10,
+        threshold=0.05
+    ):
+        df = DataProcessor.get_variance_df(all_files, column)
+        if df.empty:
+            raise ValueError("No valid files for variance analysis.")
+
+        best_result = {
+            'kl': float('inf'),
+            'bins': None,
+            'size': None,
+            'sampled_files': []
+        }
+
+        for bins in range(min_bins, max_bins + 1):
+            try:
+                df['bin'] = pd.qcut(df['variance'], q=bins,
+                                    labels=False, duplicates='drop')
+                global_dist = df['bin'].value_counts(
+                    normalize=True).sort_index()
+
+                for size in range(min_size, min(len(df), max_size), step):
+                    sampled = DataProcessor.balanced_file_sample(
+                        all_files, size, column, bins)
+                    sampled_df = DataProcessor.get_variance_df(sampled, column)
+                    sampled_df['bin'] = pd.cut(
+                        sampled_df['variance'],
+                        bins=pd.qcut(df['variance'], q=bins,
+                                     retbins=True, duplicates='drop')[1],
+                        labels=False,
+                        include_lowest=True
+                    )
+                    sampled_dist = sampled_df['bin'].value_counts(
+                        normalize=True).sort_index()
+                    sampled_dist = sampled_dist.reindex(
+                        global_dist.index, fill_value=0)
+                    kl = entropy(sampled_dist + 1e-10, global_dist + 1e-10)
+
+                    if kl < best_result['kl']:
+                        best_result.update({
+                            'kl': kl,
+                            'bins': bins,
+                            'size': size,
+                            'sampled_files': sampled
+                        })
+
+                    if kl < threshold:
+                        break
+            except Exception as e:
+                logging.warning(f"Skipping bin count {bins}: {e}")
+
+        return best_result
 
     @staticmethod
     def find_sampling_shift(df: pd.DataFrame) -> int:
@@ -215,7 +326,7 @@ class DataProcessor:
         labels[:fill_positions[0]] = 0
         labels[fill_positions[0]:fill_positions[3]] = 0
         labels[fill_positions[3]:fill_positions[4]] = 0
-        labels[fill_positions[4]:fill_positions[5]] = 0
+        labels[fill_positions[4]:fill_positions[5]] = 1
         labels[fill_positions[5]:] = 1
         return pd.DataFrame(labels)
 
