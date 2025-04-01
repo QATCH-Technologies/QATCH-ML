@@ -143,7 +143,7 @@ class ForcasterTrainer:
         for df in slices:
             y_list.append(df['Fill'].values)
             X_list.append(
-                df.drop(columns=['Fill', 'Dissipation', 'Resonance_Frequency', 'Difference']).values)
+                df.drop(columns=['Fill']).values)
         X = np.vstack(X_list)
         y = np.hstack(y_list)
         return X, y
@@ -294,7 +294,7 @@ class ForcasterTrainer:
         for i, df in enumerate(test_slices):
             y_slice = df['Fill']
             X_slice = df.drop(
-                columns=['Fill', "Dissipation", "Resonance_Frequency", "Difference"]).values
+                columns=['Fill']).values
             dtest = xgb.DMatrix(X_slice)
             pred_probs = self.booster.predict(dtest)
 

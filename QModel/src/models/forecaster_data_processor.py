@@ -262,13 +262,21 @@ class DataProcessor:
 
         if not all(column in df.columns for column in required_columns):
             raise ValueError(
-                f"Input DataFrame must contain the following columns: {required_columns}")
+                f"Input DataFrame must contain the following columns: {required_columns}"
+            )
 
         df = df[required_columns].copy()
+        slice_loc = int(len(df) * 0.01)
+        df["Dissipation"] -= np.average(
+            df["Dissipation"].iloc[slice_loc:2*slice_loc])
+        df["Resonance_Frequency"] -= np.average(
+            df["Resonance_Frequency"].iloc[slice_loc:2*slice_loc])
+
         df['Dissipation_DoG'] = DataProcessor.compute_dissipation_dog(df)
         baseline_window = max(3, int(np.ceil(0.05 * len(df))))
         df['DoG_baseline'], df['DoG_shift'] = DataProcessor.compute_rolling_baseline_and_shift(
-            df['Dissipation_DoG'], baseline_window)
+            df['Dissipation_DoG'], baseline_window
+        )
         df['DoG_SVM_Score'] = DataProcessor.compute_ocsvm_score(
             df['DoG_shift'])
         df['DoG_SVM_Score_Smooth'] = gaussian_filter1d(
@@ -284,7 +292,8 @@ class DataProcessor:
         smooth_factor = 21
         if len(df) > smooth_factor:
             smoothed_DoG = savgol_filter(
-                df['DoG_SVM_Score'], window_length=smooth_factor, polyorder=3)
+                df['DoG_SVM_Score'], window_length=smooth_factor, polyorder=3
+            )
         else:
             smoothed_DoG = df['DoG_SVM_Score'].values
 
@@ -294,7 +303,8 @@ class DataProcessor:
             df['DoG_derivative'] = np.gradient(smoothed_DoG)
 
         df['DoG_slope'] = pd.Series(smoothed_DoG).rolling(window=10).apply(
-            lambda x: np.polyfit(range(len(x)), x, 1)[0], raw=False)
+            lambda x: np.polyfit(range(len(x)), x, 1)[0], raw=False
+        )
 
         window_size = 20
         df['DoG_win_mean'] = pd.Series(
@@ -309,12 +319,6 @@ class DataProcessor:
         df.replace([np.inf, -np.inf], np.nan, inplace=True)
         df.fillna(0, inplace=True)
 
-        # Normalize entire dataframe
-        # scaler = MinMaxScaler()
-        # scaled_array = scaler.fit_transform(df)
-        # normalized_df = pd.DataFrame(
-        #     scaled_array, columns=df.columns, index=df.index)
-
         return df
 
     @staticmethod
@@ -323,9 +327,9 @@ class DataProcessor:
         fill_positions = fill_df[0].astype(int).values
         labels = np.empty(length_df, dtype=int)
         labels[:fill_positions[0]] = 0
-        labels[fill_positions[0]:fill_positions[3]] = 1
-        labels[fill_positions[3]:fill_positions[4]] = 1
-        labels[fill_positions[4]:fill_positions[5]] = 1
+        labels[fill_positions[0]:fill_positions[3]] = 0
+        labels[fill_positions[3]:fill_positions[4]] = 0
+        labels[fill_positions[4]:fill_positions[5]] = 0
         labels[fill_positions[5]:] = 1
         return pd.DataFrame(labels)
 
