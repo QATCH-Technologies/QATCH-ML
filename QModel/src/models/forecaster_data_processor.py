@@ -30,7 +30,6 @@ class DataProcessor:
         logging.info(f"Loading content from {data_dir}")
         loaded_content = []
 
-        # Step 1: Collect (file, poi) pairs
         for root, _, files in tqdm(os.walk(data_dir), desc='Loading files...'):
             for f in files:
                 if f.endswith(".csv") and not f.endswith("_poi.csv") and not f.endswith("_lower.csv"):
@@ -311,12 +310,12 @@ class DataProcessor:
         df.fillna(0, inplace=True)
 
         # Normalize entire dataframe
-        scaler = MinMaxScaler()
-        scaled_array = scaler.fit_transform(df)
-        normalized_df = pd.DataFrame(
-            scaled_array, columns=df.columns, index=df.index)
+        # scaler = MinMaxScaler()
+        # scaled_array = scaler.fit_transform(df)
+        # normalized_df = pd.DataFrame(
+        #     scaled_array, columns=df.columns, index=df.index)
 
-        return normalized_df
+        return df
 
     @staticmethod
     def process_fill(poi_file: str, length_df: int) -> pd.DataFrame:
@@ -324,15 +323,14 @@ class DataProcessor:
         fill_positions = fill_df[0].astype(int).values
         labels = np.empty(length_df, dtype=int)
         labels[:fill_positions[0]] = 0
-        labels[fill_positions[0]:fill_positions[3]] = 0
-        labels[fill_positions[3]:fill_positions[4]] = 0
+        labels[fill_positions[0]:fill_positions[3]] = 1
+        labels[fill_positions[3]:fill_positions[4]] = 1
         labels[fill_positions[4]:fill_positions[5]] = 1
         labels[fill_positions[5]:] = 1
         return pd.DataFrame(labels)
 
     @staticmethod
     def preprocess_data(df: pd.DataFrame):
-        # Load the dataset
         required_cols = ["Relative_time", "Dissipation",
                          "Resonance_Frequency", "Fill"]
         if df.empty or not all(col in df.columns for col in required_cols):
@@ -343,12 +341,9 @@ class DataProcessor:
             return None
         df = df.reset_index(drop=True)
 
-        # Generate features and clean up the DataFrame
         df = DataProcessor.generate_features(df, live=False)
         df.reset_index(drop=True, inplace=True)
         df.drop(columns=['Relative_time'], inplace=True)
-
-        # Replace any NaNs or infinities with 0
         df = df.replace([np.inf, -np.inf], np.nan).fillna(0)
 
         return df
