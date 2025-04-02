@@ -1,5 +1,4 @@
 import matplotlib.pyplot as plt
-from scipy.stats import entropy
 import logging
 from tqdm import tqdm
 import os
@@ -8,11 +7,12 @@ import pandas as pd
 import numpy as np
 import pandas as pd
 from scipy.ndimage import gaussian_filter1d
-from scipy.signal import welch, savgol_filter, argrelextrema
-from scipy.stats import skew, kurtosis, zscore, entropy
+from scipy.signal import welch, savgol_filter
+from scipy.stats import skew, kurtosis, zscore
 from sklearn.svm import OneClassSVM
+from sklearn.cluster import DBSCAN, KMeans
+from sklearn.metrics import silhouette_score
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.cluster import DBSCAN
 import random
 logging.basicConfig(
     level=logging.DEBUG,
@@ -46,120 +46,130 @@ class DataProcessor:
                         loaded_content.append(
                             (os.path.join(root, f), os.path.join(root, poi_file))
                         )
-
+        random.shuffle(loaded_content)
         if num_datasets == np.inf:
             return loaded_content
 
-        result = DataProcessor.optimize_sample(
-            loaded_content, column=column, max_size=num_datasets
-        )
-
-        return result['sampled_files']
+        return loaded_content[:num_datasets]
 
     @staticmethod
-    def compute_file_variance(file_path, column='Dissipation'):
-        try:
-            df = pd.read_csv(file_path)
-            return np.var(df[column])
-        except Exception as e:
-            logging.warning(f"Skipping {file_path}: {e}")
-            return None
+    def load_balanced_content(data_dir: str, num_datasets: int = np.inf, clusters: int = 3, opt: bool = False) -> list:
 
-    @staticmethod
-    def get_variance_df(file_list, column):
-        data = []
-        for f, poi in file_list:
-            var = DataProcessor.compute_file_variance(f, column)
-            if var is not None:
-                data.append((f, poi, var))
-        return pd.DataFrame(data, columns=['file', 'poi', 'variance'])
+        loaded_content = DataProcessor.load_content(
+            data_dir, num_datasets=np.inf)
+        if not loaded_content:
+            return []
 
-    @staticmethod
-    def balanced_file_sample(all_files, sample_size=12, column='Dissipation', bins=4):
-        df = DataProcessor.get_variance_df(all_files, column)
-        if df.empty:
-            raise ValueError("No valid files with computed variance.")
-
-        df['bin'] = pd.qcut(df['variance'], q=bins,
-                            labels=False, duplicates='drop')
-        bin_counts = df['bin'].value_counts().sort_index()
-        samples_per_bin = (bin_counts / bin_counts.sum()
-                           * sample_size).astype(int)
-
-        while samples_per_bin.sum() < sample_size:
-            samples_per_bin[samples_per_bin.idxmax()] += 1
-
-        sampled = []
-        for bin_idx, count in samples_per_bin.items():
-            bin_group = df[df['bin'] == bin_idx]
-            if len(bin_group) < count:
-                raise ValueError(
-                    f"Not enough files in bin {bin_idx} to sample {count} files.")
-            sampled.append(bin_group.sample(n=count, random_state=42))
-
-        sampled_df = pd.concat(sampled)
-        return list(sampled_df[['file', 'poi']].itertuples(index=False, name=None))
-
-    @staticmethod
-    def optimize_sample(
-        all_files,
-        column='Dissipation',
-        min_bins=2,
-        max_bins=10,
-        min_size=20,
-        max_size=300,
-        step=10,
-        threshold=0.05
-    ):
-        df = DataProcessor.get_variance_df(all_files, column)
-        if df.empty:
-            raise ValueError("No valid files for variance analysis.")
-
-        best_result = {
-            'kl': float('inf'),
-            'bins': None,
-            'size': None,
-            'sampled_files': []
-        }
-
-        for bins in range(min_bins, max_bins + 1):
+        features = []
+        valid_content = []
+        for data_file, poi_file in loaded_content:
             try:
-                df['bin'] = pd.qcut(df['variance'], q=bins,
-                                    labels=False, duplicates='drop')
-                global_dist = df['bin'].value_counts(
-                    normalize=True).sort_index()
-
-                for size in range(min_size, min(len(df), max_size), step):
-                    sampled = DataProcessor.balanced_file_sample(
-                        all_files, size, column, bins)
-                    sampled_df = DataProcessor.get_variance_df(sampled, column)
-                    sampled_df['bin'] = pd.cut(
-                        sampled_df['variance'],
-                        bins=pd.qcut(df['variance'], q=bins,
-                                     retbins=True, duplicates='drop')[1],
-                        labels=False,
-                        include_lowest=True
-                    )
-                    sampled_dist = sampled_df['bin'].value_counts(
-                        normalize=True).sort_index()
-                    sampled_dist = sampled_dist.reindex(
-                        global_dist.index, fill_value=0)
-                    kl = entropy(sampled_dist + 1e-10, global_dist + 1e-10)
-
-                    if kl < best_result['kl']:
-                        best_result.update({
-                            'kl': kl,
-                            'bins': bins,
-                            'size': size,
-                            'sampled_files': sampled
-                        })
-
-                    if kl < threshold:
-                        break
+                df = pd.read_csv(data_file)
+                poi_df = pd.read_csv(poi_file, header=None)
+                if "Dissipation" not in df.columns or "Resonance_Frequency" not in df.columns:
+                    continue
+                poi_mean = np.mean(poi_df.values)
+                poi_std = np.std(poi_df.values)
+                mean_diss = df["Dissipation"].mean()
+                std_diss = df["Dissipation"].std()
+                mean_freq = df["Resonance_Frequency"].mean()
+                std_freq = df["Resonance_Frequency"].std()
+                max_r_time = df['Relative_time'].max()
+                feature_vec = [poi_mean, poi_std, mean_diss, std_diss,
+                               mean_freq, std_freq, max_r_time]
+                features.append(feature_vec)
+                valid_content.append((data_file, poi_file))
             except Exception as e:
-                logging.warning(f"Skipping bin count {bins}: {e}")
+                logging.warning(f"Could not read file {data_file}: {e}")
+                continue
 
-        return best_result
+        if not features:
+            return []
+        features_arr = np.array(features)
+        if opt:
+            n_clusters, silhouette_scores = DataProcessor.compute_optimal_clusters(
+                features_arr, min_clusters=2, max_clusters=12)
+
+            logging.info(
+                f"Optimal clusters: {n_clusters} with score {silhouette_scores}.")
+        else:
+            n_clusters = min(clusters, len(features_arr))
+
+        kmeans = KMeans(n_clusters=n_clusters, random_state=42)
+        labels = kmeans.fit_predict(features_arr)
+
+        cluster_dict = {}
+        for label, file_pair in zip(labels, valid_content):
+            cluster_dict.setdefault(label, []).append(file_pair)
+
+        balanced_sample = []
+        if num_datasets == np.inf:
+            min_count = min(len(files) for files in cluster_dict.values())
+            for file_list in cluster_dict.values():
+                balanced_sample.extend(random.sample(file_list, min_count))
+        else:
+            per_cluster = num_datasets // n_clusters
+            for file_list in cluster_dict.values():
+                if len(file_list) <= per_cluster:
+                    balanced_sample.extend(file_list)
+                else:
+                    balanced_sample.extend(
+                        random.sample(file_list, per_cluster))
+            remaining = num_datasets - len(balanced_sample)
+            if remaining > 0:
+                extra_files = [fp for files in cluster_dict.values()
+                               for fp in files if fp not in balanced_sample]
+                if extra_files:
+                    balanced_sample.extend(random.sample(
+                        extra_files, min(remaining, len(extra_files))))
+        random.shuffle(balanced_sample)
+        plt.figure(figsize=(10, 6))
+
+        plt.scatter(features_arr[:, 0], features_arr[:, 1],
+                    c=labels, cmap='viridis', s=50, label='All files')
+        selected_indices = [i for i, pair in enumerate(
+            valid_content) if pair in balanced_sample]
+        plt.scatter(features_arr[selected_indices, 0], features_arr[selected_indices, 1],
+                    facecolors='none', edgecolors='red', s=100, label='Selected balanced sample')
+        centers = kmeans.cluster_centers_
+        plt.scatter(centers[:, 0], centers[:, 1], c='black',
+                    s=200, marker='X', label='Cluster Centers')
+
+        plt.xlabel("Mean Dissipation")
+        plt.ylabel("Std. Dissipation")
+        plt.title("Clustering of Data Files and Selected Balanced Sample")
+        plt.legend()
+        plt.grid(True)
+        plt.show()
+
+        return balanced_sample, n_clusters
+
+    @staticmethod
+    def compute_optimal_clusters(features, min_clusters=2, max_clusters=10):
+        scores = {}
+        best_k = min_clusters
+        best_score = -1
+        # Ensure we don't consider more clusters than available samples.
+        max_possible = min(max_clusters, len(features))
+        for k in range(min_clusters, max_possible + 1):
+            kmeans = KMeans(n_clusters=k, random_state=42)
+            labels = kmeans.fit_predict(features)
+            score = silhouette_score(features, labels)
+            scores[k] = score
+            if score > best_score:
+                best_score = score
+                best_k = k
+
+        # Optional: Plot silhouette scores to visualize the optimum.
+        plt.figure(figsize=(8, 4))
+        plt.plot(list(scores.keys()), list(scores.values()), marker='o')
+        plt.xlabel("Number of Clusters (k)")
+        plt.ylabel("Average Silhouette Score")
+        plt.title("Silhouette Score vs. Number of Clusters")
+        plt.grid(True)
+        plt.show()
+
+        return best_k, scores
 
     @staticmethod
     def find_sampling_shift(df: pd.DataFrame) -> int:
@@ -173,8 +183,8 @@ class DataProcessor:
         return change_indices[0] if change_indices else -1
 
     @staticmethod
-    def compute_dissipation_dog(df: pd.DataFrame, sigma: float = 2) -> pd.Series:
-        return pd.Series(gaussian_filter1d(df['Dissipation'], sigma=sigma, order=1),
+    def compute_DoG(df: pd.DataFrame, col: str, sigma: float = 2) -> pd.Series:
+        return pd.Series(gaussian_filter1d(df[col], sigma=sigma, order=1),
                          index=df.index)
 
     @staticmethod
@@ -229,9 +239,8 @@ class DataProcessor:
             dbscan = DBSCAN(eps=5, min_samples=2)
             labels = dbscan.fit_predict(anomaly_indices.values.reshape(-1, 1))
             clustered_anomalies = np.zeros(len(anomaly_flags))
-            # Only mark the first index of each cluster as an anomaly
             for cluster in set(labels):
-                if cluster != -1:  # Skip noise
+                if cluster != -1:
                     first_index = anomaly_indices[labels == cluster][0]
                     clustered_anomalies[first_index] = 1
             return pd.Series(clustered_anomalies, index=anomaly_flags.index)
@@ -267,54 +276,74 @@ class DataProcessor:
 
         df = df[required_columns].copy()
         slice_loc = int(len(df) * 0.01)
+        df["Difference"] = DataProcessor.compute_difference_curve(df)
         df["Dissipation"] -= np.average(
             df["Dissipation"].iloc[slice_loc:2*slice_loc])
         df["Resonance_Frequency"] -= np.average(
             df["Resonance_Frequency"].iloc[slice_loc:2*slice_loc])
+        df["Resonance_Frequency"] = df["Resonance_Frequency"].values * -1
+        # ########################
+        # # Dissipation Processing
+        # ########################
+        #
 
-        df['Dissipation_DoG'] = DataProcessor.compute_dissipation_dog(df)
-        baseline_window = max(3, int(np.ceil(0.05 * len(df))))
-        df['DoG_baseline'], df['DoG_shift'] = DataProcessor.compute_rolling_baseline_and_shift(
-            df['Dissipation_DoG'], baseline_window
-        )
-        df['DoG_SVM_Score'] = DataProcessor.compute_ocsvm_score(
-            df['DoG_shift'])
-        df['DoG_SVM_Score_Smooth'] = gaussian_filter1d(
-            df['DoG_SVM_Score'], sigma=5)
+        # df['Dissipation_DoG'] = DataProcessor.compute_DoG(
+        #     df, col='Dissipation') * -1
+        # baseline_window = max(3, int(np.ceil(0.05 * len(df))))
+        # df['Dissipation_DoG_baseline'], df['Dissipation_DoG_shift'] = DataProcessor.compute_rolling_baseline_and_shift(
+        #     df['Dissipation_DoG'], baseline_window
+        # )
+        # df['Dissipation_DoG_SVM_Score'] = DataProcessor.compute_ocsvm_score(
+        #     df['Dissipation_DoG_shift'])
+        # df['Dissipation_DoG_SVM_Score_Smooth'] = gaussian_filter1d(
+        #     df['Dissipation_DoG_SVM_Score'], sigma=5)
 
-        z_scores, anomaly = DataProcessor.compute_anomaly_zscore(
-            df["DoG_SVM_Score_Smooth"])
-        df["DoG_SVM_Zscore"] = z_scores
-        df["DoG_SVM_Anomaly"] = DataProcessor.cluster_anomalies(anomaly)
-        df["Difference"] = DataProcessor.compute_difference_curve(df)
+        # ################
+        # # RF Processing
+        # ################
 
-        # Smooth signal
-        smooth_factor = 21
-        if len(df) > smooth_factor:
-            smoothed_DoG = savgol_filter(
-                df['DoG_SVM_Score'], window_length=smooth_factor, polyorder=3
-            )
-        else:
-            smoothed_DoG = df['DoG_SVM_Score'].values
+        # df['Resonance_Frequency_DoG'] = DataProcessor.compute_DoG(
+        #     df, col='Resonance_Frequency') * -1
+        # baseline_window = max(3, int(np.ceil(0.05 * len(df))))
+        # df['Reonance_Frequency_DoG_baseline'], df['Resonance_Frequency_DoG_shift'] = DataProcessor.compute_rolling_baseline_and_shift(
+        #     df['Resonance_Frequency_DoG'], baseline_window
+        # )
+        # df['Resonance_Frequency_DoG_SVM_Score'] = DataProcessor.compute_ocsvm_score(
+        #     df['Resonance_Frequency_DoG_shift'])
+        # df['Resonance_Frequency_DoG_SVM_Score_Smooth'] = gaussian_filter1d(
+        #     df['Resonance_Frequency_DoG_SVM_Score'], sigma=5)
 
-        if smoothed_DoG.size < 2:
-            df['DoG_derivative'] = np.zeros_like(smoothed_DoG)
-        else:
-            df['DoG_derivative'] = np.gradient(smoothed_DoG)
+        # z_scores, anomaly = DataProcessor.compute_anomaly_zscore(
+        #     df["DoG_SVM_Score_Smooth"])
+        # df["DoG_SVM_Zscore"] = z_scores
+        # df["DoG_SVM_Anomaly"] = DataProcessor.cluster_anomalies(anomaly)
 
-        df['DoG_slope'] = pd.Series(smoothed_DoG).rolling(window=10).apply(
-            lambda x: np.polyfit(range(len(x)), x, 1)[0], raw=False
-        )
+        # smooth_factor = 21
+        # if len(df) > smooth_factor:
+        #     smoothed_DoG = savgol_filter(
+        #         df['DoG_SVM_Score'], window_length=smooth_factor, polyorder=3
+        #     )
+        # else:
+        #     smoothed_DoG = df['DoG_SVM_Score'].values
 
-        window_size = 20
-        df['DoG_win_mean'] = pd.Series(
-            smoothed_DoG).rolling(window=window_size).mean()
-        df['DoG_win_std'] = pd.Series(
-            smoothed_DoG).rolling(window=window_size).std()
-        df['DoG_win_min'] = pd.Series(
-            smoothed_DoG).rolling(window=window_size).min()
-        df['DoG_win_max'] = pd.Series(
-            smoothed_DoG).rolling(window=window_size).max()
+        # if smoothed_DoG.size < 2:
+        #     df['DoG_derivative'] = np.zeros_like(smoothed_DoG)
+        # else:
+        #     df['DoG_derivative'] = np.gradient(smoothed_DoG)
+
+        # df['DoG_slope'] = pd.Series(smoothed_DoG).rolling(window=10).apply(
+        #     lambda x: np.polyfit(range(len(x)), x, 1)[0], raw=False
+        # )
+
+        # window_size = 20
+        # df['DoG_win_mean'] = pd.Series(
+        #     smoothed_DoG).rolling(window=window_size).mean()
+        # df['DoG_win_std'] = pd.Series(
+        #     smoothed_DoG).rolling(window=window_size).std()
+        # df['DoG_win_min'] = pd.Series(
+        #     smoothed_DoG).rolling(window=window_size).min()
+        # df['DoG_win_max'] = pd.Series(
+        #     smoothed_DoG).rolling(window=window_size).max()
 
         df.replace([np.inf, -np.inf], np.nan, inplace=True)
         df.fillna(0, inplace=True)
@@ -347,7 +376,7 @@ class DataProcessor:
 
         df = DataProcessor.generate_features(df, live=False)
         df.reset_index(drop=True, inplace=True)
-        df.drop(columns=['Relative_time'], inplace=True)
+        # df.drop(columns=['Relative_time'], inplace=True)
         df = df.replace([np.inf, -np.inf], np.nan).fillna(0)
 
         return df
