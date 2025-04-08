@@ -1,4 +1,37 @@
 # History
+
+## 2.0.12 (02-17-2025)
+### Added
+- Minor improvement for OOF predictions for POI 1
+
+### Changed
+- None
+
+### Fixed
+-  None
+
+### Deprecated
+- No deprecations
+
+### Removed
+- No removals
+## 2.0.11 (02-07-2025)
+### Added
+- Zoning restrictions for POI4-6 leading to major reductions to MSE and RMSE as well as POI 4 accuracy.
+- New POI 6 post process ~27 median MAE.
+
+### Changed
+- POI 5 using MD POI 5 for initial guesses.
+
+### Fixed
+- Ordering prevents out of order predictions.
+
+### Deprecated
+- No deprecations
+
+### Removed
+- No removals
+  
 ## 2.0.8 (11-08-2024)
 ### Added
 - Improved restrictions for POI1-3 to prevent unreasonable prediction estimates.

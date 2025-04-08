@@ -16,7 +16,7 @@ from q_model import QModelPredict
 from q_multi_model import QPredictor
 from q_image_clusterer import QClusterer
 
-TEST_BATCH_SIZE = 0.99
+TEST_BATCH_SIZE = 0.50
 VALIDATION_DATASETS_PATH = "content/test_data/test"
 S_PREDICTOR = QModelPredict(
     "QModel/SavedModels/QModel_1.json",
@@ -36,6 +36,8 @@ def load_test_dataset(path, test_size):
     content = []
     for root, dirs, files in os.walk(path):
         for file in files:
+            # if "10CP".lower() in file.lower():
+            #     content.append(os.path.join(root, file))
             content.append(os.path.join(root, file))
 
     num_files_to_select = int(len(content) * test_size)
@@ -65,6 +67,7 @@ def test_md_on_file(filename, act_poi):
 
 
 def test_mm_on_file(filename, act_poi):
+
     label = qcr.predict_label(filename)
     if label == 0:
         candidates = M_PREDICTOR_0.predict(
@@ -434,23 +437,45 @@ def run():
         5: 0,
         6: 0,
     }
+    ratios = {3: [], 4: [], 5: []}
+
+    def compute_relative_time_ratios(r_time_poi):
+        T = r_time_poi[1] - r_time_poi[0]
+        relative_times = np.array([r_time_poi[3] - r_time_poi[0],
+                                   r_time_poi[4] - r_time_poi[0],
+                                   r_time_poi[5] - r_time_poi[0]])
+        scaled_ratios = relative_times / T
+        return T, scaled_ratios
+
     for filename in tqdm(content, desc="<<Running Tests>>"):
         if (
             filename.endswith(".csv")
             and not filename.endswith("_poi.csv")
             and not filename.endswith("_lower.csv")
         ):
-
             test_file = filename
             poi_file = filename.replace(".csv", "_poi.csv")
+
             if os.path.exists(poi_file):
                 test_df = pd.read_csv(test_file)
                 max_index = test_df.index.max()
                 act_poi = pd.read_csv(poi_file, header=None).values
                 act_poi = [int(x[0]) for x in act_poi]
+
                 if max(act_poi) >= max_index - 1:
                     partial_fills.append(test_file)
                     continue
+
+                r_time = test_df["Relative_time"].values
+                r_time_poi = r_time[act_poi]
+
+                # Ensure there are at least 6 points
+                if len(r_time_poi) >= 6:
+                    T, scaled_ratios = compute_relative_time_ratios(r_time_poi)
+
+                    # Store computed ratios
+                    for i, index in enumerate([3, 4, 5]):
+                        ratios[index].append(scaled_ratios[i])
 
                 test_qdp = QDataPipeline(data_filepath=test_file)
                 if (
@@ -481,9 +506,34 @@ def run():
                 qmp_list.append(qmp_results)
                 md_list.append(md_results)
 
-                mm_deltas.append(compute_deltas(mm_results))
                 qmp_deltas.append(compute_deltas(qmp_results))
                 md_deltas.append(compute_deltas(md_results))
+
+    # Compute statistics
+    stats = {}
+    for i in [3, 4, 5]:
+        if ratios[i]:
+            ratios_array = np.array(ratios[i])
+            avg_ratio = np.mean(ratios_array)
+            min_ratio = np.min(ratios_array)
+            max_ratio = np.max(ratios_array)
+            q1 = np.percentile(ratios_array, 25)
+            q3 = np.percentile(ratios_array, 75)
+            iqr = q3 - q1
+            stats[i] = {
+                "avg": avg_ratio,
+                "min": min_ratio,
+                "max": max_ratio,
+                "iqr": iqr
+            }
+        else:
+            stats[i] = {"avg": None, "min": None, "max": None, "iqr": None}
+    # Print final results
+    print("\nFinal Ratio Statistics Across Directory:")
+    for i in [3, 4, 5]:
+        print(
+            f"r_time_poi[{i}] - Avg: {stats[i]['avg']:.4f}, Min: {stats[i]['min']:.4f}, Max: {stats[i]['max']:.4f}, IQR: {stats[i]['iqr']:.4f}")
+    input()
     print(f"--- EXPLORATORY RESULTS ---")
     print(f"Long Runs: {len(long_runs)}")
     for f in long_runs:
