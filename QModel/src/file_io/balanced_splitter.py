@@ -103,7 +103,7 @@ class BalancedSpliter:
             argparse.Namespace: Parsed arguments.
         """
         default_source = os.path.join("content", "dropbox_dump")
-        default_output = os.path.join("content", "static")
+        default_output = os.path.join("content", "live")
         parser = argparse.ArgumentParser(
             description="Split processed run directories into train, test, and valid sets with balanced representation."
         )

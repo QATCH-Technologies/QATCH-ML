@@ -7,10 +7,6 @@ from hyperopt import STATUS_OK, Trials, fmin, hp, tpe
 from hyperopt.early_stop import no_progress_loss
 from sklearn.model_selection import train_test_split
 import pickle
-<<<<<<< HEAD:QModel/src/models/static/q_multi_model.py
-=======
-from scipy.signal import find_peaks, savgol_filter
->>>>>>> main:QModel/src/models/q_multi_model.py
 from scipy.interpolate import interp1d
 
 # from ModelData import ModelData

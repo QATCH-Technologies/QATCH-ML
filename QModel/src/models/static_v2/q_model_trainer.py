@@ -10,47 +10,31 @@ from collections import Counter
 from imblearn.over_sampling import SMOTE
 import optuna
 import pickle
-from forecaster_data_processor import DataProcessor
+from q_model_data_processor import QDataProcessor
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
-
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-logging.getLogger('matplotlib').setLevel(logging.WARNING)
-logging.getLogger('PIL').setLevel(logging.WARNING)
-
-TEST_SIZE = 0.2
 RANDOM_STATE = 42
-DOWNSAMPLE_FACTOR = 5
-SLICE_SIZE = 100
-
-EVAL_METRIC = "mae"
-OBJECTIVE = "binary:logistic"
-DIRECTION = "minimize"
-BINARY_OBJECTIVES = ['reg:squarederror', 'reg:logistic', 'reg:pseudohubererror', 'reg:absoluteerror',
-                     'binary:logistic', 'binary:logitraw', 'binary:hinge',
-                     'count:poisson', 'survival:cox', 'rank:pairwise', 'reg:tweedie']
-BINARY_EVAL_METRICS = ['mae']
 MULTICLASS_OBJECTIVES = ['multi:softmax', 'multi:softprob']
 MULTICLASS_EVAL_METRICS = ['merror', 'mlogloss', 'auc', 'aucpr']
-TRAIN_PATH = os.path.join("content", "live", 'train')
-TEST_PATH = os.path.join("content", "live", "test")
-VALID_PATH = os.path.join("content", "live", "valid")
-TRAIN_NUM = np.inf
-TEST_VALID_NUM = np.inf
+TRAIN_PATH = os.path.join("content", "static", 'train')
+TEST_PATH = os.path.join("content", "static", "test")
+VALID_PATH = os.path.join("content", "static", "valid")
+TRAIN_NUM = 100
+TEST_VALID_NUM = 33
 
 
-class ForcasterTrainer:
-    def __init__(self,
-                 classes: list,
+class QModelTrainer:
+    def __init__(self, classes: list,
                  num_features: int,
                  regen_data: bool = False,
                  training_directory: str = TRAIN_PATH,
                  validation_directory: str = VALID_PATH,
                  test_directory: str = TEST_PATH,
-                 cache_directory: str = os.path.join("cache", "forecaster")) -> None:
+                 cache_directory: str = os.path.join("cache", "q_model")):
         if not isinstance(classes, list):
             raise TypeError("classes must be a list")
         if not isinstance(num_features, int):
@@ -66,9 +50,9 @@ class ForcasterTrainer:
         self.train_content = None
         self.test_content = None
         self.validation_content = None
-        self.training_slices = None
-        self.validation_slices = None
-        self.test_slices = None  # temporary in-memory storage for test slices
+        self.train_datasets = None
+        self.test_datasets = None
+        self.validation_datasets = None
 
         # Cache directory for persisting DMatrices, scaler and test slices
         self.cache_dir = cache_directory
@@ -76,13 +60,13 @@ class ForcasterTrainer:
             os.makedirs(self.cache_dir)
 
         # File path for persisting the scaler
-        self.scaler_file = os.path.join(self.cache_dir, "scaler.pkl")
+        self.scaler_file = os.path.join(self.cache_dir, "qmodel_scaler.pkl")
         self.scaler: Optional[Pipeline] = None
 
         # In-memory caches
         self.cached_train_dmatrix: Optional[xgb.DMatrix] = None
         self.cached_val_dmatrix: Optional[xgb.DMatrix] = None
-        self.cached_test_slices: Optional[List] = None
+        self.cached_test_datasets: Optional[List] = None
 
         # Internal flags so that regeneration happens only once
         self._data_regenerated = False
@@ -107,19 +91,20 @@ class ForcasterTrainer:
         params = {
             "objective": "binary:logistic",
             "learning_rate": 0.1,
-            "eval_metric": EVAL_METRIC,
+            "eval_metric": MULTICLASS_EVAL_METRICS[2],
             "tree_method": "hist",
-            "device": "cuda"
+            "device": "cuda",
+            "num_class": len(self.classes),
         }
         return params
 
     def load_datasets(self, training_directory: str, test_directory: str, validation_directory: str):
         """Load training and test/validation datasets."""
-        self.train_content, _ = DataProcessor.load_balanced_content(
+        self.train_content, _ = QDataProcessor.load_balanced_content(
             training_directory, num_datasets=TRAIN_NUM, opt=True)
-        self.test_content, _ = DataProcessor.load_balanced_content(
+        self.test_content, _ = QDataProcessor.load_balanced_content(
             test_directory, num_datasets=TEST_VALID_NUM, opt=True)
-        self.validation_content, _ = DataProcessor.load_balanced_content(
+        self.validation_content, _ = QDataProcessor.load_balanced_content(
             validation_directory, num_datasets=TEST_VALID_NUM, opt=True)
         logging.info("Datasets loaded.")
 
@@ -135,56 +120,33 @@ class ForcasterTrainer:
             self.scaler = pickle.load(f)
         logging.info("Scaler loaded from disk.")
 
-    def get_slices(self, data_file: str, poi_file: str, slice_size: int = SLICE_SIZE):
-        """Process a file and return data slices."""
+    def get_data(self, data_file: str, poi_file: str, live: bool = False):
         try:
             data_df = pd.read_csv(data_file)
-            fill_df = DataProcessor.process_fill(
+            poi_df = QDataProcessor.process_poi(
                 poi_file, length_df=len(data_df))
-            data_df['Fill'] = fill_df
-            data_df = data_df[::DOWNSAMPLE_FACTOR]
-            total_rows = len(data_df)
-            slices = []
-            for i in range(0, total_rows, slice_size):
-                result = DataProcessor.preprocess_data(
-                    data_df.iloc[0:i + slice_size])
-                if result is not None:
-                    slices.append(result)
-            return slices
+            data_df['POI'] = poi_df
+            return QDataProcessor.process_data(data_df, live=live)
         except FileNotFoundError as e:
             logging.error("POI file not found.")
             return None
 
-    def get_training_set(self):
-        """Build training slices from training content."""
-        all_slices = []
-        for i, (data_file, poi_file) in enumerate(self.train_content):
-            logging.info(f'[{i+1}] Processing training dataset {data_file}')
-            slices = self.get_slices(
-                data_file, poi_file, slice_size=SLICE_SIZE)
-            if slices is not None:
-                all_slices.extend(slices)
-        random.shuffle(all_slices)
-        return all_slices
+    def build_dataset(self, content, live=False):
+        all_datasets = []
+        for i, (data_file, poi_file) in enumerate(content):
+            logging.info(f'[{i+1}] Processing dataset {data_file}')
+            dataset = self.get_data(
+                data_file=data_file, poi_file=poi_file, live=live)
+            if dataset is not None:
+                all_datasets.append(dataset)
+        random.shuffle(all_datasets)
+        return all_datasets
 
-    def get_validation_set(self):
-        """Build validation slices from validation content."""
-        all_slices = []
-        for i, (data_file, poi_file) in enumerate(self.validation_content):
-            logging.info(f'[{i+1}] Processing validation dataset {data_file}')
-            slices = self.get_slices(
-                data_file, poi_file, slice_size=SLICE_SIZE)
-            if slices is not None:
-                all_slices.extend(slices)
-        random.shuffle(all_slices)
-        return all_slices
-
-    def _extract_features(self, slices: list) -> Tuple[np.ndarray, np.ndarray]:
-        """Extract features and labels from a list of slices."""
+    def _extract_features(self, datasets: list) -> Tuple[np.ndarray, np.ndarray]:
         X_list, y_list = [], []
-        for df in slices:
-            y_list.append(df['Fill'].values)
-            X_list.append(df.drop(columns=['Fill']).values)
+        for df in datasets:
+            y_list.append(df['POI'].values)
+            X_list.append(df.drop(columns=['POI']).values)
         X = np.vstack(X_list)
         y = np.hstack(y_list)
         return X, y
@@ -222,9 +184,9 @@ class ForcasterTrainer:
                 self.cached_train_dmatrix = None
 
         if self.cached_train_dmatrix is None or regenerate:
-            if self.training_slices is None or regenerate:
-                self.training_slices = self.get_training_set()
-            X_train, y_train = self._extract_features(self.training_slices)
+            if self.train_datasets is None or regenerate:
+                self.train_datasets = self.build_dataset(self.train_content)
+            X_train, y_train = self._extract_features(self.train_datasets)
             X_train_res, y_train_res = self._balance_data(
                 X_train, y_train, dataset_name="train")
 
@@ -255,9 +217,10 @@ class ForcasterTrainer:
                 self.cached_val_dmatrix = None
 
         if self.cached_val_dmatrix is None or regenerate:
-            if self.validation_slices is None or regenerate:
-                self.validation_slices = self.get_validation_set()
-            X_val, y_val = self._extract_features(self.validation_slices)
+            if self.validation_datasets is None or regenerate:
+                self.validation_datasets = self.build_dataset(
+                    self.validation_content)
+            X_val, y_val = self._extract_features(self.validation_datasets)
             X_val_res, y_val_res = self._balance_data(
                 X_val, y_val, dataset_name="validation")
 
@@ -277,16 +240,25 @@ class ForcasterTrainer:
 
     def train(self):
         """Train the XGBoost model using cached training/validation DMatrices with early stopping."""
+        logging.info("Starting training...")
         dtrain, dval = self._prepare_dmatrices()
-        logging.info('Using cached training and validation DMatrices.')
+
+        # Dynamically set the evaluation metric
+        # If self.problem_type is defined, you could branch based on that
+        if hasattr(self, "problem_type") and self.problem_type == "multiclass":
+            eval_metric = self.params.get("eval_metric", "mlogloss")
+        else:
+            eval_metric = self.params.get("eval_metric", "rmse")
+
         total_rounds = 50
-        early_stopping_rounds = 5  # Stop if no improvement in validation loss for 5 rounds
+        early_stopping_rounds = 5
         best_val_loss = float("inf")
         no_improvement = 0
         best_round = 0
         best_booster = None
         losses = []
 
+        # Prepare live plotting if enabled
         if self.live_plot_enabled:
             plt.ion()
             fig, ax = plt.subplots(figsize=(8, 6))
@@ -297,17 +269,20 @@ class ForcasterTrainer:
             booster = xgb.train(
                 self.params,
                 dtrain,
-                num_boost_round=self.params['n_boost_round'],
+                num_boost_round=self.params.get('n_boost_round', 10),
                 evals=[(dtrain, "train"), (dval, "val")],
                 evals_result=evals_result,
                 xgb_model=booster
             )
-            train_loss = evals_result["train"][EVAL_METRIC][0]
-            val_loss = evals_result["val"][EVAL_METRIC][0]
+
+            # Use the dynamic evaluation metric to get losses
+            train_loss = evals_result["train"][eval_metric][0]
+            val_loss = evals_result["val"][eval_metric][0]
             losses.append((train_loss, val_loss))
             logging.info(
-                f"Round {round+1}: train {EVAL_METRIC}={train_loss}, val {EVAL_METRIC}={val_loss}")
+                f"Round {round+1}: train {eval_metric}={train_loss}, val {eval_metric}={val_loss}")
 
+            # Early stopping logic based on validation loss improvement
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 best_round = round
@@ -321,6 +296,7 @@ class ForcasterTrainer:
                     f"Early stopping triggered after {early_stopping_rounds} rounds without improvement.")
                 break
 
+            # Update plot if live plotting is enabled
             if self.live_plot_enabled:
                 ax.clear()
                 rounds_range = list(range(1, round + 2))
@@ -329,7 +305,7 @@ class ForcasterTrainer:
                 ax.plot(rounds_range, val_losses, label="Val Loss")
                 ax.legend()
                 ax.set_xlabel("Boosting Round")
-                ax.set_ylabel(EVAL_METRIC)
+                ax.set_ylabel(eval_metric)
                 ax.set_title("Training vs. Validation Loss")
                 fig.canvas.draw()
                 fig.canvas.flush_events()
@@ -338,7 +314,7 @@ class ForcasterTrainer:
         if best_booster is not None:
             self.booster = best_booster
             logging.info(
-                f"Training completed. Best round: {best_round+1} with val {EVAL_METRIC}={best_val_loss}")
+                f"Training completed. Best round: {best_round+1} with val {eval_metric}={best_val_loss}")
         else:
             self.booster = booster
             logging.info("Training completed without improvement tracking.")
@@ -348,9 +324,11 @@ class ForcasterTrainer:
             plt.show()
 
     def test(self, booster_path: str):
+        # Load booster if it hasn't been loaded yet.
         if self.booster is None:
             self.booster = xgb.Booster()
             self.booster.load_model(booster_path)
+
         # Ensure the scaler is loaded for test transformations.
         if self.scaler is None:
             if os.path.exists(self.scaler_file):
@@ -360,149 +338,115 @@ class ForcasterTrainer:
                     "Scaler not available. Please train the model first.")
                 return
 
-        test_cache_path = os.path.join(self.cache_dir, "test_slices.pkl")
-        # Use regeneration only once if needed.
+        test_cache_path = os.path.join(self.cache_dir, "test_dmatrix.pkl")
         regenerate = self.regen_data and not self._test_data_regenerated
 
+        # Attempt to load cached test datasets if available and regeneration is not required.
         if not regenerate and os.path.exists(test_cache_path):
             try:
                 with open(test_cache_path, "rb") as f:
-                    self.cached_test_slices = pickle.load(f)
-                logging.info("Loaded cached test slices from disk.")
+                    self.cached_test_datasets = pickle.load(f)
+                logging.info("Loaded cached test datasets from disk.")
             except Exception as e:
-                logging.error(f"Error loading cached test slices: {e}")
-                self.cached_test_slices = None
+                logging.error(f"Error loading cached test datasets: {e}")
+                self.cached_test_datasets = None
 
-        if self.cached_test_slices is None or regenerate:
-            test_slices = []
-            for i, (data_file, poi_file) in enumerate(self.test_content):
-                logging.info(f'[{i+1}] Processing test dataset: {data_file}')
-                slices = self.get_slices(
-                    data_file, poi_file, slice_size=SLICE_SIZE)
-                if slices:
-                    test_slices.extend(slices)
-            if not test_slices:
-                logging.warning("No test slices found.")
+        # If no cached data or regeneration is needed, build and cache the test dataset.
+        if self.cached_test_datasets is None or regenerate:
+            test_datasets = self.build_dataset(self.test_content, live=False)
+            if not test_datasets:
+                logging.warning("No test datasets found.")
                 return
-            self.cached_test_slices = test_slices
+            self.cached_test_datasets = test_datasets
             with open(test_cache_path, "wb") as f:
-                pickle.dump(test_slices, f)
-            logging.info("Cached test slices to disk.")
+                pickle.dump(test_datasets, f)
+            logging.info("Cached test datasets to disk.")
 
-        # Mark that test slice regeneration has been done.
+        # Mark that test slice regeneration has been completed.
         self._test_data_regenerated = True
+        test_slices = self.cached_test_datasets
 
-        test_slices = self.cached_test_slices
+        # Set up matplotlib live plotting: two vertically arranged subplots.
+        plt.ion()
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
+
+        # Define specific colors for POI predictions 1-6.
+        poi_colors = {1: 'red', 2: 'blue', 3: 'green',
+                      4: 'orange', 5: 'purple', 6: 'cyan'}
 
         total_correct = 0
         total_samples = 0
         all_predictions = []
         all_labels = []
-        slice_accuracies = []
+        dataset_accuracies = []
 
-        if self.live_plot_enabled:
-            plt.ion()
-            # Create three subplots instead of two.
-            fig, (ax1, ax2, ax3) = plt.subplots(
-                nrows=3, ncols=1, figsize=(6, 12))
-        for i, df in enumerate(test_slices):
-            y_slice = df['Fill']
-            X_slice = df.drop(columns=['Fill']).values
+        # Loop through each test slice and update plots live.
+        for slice_index, df in enumerate(test_slices):
+            # Separate out the features and labels.
+            print(df)
+            y_test = df['POI']
+            X_test = df.drop(columns=['POI']).values
 
             # Transform test data using the persisted scaler.
-            X_slice_transformed = self.scaler.transform(X_slice)
-
-            dtest = xgb.DMatrix(X_slice_transformed)
+            X_test_transformed = self.scaler.transform(X_test)
+            dtest = xgb.DMatrix(X_test_transformed)
             pred_probs = self.booster.predict(dtest)
 
-            if pred_probs.ndim == 1:
-                predictions = (pred_probs > 0.7).astype(int)
-            else:
+            # Adapt prediction handling for multiclass.
+            if pred_probs.ndim == 2:
                 predictions = np.argmax(pred_probs, axis=1)
+            else:
+                predictions = pred_probs.astype(int)
 
-            correct = np.sum(predictions == y_slice)
+            # Compute accuracy for this slice.
+            correct = np.sum(predictions == y_test)
             total_correct += correct
-            total_samples += len(y_slice)
+            total_samples += len(y_test)
+            slice_acc = correct / len(y_test)
+            dataset_accuracies.append(slice_acc)
 
-            all_predictions.extend(predictions)
-            all_labels.extend(y_slice)
+            # Store predictions and true labels.
+            all_predictions.extend(predictions.tolist() if hasattr(
+                predictions, 'tolist') else predictions)
+            all_labels.extend(y_test.tolist() if hasattr(
+                y_test, 'tolist') else y_test)
 
-            slice_acc = correct / len(y_slice)
-            slice_accuracies.append(slice_acc)
+            # ----------------- Update the Upper Plot -----------------
+            # Clear the current axis.
+            ax1.clear()
 
-            for i, df in enumerate(test_slices):
-                y_slice = df['Fill']
-                X_slice = df.drop(columns=['Fill']).values
+            # Plot the Dissipation curve (assumes your df has a 'Dissipation' column).
+            x_axis = np.arange(len(df))
+            ax1.plot(x_axis, df['Dissipation'],
+                     color='black', label='Dissipation')
 
-                # Transform test data using the persisted scaler.
-                X_slice_transformed = self.scaler.transform(X_slice)
+            # Overlay predicted POI lines (only for POI values 1-6).
+            for poi in range(1, 7):
+                indices = np.where(predictions == poi)[0]
+                if len(indices) > 0:
+                    # Get corresponding Dissipation values for these indices.
+                    y_vals = df['Dissipation'].values[indices]
+                    # Plot a line with markers.
+                    ax1.scatter(indices, y_vals, color=poi_colors[poi],
+                                marker='o', linestyle='-',
+                                label=f'POI {poi}')
+            ax1.set_title("Dissipation Curve with Predicted POI (1-6)")
+            ax1.set_xlabel("Sample Index")
+            ax1.set_ylabel("Dissipation")
+            ax1.legend()
 
-                dtest = xgb.DMatrix(X_slice_transformed)
-                pred_probs = self.booster.predict(dtest)
+            # ----------------- Update the Lower Plot -----------------
+            ax2.clear()
+            ax2.plot(range(len(dataset_accuracies)), dataset_accuracies,
+                     marker='o', linestyle='-')
+            ax2.set_ylim(0, 1)
+            ax2.set_title("Prediction Accuracy per Test Slice")
+            ax2.set_xlabel("Test Slice")
+            ax2.set_ylabel("Accuracy")
+            ax2.grid(True)
 
-                if pred_probs.ndim == 1:
-                    predictions = (pred_probs > 0.7).astype(int)
-                else:
-                    predictions = np.argmax(pred_probs, axis=1)
-
-                correct = np.sum(predictions == y_slice)
-                total_correct += correct
-                total_samples += len(y_slice)
-
-                all_predictions.extend(predictions)
-                all_labels.extend(y_slice)
-
-                slice_acc = correct / len(y_slice)
-                slice_accuracies.append(slice_acc)
-
-                if self.live_plot_enabled:
-                    ax1.clear()
-                    ax2.clear()
-                    ax3.clear()  # Clear the transformed data plot before updating
-
-                    x_vals = np.arange(len(df))
-
-                    # Plot the original Dissipation data and predicted classes on ax1.
-                    ax1.plot(x_vals, df['Dissipation'], label="Dissipation")
-                    ax1.set_title(
-                        "Dissipation with Predicted Classes & Confidence")
-                    ax1.set_xlabel("Index")
-                    ax1.set_ylabel("Dissipation")
-                    unique_classes = np.unique(predictions)
-                    cmap = plt.get_cmap('Set1', len(unique_classes))
-                    for idx, cls in enumerate(unique_classes):
-                        mask = (predictions == cls)
-                        ax1.fill_between(x_vals, df['Dissipation'], alpha=0.3,
-                                         where=mask,
-                                         color=cmap(idx),
-                                         label=f"Predicted Class {cls}")
-                    if pred_probs.ndim == 1:
-                        conf_1 = pred_probs
-                    else:
-                        conf_1 = pred_probs[:, 1]
-                    ax1.plot(x_vals, conf_1 * max(df['Dissipation']), '--', color='black',
-                             label='Confidence (Class 1)')
-                    ax1.legend()
-
-                    # Plot test slice accuracies on ax2.
-                    ax2.plot(slice_accuracies, marker='o')
-                    ax2.set_title("Test Slice Accuracy")
-                    ax2.set_xlabel("Slice Number")
-                    ax2.set_ylabel("Accuracy")
-
-                    # --- New Plot for Transformed Data on ax3 ---
-                    # Here we loop over each feature in the transformed data.
-                    for col in range(3):
-                        ax3.plot(
-                            x_vals, X_slice_transformed[:, col], label=f"Feature {col}")
-                    ax3.set_title("Transformed Data")
-                    ax3.set_xlabel("Index")
-                    ax3.set_ylabel("Scaled Value")
-                    ax3.legend()
-
-                    fig.canvas.draw()
-                    fig.canvas.flush_events()
-                    plt.pause(0.1)
+            # Pause briefly to update the live plot.
+            plt.pause(1)
 
         overall_accuracy = total_correct / total_samples
         logging.info(f"Test accuracy: {overall_accuracy * 100:.2f}%")
@@ -512,26 +456,18 @@ class ForcasterTrainer:
         logging.info(
             f"Confusion Matrix:\n{confusion_matrix(all_labels, all_predictions)}")
 
-        if self.live_plot_enabled:
-            plt.ioff()
-            plt.show()
+        # Finalize the plots.
+        plt.ioff()
+        plt.show()
 
         return overall_accuracy
-
-    def save_model(self, save_path: str):
-        """Save the trained booster model."""
-        if self.booster is None:
-            logging.error("No booster model available to save.")
-            return
-        self.booster.save_model(save_path)
-        logging.info(f"Model saved to {save_path}")
 
     def tune(self, n_trials: int = 50, num_boost_round: int = 50, early_stopping_rounds: int = 10):
         """Tune model hyperparameters using Optuna with cached DMatrices."""
         dtrain, dval = self._prepare_dmatrices()
         logging.info("Using cached DMatrices for tuning.")
 
-        def objective(trial):
+        def objective(trial: optuna.Trial):
             trial_params = self.params.copy()
             trial_params["learning_rate"] = trial.suggest_float(
                 "learning_rate", 0.01, 0.2, log=True)
@@ -565,8 +501,11 @@ class ForcasterTrainer:
             optimal_rounds = booster.best_iteration
             trial.set_user_attr("optimal_boost_rounds", optimal_rounds)
             return booster.best_score
-
-        study = optuna.create_study(direction="minimize")
+        if self.params.get("eval_metric") == "auc" or self.params.get("eval_metric") == "aucpr":
+            direction = "maximize"
+        else:
+            direction = "minimize"
+        study = optuna.create_study(direction=direction)
         study.optimize(objective, n_trials=n_trials)
 
         logging.info(f"Best trial: {study.best_trial.number}")
@@ -578,8 +517,13 @@ class ForcasterTrainer:
         logging.info(
             f"Optimal boosting rounds determined: {optimal_boost_rounds}")
 
-        self.params.update(
-            {k: v for k, v in study.best_trial.params.items() if k != "importance_ratio"})
+    def save_model(self, save_path: str):
+        """Save the trained booster model."""
+        if self.booster is None:
+            logging.error("No booster model available to save.")
+            return
+        self.booster.save_model(save_path)
+        logging.info(f"Model saved to {save_path}")
 
     def search(self, num_boost_round: int = 10):
         """Search for the best combination of objective and evaluation metric using cached DMatrices."""
@@ -591,8 +535,8 @@ class ForcasterTrainer:
         best_eval_metric = None
         results = []
 
-        for obj in BINARY_OBJECTIVES:
-            for eval_metric in BINARY_EVAL_METRICS:
+        for obj in MULTICLASS_OBJECTIVES:
+            for eval_metric in MULTICLASS_EVAL_METRICS:
                 params_copy = self.params.copy()
                 params_copy["objective"] = obj
                 params_copy["eval_metric"] = eval_metric
@@ -635,18 +579,16 @@ class ForcasterTrainer:
         return best_objective, best_eval_metric, best_accuracy, results
 
 
-# Execution control
 if __name__ == "__main__":
     TRAINING = True
     booster_path = os.path.join(
         "QModel", "SavedModels", "bff.json")
     if TRAINING:
-        # Pass True to regen_data if you want to regenerate the datasets (and caches) only once.
-        ft = ForcasterTrainer(num_features=16, classes=[
-                              "no_fill", "full_fill"], regen_data=True)
-        ft.toggle_live_plot(True)  # Enable live plotting
-        ft.search(num_boost_round=10)
-        ft.tune()
-        ft.train()
-        ft.save_model(save_path=booster_path)
+        ft = QModelTrainer(num_features=16, classes=[
+            "NO_POI", "POI1", "POI2", "POI3", "POI4", "POI5", "POI6"], regen_data=False)
+        # ft.toggle_live_plot(True)  # Enable live plotting
+        # ft.search(num_boost_round=10)
+        # ft.tune()
+        # ft.train()
+        # ft.save_model(save_path=booster_path)
         ft.test(booster_path=booster_path)
