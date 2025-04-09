@@ -11,14 +11,38 @@ from sklearn.metrics import silhouette_score
 from sklearn.svm import OneClassSVM
 from scipy.signal import savgol_filter, butter, filtfilt, detrend, find_peaks
 from scipy.ndimage import gaussian_filter1d
-
-
+from ModelData import ModelData
+import math
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 TARGET = "POI"
 PLOTTING = False
+""" The percentage of the run data to ignore from the head of a difference curve. """
+HEAD_TRIM_PERCENTAGE = 0.05
+""" The percentage of the run data to ignore from the tail of a difference curve. """
+TAIL_TRIM_PERCENTAGE = 0.5
+##########################################
+# CHANGE THESE
+##########################################
+# This is a percentage setback from the initial drop application.  Increasing this value in the range (0,1) will
+# move the left side of the correction zone further from the initial application of the drop as a percentage of the
+# index where the drop is applied.
+INIT_DROP_SETBACK = 0.000
+
+# Adjust the detected left-bound index by subtracting a proportion (BASE_OFFSET) of the data length,
+# effectively shifting the boundary left to better capture the true start of the drop.
+BASE_OFFSET = 0.005
+
+# This is the detection senstivity for the dissipation and RF drop effects.  Increasing these values should independently
+# increase how large a delta needs to be in order to be counted as a drop effect essentially correcting fewer deltas resulting
+# in a less aggressive correction.
+STARTING_THRESHOLD_FACTOR = 50
+
+##########################################
+# CHANGE THESE
+##########################################
 
 
 class QDataProcessor:
@@ -492,6 +516,7 @@ class QDataProcessor:
         df["Detrend_Resonance_Frequency"] = QDataProcessor.detrend(
             df["Resonance_Frequency"])
         df["Detrend_Cumulative"] = QDataProcessor.detrend(df["Cumulative"])
+
         # # Re-baseline `Dissipation` and `Resonance_Frequency`
         # slice_loc = int(len(df) * 0.01)
         # if slice_loc == 0 or len(df) < 2 * slice_loc:
@@ -509,6 +534,113 @@ class QDataProcessor:
         df.fillna(0, inplace=True)
 
         return df
+
+    @staticmethod
+    def find_initial_fill_region(difference: pd.Series, relative_time: pd.Series):
+        def region_search(difference, relative_time, mode, rb_time=-1.0, rb_index=-1):
+            try:
+                # Trim head and tail off difference and relative time data.
+                head_trim = int(len(difference) * HEAD_TRIM_PERCENTAGE)
+                tail_trim = int(len(difference) * TAIL_TRIM_PERCENTAGE)
+
+                # Slice both relative_time and difference.
+                relative_time = relative_time.iloc[head_trim:tail_trim]
+                difference = difference[head_trim:tail_trim]
+
+                # Generate a downward trend over the difference data.
+                trend = np.linspace(0, difference.max(), len(difference))
+                # Apply the trend.
+                adjusted_difference = difference - trend
+
+                if mode == "left":
+                    # Enforce that rb_index is valid.
+                    if rb_index < 0 or rb_index > len(relative_time):
+                        return (0, 0.0)
+
+                    # Further trim the data up to rb_index.
+                    relative_time = relative_time.iloc[:rb_index]
+                    difference = difference[:rb_index]
+
+                    # Recompute the trend on the shortened data.
+                    trend = np.linspace(0, difference.max(), len(difference))
+                    adjusted_difference = difference - trend
+
+                    # Compute the index of the global minimum and adjust it.
+                    index = int(np.argmin(adjusted_difference) +
+                                (len(relative_time) * BASE_OFFSET))
+                    index += math.floor(INIT_DROP_SETBACK * index)
+
+                    # Ensure the computed index is within valid bounds.
+                    index = min(index, len(relative_time) - 1)
+
+                    # Return the value from relative_time and adjust the index back to account for head_trim.
+                    return relative_time.iloc[index], index + head_trim
+
+                elif mode == 'right':
+                    # Compute the index of the global maximum with an offset adjustment.
+                    index = int(np.argmax(adjusted_difference) +
+                                (0.1 * np.argmax(adjusted_difference)))
+
+                    # Ensure the computed index is within the valid bounds.
+                    index = min(index, len(relative_time) - 1)
+
+                    # Return the value from relative_time along with the original indexing.
+                    return relative_time.iloc[index], index + head_trim
+                else:
+                    raise ValueError(f"Invalid search bound requested {mode}.")
+            except Exception as e:
+                # Re-raise the exception after any custom logging if needed.
+                raise e
+        rb_time, rb_idx = region_search(
+            difference=difference, relative_time=relative_time, mode="right")
+
+        lb_time, lb_idx = region_search(
+            difference=difference, relative_time=relative_time,  mode="left", rb_time=rb_time, rb_index=rb_idx)
+        return (lb_time, lb_idx), (rb_time, rb_idx)
+
+    @staticmethod
+    def get_model_data_predictions(file_buffer: str, n: int):
+        def reset_file_buffer(file_buffer: str):
+            if isinstance(file_buffer, str):
+                return file_buffer
+            if hasattr(file_buffer, "seekable") and file_buffer.seekable():
+                file_buffer.seek(0)
+                return file_buffer
+            else:
+                raise Exception(
+                    "Cannot `seek` stream prior to passing to processing.")
+        model = ModelData()
+        if isinstance(file_buffer, str):
+            model_data_predictions = model.IdentifyPoints(file_buffer)
+        else:
+            file_buffer = reset_file_buffer(file_buffer)
+            header = next(file_buffer)
+            if isinstance(header, bytes):
+                header = header.decode()
+            csv_cols = (2, 4, 6, 7) if "Ambient" in header else (2, 3, 5, 6)
+            file_data = np.loadtxt(
+                file_buffer.readlines(), delimiter=",", usecols=csv_cols)
+            relative_time = file_data[:, 0]
+            resonance_frequency = file_data[:, 2]
+            data = file_data[:, 3]
+            model_data_predictions = model.IdentifyPoints(
+                data_path="QModel Passthrough",
+                times=relative_time,
+                freq=resonance_frequency,
+                diss=data
+            )
+        model_data_points = []
+        if isinstance(model_data_predictions, list):
+            for pt in model_data_predictions:
+                if isinstance(pt, int):
+                    model_data_points.append(pt)
+                elif isinstance(pt, list) and pt:
+                    model_data_points.append(max(pt, key=lambda x: x[1])[0])
+        binary_vector = np.zeros(n, dtype=int)
+        for idx in model_data_points:
+            if 0 <= idx < n:
+                binary_vector[idx] = 1
+        return binary_vector
 
     @staticmethod
     def process_poi(poi_file: str, length_df: int) -> pd.DataFrame:
@@ -532,7 +664,17 @@ class QDataProcessor:
         return pd.DataFrame(labels)
 
     @staticmethod
-    def process_data(df: pd.DataFrame, live: bool = True) -> pd.DataFrame:
+    def process_data(file_buffer: Union[str, pd.DataFrame], live: bool = True) -> pd.DataFrame:
+        df: pd.DataFrame = None
+        if isinstance(file_buffer, pd.DataFrame):
+            df = file_buffer.copy()
+        elif isinstance(file_buffer, str):
+            df = pd.read_csv(file_buffer)
+        else:
+            raise IOError(
+                f"Error processing file with path `{file_buffer}`."
+            )
+
         if live:
             required_cols = ["Relative_time",
                              "Dissipation", "Resonance_Frequency"]
@@ -553,5 +695,7 @@ class QDataProcessor:
         df.reset_index(drop=True, inplace=True)
         if "Relative_time" in df.columns:
             df.drop(columns=['Relative_time'], inplace=True)
+        df["ModelData_Guesses"] = QDataProcessor.get_model_data_predictions(
+            file_buffer=file_buffer, n=len(df['Dissipation'].values))
         df = df.replace([np.inf, -np.inf], np.nan).fillna(0)
         return df

@@ -29,7 +29,6 @@ TEST_VALID_NUM = 33
 
 class QModelTrainer:
     def __init__(self, classes: list,
-                 num_features: int,
                  regen_data: bool = False,
                  training_directory: str = TRAIN_PATH,
                  validation_directory: str = VALID_PATH,
@@ -37,11 +36,8 @@ class QModelTrainer:
                  cache_directory: str = os.path.join("cache", "q_model")):
         if not isinstance(classes, list):
             raise TypeError("classes must be a list")
-        if not isinstance(num_features, int):
-            raise TypeError("num_features must be an integer")
 
         self.classes = classes
-        self.num_features = num_features
         self.params = self.build_params()
         self.booster: xgb.Booster = None
         self.label_to_index = {
@@ -60,7 +56,8 @@ class QModelTrainer:
             os.makedirs(self.cache_dir)
 
         # File path for persisting the scaler
-        self.scaler_file = os.path.join(self.cache_dir, "qmodel_scaler.pkl")
+        self.scaler_file = os.path.join(
+            "QModel", "SavedModels", "qmodel_v2", "qmodel_scaler.pkl")
         self.scaler: Optional[Pipeline] = None
 
         # In-memory caches
@@ -122,11 +119,11 @@ class QModelTrainer:
 
     def get_data(self, data_file: str, poi_file: str, live: bool = False):
         try:
-            data_df = pd.read_csv(data_file)
+            data_df = QDataProcessor.process_data(data_file, live=True)
             poi_df = QDataProcessor.process_poi(
                 poi_file, length_df=len(data_df))
             data_df['POI'] = poi_df
-            return QDataProcessor.process_data(data_df, live=live)
+            return data_df
         except FileNotFoundError as e:
             logging.error("POI file not found.")
             return None
@@ -582,13 +579,13 @@ class QModelTrainer:
 if __name__ == "__main__":
     TRAINING = True
     booster_path = os.path.join(
-        "QModel", "SavedModels", "bff.json")
+        "QModel", "SavedModels", "qmodel_v2", "qmodel_v2.json")
     if TRAINING:
-        ft = QModelTrainer(num_features=16, classes=[
-            "NO_POI", "POI1", "POI2", "POI3", "POI4", "POI5", "POI6"], regen_data=False)
-        # ft.toggle_live_plot(True)  # Enable live plotting
-        # ft.search(num_boost_round=10)
-        # ft.tune()
-        # ft.train()
-        # ft.save_model(save_path=booster_path)
+        ft = QModelTrainer(classes=[
+            "NO_POI", "POI1", "POI2", "POI3", "POI4", "POI5", "POI6"], regen_data=True)
+        ft.toggle_live_plot(True)  # Enable live plotting
+        ft.search(num_boost_round=10)
+        ft.tune()
+        ft.train()
+        ft.save_model(save_path=booster_path)
         ft.test(booster_path=booster_path)

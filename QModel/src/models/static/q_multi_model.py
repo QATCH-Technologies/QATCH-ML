@@ -7,6 +7,7 @@ from hyperopt import STATUS_OK, Trials, fmin, hp, tpe
 from hyperopt.early_stop import no_progress_loss
 from sklearn.model_selection import train_test_split
 import pickle
+from scipy.signal import find_peaks
 from scipy.interpolate import interp1d
 
 # from ModelData import ModelData

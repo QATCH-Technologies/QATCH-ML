@@ -32,6 +32,7 @@ from sklearn.cluster import DBSCAN, KMeans
 from sklearn.metrics import silhouette_score
 from QATCH.common.logger import Logger
 
+
 # Global constants
 TAG: List[str] = ['QForecastDataProcessor']
 TARGET: str = "Fill"

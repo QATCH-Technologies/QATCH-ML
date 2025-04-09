@@ -11,13 +11,13 @@ from q_data_pipeline import QDataPipeline
 from tqdm import tqdm
 
 from collections import defaultdict
-
+from q_model_predictor import QModelPredictor
 from q_model import QModelPredict
 from q_multi_model import QPredictor
 from q_image_clusterer import QClusterer
 
 TEST_BATCH_SIZE = 0.50
-VALIDATION_DATASETS_PATH = "content/test_data/test"
+VALIDATION_DATASETS_PATH = "content/static/test"
 S_PREDICTOR = QModelPredict(
     "QModel/SavedModels/QModel_1.json",
     "QModel/SavedModels/QModel_2.json",
@@ -29,6 +29,9 @@ S_PREDICTOR = QModelPredict(
 M_PREDICTOR_0 = QPredictor("QModel/SavedModels/QMultiType_0.json")
 M_PREDICTOR_1 = QPredictor("QModel/SavedModels/QMultiType_1.json")
 M_PREDICTOR_2 = QPredictor("QModel/SavedModels/QMultiType_2.json")
+QMODEL_V2_PREDICTOR = QModelPredictor(booster_path=os.path.join(
+    "QModel", "SavedModels", "qmodel_v2", "qmodel_v2.json"), scaler_path=os.path.join(
+        "QModel", "SavedModels", "qmodel_v2", "qmodel_scaler.pkl"))
 qcr = QClusterer(model_path="QModel/SavedModels/cluster.joblib")
 
 
@@ -69,17 +72,28 @@ def test_md_on_file(filename, act_poi):
 def test_mm_on_file(filename, act_poi):
 
     label = qcr.predict_label(filename)
-    if label == 0:
-        candidates = M_PREDICTOR_0.predict(
-            filename, run_type=label, act=act_poi)
-    elif label == 1:
-        candidates = M_PREDICTOR_1.predict(
-            filename, run_type=label, act=act_poi)
-    elif label == 2:
-        candidates = M_PREDICTOR_2.predict(
-            filename, run_type=label, act=act_poi)
-    else:
-        raise ValueError(f"Invalid predicted label was: {label}")
+    try:
+        if label == 0:
+            candidates = M_PREDICTOR_0.predict(
+                filename, run_type=label, act=act_poi)
+        elif label == 1:
+            try:
+                candidates = M_PREDICTOR_1.predict(
+                    filename, run_type=label, act=act_poi)
+            except:
+                candidates = M_PREDICTOR_0.predict(
+                    filename, run_type=label, act=act_poi)
+        elif label == 2:
+            try:
+                candidates = M_PREDICTOR_2.predict(
+                    filename, run_type=label, act=act_poi)
+            except:
+                candidates = M_PREDICTOR_0.predict(
+                    filename, run_type=label, act=act_poi)
+        else:
+            raise ValueError(f"Invalid predicted label was: {label}")
+    except:
+        candidates = [[1], [2], [3], [4], [5], [6]]
     good = []
     bad = []
     initial = 0.01
@@ -99,6 +113,18 @@ def test_mm_on_file(filename, act_poi):
                 break
     good.append((filename, act_poi, pois))
     return list(zip(pois, act_poi)), good, bad
+
+
+def test_qmodel_v2(filename, act_poi):
+    candidates = QMODEL_V2_PREDICTOR.predict(filename)
+    poi_1 = candidates.get("POI1").get("indices")[0]
+    poi_2 = candidates.get("POI2").get("indices")[0]
+    poi_3 = candidates.get("POI3").get("indices")[0]
+    poi_4 = candidates.get("POI4").get("indices")[0]
+    poi_5 = candidates.get("POI5").get("indices")[0]
+    poi_6 = candidates.get("POI6").get("indices")[0]
+    pois = [poi_1, poi_2, poi_3, poi_4, poi_5, poi_6]
+    return list(zip(pois, act_poi))
 
 
 def test_qmp_on_file(filename, act_poi):
@@ -243,17 +269,20 @@ def delta_distribution_view(deltas, name):
 
 
 def metrics_view(
-    model_1, model_2, model_3, test_name, model_1_name, model_2_name, model_3_name, note
+    model_1, model_2, model_3, model_4, test_name,
+    model_1_name, model_2_name, model_3_name, model_4_name, note
 ):
     points = np.arange(1, 7)
 
     # Width of each bar
     bar_width = 0.30
 
-    # Set the positions of the bars
-    r1 = points - bar_width
-    r2 = points
-    r3 = points + bar_width
+    # Evenly distribute 4 bars centered on each point.
+    r1 = points - 1.5 * bar_width
+    r2 = points - 0.5 * bar_width
+    r3 = points + 0.5 * bar_width
+    r4 = points + 1.5 * bar_width
+
     plt.figure(figsize=(12, 7))
     bars1 = plt.bar(
         r1,
@@ -279,49 +308,38 @@ def metrics_view(
         color="yellow",
         edgecolor="black",
     )
+    bars4 = plt.bar(
+        r4,
+        model_4,
+        width=bar_width,
+        label=f"{model_4_name} {test_name}",
+        color="green",  # Changed to a distinct color for model_4
+        edgecolor="black",
+    )
 
     plt.title(
-        f"Comparison of {test_name} Scores for {model_1_name} and {model_2_name}")
+        f"Comparison of {test_name} Scores for {model_1_name} and {model_2_name}"
+    )
     plt.xlabel("POI #")
     plt.ylabel(f"{test_name} Score")
     plt.xticks(points)  # Set x-ticks to be the point indices
     plt.legend()
     plt.grid(axis="y")
-    for bar in bars1:
-        height = bar.get_height()
-        plt.text(
-            bar.get_x() + bar.get_width() / 2,
-            height,
-            f"{height:.2f}",
-            ha="center",
-            va="bottom",
-            fontsize=10,
-            color="black",
-        )
 
-    for bar in bars2:
-        height = bar.get_height()
-        plt.text(
-            bar.get_x() + bar.get_width() / 2,
-            height,
-            f"{height:.2f}",
-            ha="center",
-            va="bottom",
-            fontsize=10,
-            color="black",
-        )
+    # Add text labels above each bar.
+    for bars in [bars1, bars2, bars3, bars4]:
+        for bar in bars:
+            height = bar.get_height()
+            plt.text(
+                bar.get_x() + bar.get_width() / 2,
+                height,
+                f"{height:.2f}",
+                ha="center",
+                va="bottom",
+                fontsize=10,
+                color="black",
+            )
 
-    for bar in bars3:
-        height = bar.get_height()
-        plt.text(
-            bar.get_x() + bar.get_width() / 2,
-            height,
-            f"{height:.2f}",
-            ha="center",
-            va="bottom",
-            fontsize=10,
-            color="black",
-        )
     plt.annotate(
         note,
         xy=(0.02, 0.98),
@@ -420,8 +438,8 @@ def poi_k_metrics(predictions, actual, k, verbose):
 
 def run():
     VERBOSE = False
-    qmp_deltas, md_deltas, mm_deltas = [], [], []
-    qmp_list, md_list, mm_list = [], [], []
+    qmp_deltas, md_deltas, mm_deltas, qmodel_v2_deltas = [], [], [], []
+    qmp_list, md_list, mm_list, qmodel_v2_list = [], [], [], []
     content = load_test_dataset(VALIDATION_DATASETS_PATH, TEST_BATCH_SIZE)
     good_list = []
     bad_list = []
@@ -493,6 +511,7 @@ def run():
                 bad_list.append(bad)
                 qmp_results = test_qmp_on_file(test_file, act_poi)
                 md_results = test_md_on_file(test_file, act_poi)
+                qmodel_v2_results = test_qmodel_v2(test_file, act_poi)
                 pois = []
                 for res in mm_results:
                     pois.append(res)
@@ -505,9 +524,10 @@ def run():
                 mm_list.append(mm_results)
                 qmp_list.append(qmp_results)
                 md_list.append(md_results)
-
+                qmodel_v2_list.append(qmodel_v2_results)
                 qmp_deltas.append(compute_deltas(qmp_results))
                 md_deltas.append(compute_deltas(md_results))
+                qmodel_v2_deltas.append(compute_deltas(qmodel_v2_results))
 
     # Compute statistics
     stats = {}
@@ -588,12 +608,15 @@ def run():
     mm_ppr = extract_results(mm_list)
     qmp_ppr = extract_results(qmp_list)
     md_ppr = extract_results(md_list)
+    qmodel_v2_ppr = extract_results(qmodel_v2_list)
     mm_mae, mm_mse, mm_rmse, mm_r2, mm_mape, mm_med_ape = [], [], [], [], [], []
     qmp_mae, qmp_mse, qmp_rmse, qmp_r2, qmp_mape, qmp_med_ape = [], [], [], [], [], []
     md_mae, md_mse, md_rmse, md_r2, md_mape, md_med_ape = [], [], [], [], [], []
+    v2_mae, v2_mse, v2_rmse, v2_r2, v2_mape, v2_med_ape = [], [], [], [], [], []
     ############################################################
     # MM
     ############################################################
+
     mae, mse, rmse, r2, mape, med_ape = poi_k_metrics(
         mm_ppr[0]["predicted"], mm_ppr[0]["actual"], 1, VERBOSE
     )
@@ -768,55 +791,125 @@ def run():
     md_r2.append(r2)
     md_mape.append(mape)
     md_med_ape.append(med_ape)
+    #######################
+    # QMODEL V2
+    #######################
+    mae, mse, rmse, r2, mape, med_ape = poi_k_metrics(
+        qmodel_v2_ppr[0]["predicted"], qmodel_v2_ppr[0]["actual"], 1, VERBOSE
+    )
+    v2_mae.append(mae)
+    v2_mse.append(mse)
+    v2_rmse.append(rmse)
+    v2_r2.append(r2)
+    v2_mape.append(mape)
+    v2_med_ape.append(med_ape)
+
+    mae, mse, rmse, r2, mape, med_ape = poi_k_metrics(
+        qmodel_v2_ppr[1]["predicted"], qmodel_v2_ppr[1]["actual"], 2, VERBOSE
+    )
+    v2_mae.append(mae)
+    v2_mse.append(mse)
+    v2_rmse.append(rmse)
+    v2_r2.append(r2)
+    v2_mape.append(mape)
+    v2_med_ape.append(med_ape)
+
+    mae, mse, rmse, r2, mape, med_ape = poi_k_metrics(
+        qmodel_v2_ppr[2]["predicted"], qmodel_v2_ppr[2]["actual"], 3, VERBOSE
+    )
+    v2_mae.append(mae)
+    v2_mse.append(mse)
+    v2_rmse.append(rmse)
+    v2_r2.append(r2)
+    v2_mape.append(mape)
+    v2_med_ape.append(med_ape)
+
+    mae, mse, rmse, r2, mape, med_ape = poi_k_metrics(
+        qmodel_v2_ppr[2]["predicted"], qmodel_v2_ppr[3]["actual"], 4, VERBOSE
+    )
+    v2_mae.append(mae)
+    v2_mse.append(mse)
+    v2_rmse.append(rmse)
+    v2_r2.append(r2)
+    v2_mape.append(mape)
+    v2_med_ape.append(med_ape)
+    mae, mse, rmse, r2, mape, med_ape = poi_k_metrics(
+        qmodel_v2_ppr[4]["predicted"], qmodel_v2_ppr[4]["actual"], 5, VERBOSE
+    )
+    v2_mae.append(mae)
+    v2_mse.append(mse)
+    v2_rmse.append(rmse)
+    v2_r2.append(r2)
+    v2_mape.append(mape)
+    v2_med_ape.append(med_ape)
+    mae, mse, rmse, r2, mape, med_ape = poi_k_metrics(
+        qmodel_v2_ppr[5]["predicted"], qmodel_v2_ppr[5]["actual"], 6, VERBOSE
+    )
+    v2_mae.append(mae)
+    v2_mse.append(mse)
+    v2_rmse.append(rmse)
+    v2_r2.append(r2)
+    v2_mape.append(mape)
+    v2_med_ape.append(med_ape)
 
     metrics_view(
         mm_mae,
         qmp_mae,
         md_mae,
+        v2_mae,
         "MAE",
         "QMultiModel",
         "QSingleModel",
         "ModelData",
+        "QModel_V2",
         "Average magnitude of errors between\npredicted/actual ignoring direction.\n(Lower is better)",
     )
     metrics_view(
         mm_mse,
         qmp_mse,
         md_mse,
+        v2_mse,
         "MSE",
         "QMultiModel",
         "QSingleModel",
         "ModelData",
+        "QModel_V2",
         "Average of squared differences between predicted/actual\nvalues emphasizes larger errors.\n(Lower is better)",
     )
     metrics_view(
         mm_rmse,
         qmp_rmse,
         md_rmse,
+        v2_rmse,
         "RMSE",
         "QMultiModel",
         "QSingleModel",
         "ModelData",
+        "QModel_V2",
         "Sqrt of MSE.\nUnits are the same as target variable.\n(Lower is better)",
     )
     metrics_view(
         mm_r2,
         qmp_r2,
         md_r2,
+        v2_r2,
         "R^2",
         "QMultiModel",
         "QSingleModel",
         "ModelData",
+        "QModel_V2",
         "How well the model 'fits' the data.\n(Bigger is better)",
     )
     metrics_view(
         mm_mape,
         qmp_mape,
         md_mape,
+        v2_mape,
         "MAPE",
         "QMultiModel",
         "QSingleModel",
         "ModelData",
+        "QModel_V2",
         "Average magnitude of errors as a percentage\nof the actual values.\n(Lower is better)",
     )
 
@@ -824,10 +917,12 @@ def run():
         mm_med_ape,
         qmp_med_ape,
         md_med_ape,
+        v2_med_ape,
         "Median Absolute Error",
         "QMultiModel",
         "QSingleModel",
         "ModelData",
+        "QModel_V2",
         "MAE with no Outliers",
     )
 
@@ -848,7 +943,7 @@ def run():
     # delta_distribution_view(qmp_deltas, "QModel")
     # delta_distribution_view(md_deltas, "ModelData")
 
-    delta_distribution_view(mm_deltas, "QMultiModel")
+    # delta_distribution_view(mm_deltas, "QMultiModel")
 
 
 if __name__ == "__main__":
