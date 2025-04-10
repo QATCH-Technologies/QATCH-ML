@@ -27,38 +27,107 @@ class PostProcesses:
         return (data - np.min(data)) / (np.max(data) - np.min(data))
 
     @staticmethod
-    def _classify_tail(data, a, b):
-        slope = data[a] - data[b]
-        if slope < 0:
-            return "increasing"
-        elif slope > 0:
-            return "decreasing"
+    def post_poi_1(candidates: dict, feature_vector: pd.DataFrame, actual_poi: np.ndarray, plotting: bool = True):
+        candidate_indices: list = candidates.get("indices")
+        unmod = candidate_indices[0]
+
+        # Move the candidate index closest to lb_idx to the front
+
+        dissipation = PostProcesses._normalize(
+            feature_vector["Dissipation"].values)
+        difference = PostProcesses._normalize(
+            feature_vector["Difference"].values)
+        resonance_frequency = PostProcesses._normalize(
+            feature_vector["Resonance_Frequency"].values)
+
+        baseline_window = np.average(
+            dissipation[int(0.03 * len(dissipation)):2*int(0.03 * len(dissipation))])
+        exceed_indices = np.where(
+            dissipation[int(0.01 * len(dissipation)):] > 5*baseline_window)[0]
+        if exceed_indices.size > 0:
+            lb_idx = exceed_indices[0]
         else:
-            # TODO: Implement a method for determining noise at the end of the signal.
-            return "noisy"
+            lb_idx = feature_vector[feature_vector['ModelData_Guess']
+                                    == 1].index[0]
+
+        closest_idx = min(candidate_indices, key=lambda x: abs(x - lb_idx))
+        candidate_indices.remove(closest_idx)
+        candidate_indices.insert(0, closest_idx)
+        if abs(actual_poi[0] - candidate_indices[0]) > 4 and plotting:
+            plt.figure()
+            plt.plot(dissipation, c='grey')
+            plt.plot(resonance_frequency, c='brown')
+            plt.plot(difference, c='tan')
+            plt.scatter(candidate_indices, dissipation[candidate_indices])
+            plt.scatter(actual_poi,
+                        dissipation[actual_poi], c='red', marker='x')
+            plt.axvline(candidate_indices[0], linestyle='dotted')
+            plt.axvline(unmod, linestyle='dotted', color='r')
+            plt.axvline(lb_idx)
+            plt.axvline(2*int(0.03 * len(dissipation)), color='black')
+            plt.title(
+                f"POI1 Post-Process w/ delta {actual_poi[0] - candidate_indices[0]}")
+            plt.show()
 
     @staticmethod
-    def post_poi_1(candidates: dict, feature_vector: pd.DataFrame, actual_poi):
+    def post_poi_2(candidates: dict, feature_vector: pd.DataFrame, actual_poi: np.ndarray,  previous_poi: int, plotting: bool = False):
+        candidate_indices = candidates.get("indices")
+        unmod = candidate_indices[1]
+
+        dissipation = PostProcesses._normalize(
+            feature_vector["Dissipation"].values)
+        difference = PostProcesses._normalize(
+            feature_vector["Difference"].values)
+        head_trim = int(
+            len(difference) * 0.05)
+        trimmed_difference = difference[head_trim:]
+        trend = np.linspace(0, max(trimmed_difference),
+                            len(trimmed_difference))
+        adjusted_difference = trimmed_difference - trend
+        # Calculate the index and rb_idx as in your code
+        index = int(np.argmax(adjusted_difference) +
+                    (0.1 * np.argmax(adjusted_difference)))
+        rb_idx = min(index, len(difference) - 1) + head_trim
+
+        # Filter candidates: select only those candidate indices that are > previous_poi and < rb_idx
+        valid_candidates = [
+            idx for idx in candidate_indices if previous_poi + 1 < idx < rb_idx]
+
+        # Check if we have any valid candidates
+        if valid_candidates:
+            best_candidate = max(valid_candidates)
+        else:
+            best_candidate = candidate_indices[0]
+
+        if abs(actual_poi[1] - best_candidate) > 10 and plotting:
+            plt.figure()
+            plt.plot(dissipation, c='grey', label="Dissipation")
+            plt.plot(difference, c='tan', label="Difference")
+            plt.scatter(candidate_indices, dissipation[candidate_indices])
+            plt.scatter(actual_poi,
+                        dissipation[actual_poi], c='red', marker='x', label=f'Actual: {actual_poi}')
+            plt.axvline(best_candidate, linestyle='dotted')
+            plt.axvline(unmod, linestyle='dotted',
+                        color='r', label=f"Best: {unmod}")
+            plt.axvline(best_candidate)
+            plt.title(
+                f"POI2 Post-Process w/ delta {actual_poi[1] -best_candidate}")
+            plt.show()
+
+    @staticmethod
+    def post_poi_3(candidates: dict, feature_vector: pd.DataFrame, actual_poi: np.ndarray,  previous_poi: int, plotting: bool = False):
         candidate_indices = candidates.get("indices")
 
     @staticmethod
-    def post_poi_2(candidates: dict, feature_vector: pd.DataFrame, actual_poi):
+    def post_poi_4(candidates: dict, feature_vector: pd.DataFrame, actual_poi: np.ndarray,  previous_poi: int, plotting: bool = False):
         candidate_indices = candidates.get("indices")
 
     @staticmethod
-    def post_poi_3(candidates: dict, feature_vector: pd.DataFrame, actual_poi):
+    def post_poi_5(candidates: dict, feature_vector: pd.DataFrame, actual_poi: np.ndarray, previous_poi: int,  plotting: bool = False):
         candidate_indices = candidates.get("indices")
 
     @staticmethod
-    def post_poi_4(candidates: dict, feature_vector: pd.DataFrame, actual_poi):
-        candidate_indices = candidates.get("indices")
-
-    @staticmethod
-    def post_poi_5(candidates: dict, feature_vector: pd.DataFrame, actual_poi):
-        candidate_indices = candidates.get("indices")
-
-    @staticmethod
-    def post_poi_6(candidates: dict, feature_vector: pd.DataFrame, actual_poi):
+    def post_poi_6(candidates: dict, feature_vector: pd.DataFrame, actual_poi: np.ndarray, previous_poi: int,  plotting: bool = False):
         candidate_indices = candidates.get("indices")
         dissipation = PostProcesses._normalize(
             feature_vector["Dissipation_DoG_SVM_Score"].values) * -1
@@ -68,7 +137,7 @@ class PostProcesses:
             feature_vector["Difference_DoG_SVM_Score"].values)
         filtered_candidates = candidate_indices
 
-        if abs(actual_poi[5] - candidate_indices[0]) > 20:
+        if abs(actual_poi[5] - candidate_indices[0]) > 20 and plotting:
             plt.figure()
             plt.plot(dissipation, c='grey')
             plt.plot(resonance_frequency, c='brown')
@@ -77,6 +146,8 @@ class PostProcesses:
             plt.scatter(actual_poi,
                         dissipation[actual_poi], c='red', marker='x')
             plt.axvline(candidate_indices[0], linestyle='dotted')
+            plt.title(
+                f"POI6 Post-Process w/ delta {actual_poi[5] - candidate_indices[0]}")
             plt.show()
 
 
@@ -229,60 +300,53 @@ class QModelPredictor:
         predicted_probabilites = self._booster.predict(ddata)
         extracted_predictions = self._extract_predictions(
             predicted_probabilites, model_data_labels)
-        (lb_time, lb_idx), (rb_time, rb_idx) = QDataProcessor.find_initial_fill_region(
-            feature_vector['Difference'], df["Relative_time"])
-        PostProcesses.post_poi_6(
-            extracted_predictions.get("POI6"), feature_vector, actual_poi_indices)
         # --- Plotting Section (Optional) ---
-        # if actual_poi_indices is not None:
-        #     import matplotlib.pyplot as plt
-        #     plt.figure(figsize=(14, 6))
-        #     dissipation = feature_vector['Dissipation'].values
-        #     poi_colors = {1: 'pink', 2: 'blue', 3: 'green',
-        #                   4: 'orange', 5: 'purple', 6: 'cyan'}
+        if actual_poi_indices is not None:
+            plt.figure(figsize=(14, 6))
+            dissipation = feature_vector['Dissipation'].values
+            poi_colors = {1: 'pink', 2: 'blue', 3: 'green',
+                          4: 'orange', 5: 'purple', 6: 'cyan'}
 
-        #     # --- Plot 1: Model Data Labels ---
-        #     plt.subplot(1, 2, 1)
-        #     plt.plot(dissipation, color='grey')
-        #     plt.scatter(model_data_labels,
-        #                 dissipation[model_data_labels])
-        #     plt.scatter(actual_poi_indices,
-        #                 dissipation[actual_poi_indices], marker='x', color='red')
-        #     plt.xlabel("Sample Index")
-        #     plt.ylabel("Dissipation")
-        #     plt.title("Dissipation vs Index (Model Data Labels)")
-        #     plt.clim(-0.5, 5.5)
+            # --- Plot 1: Model Data Labels ---
+            plt.subplot(1, 2, 1)
+            plt.plot(dissipation, color='grey')
+            plt.scatter(model_data_labels,
+                        dissipation[model_data_labels])
+            plt.scatter(actual_poi_indices,
+                        dissipation[actual_poi_indices], marker='x', color='red')
+            plt.xlabel("Sample Index")
+            plt.ylabel("Dissipation")
+            plt.title("Dissipation vs Index (Model Data Labels)")
+            plt.clim(-0.5, 5.5)
 
-        #     # --- Plot 2: Filtered Labels ---
-        #     plt.subplot(1, 2, 2)
-        #     plt.plot(dissipation, color='grey')
-        #     for poi in range(1, 7):
-        #         key = f"POI{poi}"
-        #         poi_data = extracted_predictions.get(key, {})
-        #         indices = poi_data.get("indices", [])
-        #         if indices:
-        #             indices_arr = np.array(indices)
-        #             y_vals = dissipation[indices_arr]
-        #             # Plot all predictions with a lower alpha
-        #             plt.scatter(indices_arr, y_vals, color=poi_colors[poi],
-        #                         marker='o', alpha=0.5, label=f'POI {poi}')
-        #             # Highlight the highest confidence guess (first in the sorted list)
-        #             highest_index = indices_arr[0]
-        #             plt.scatter(highest_index, dissipation[highest_index],
-        #                         color=poi_colors[poi], marker='o', s=100,
-        #                         alpha=1.0, edgecolor='k', linewidth=1.5)
-        #         plt.axvline(lb_idx)
-        #         plt.axvline(rb_idx)
-        #     plt.scatter(actual_poi_indices, dissipation[actual_poi_indices],
-        #                 color='red', marker='x')
-        #     plt.xlabel("Sample Index")
-        #     plt.ylabel("Dissipation")
-        #     plt.title("Dissipation vs Index (QModel Labels)")
-        #     plt.clim(-0.5, 5.5)
+            # --- Plot 2: Filtered Labels ---
+            plt.subplot(1, 2, 2)
+            plt.plot(dissipation, color='grey')
+            for poi in range(1, 7):
+                key = f"POI{poi}"
+                poi_data = extracted_predictions.get(key, {})
+                indices = poi_data.get("indices", [])
+                if indices:
+                    indices_arr = np.array(indices)
+                    y_vals = dissipation[indices_arr]
+                    # Plot all predictions with a lower alpha
+                    plt.scatter(indices_arr, y_vals, color=poi_colors[poi],
+                                marker='o', alpha=0.5, label=f'POI {poi}')
+                    # Highlight the highest confidence guess (first in the sorted list)
+                    highest_index = indices_arr[0]
+                    plt.scatter(highest_index, dissipation[highest_index],
+                                color=poi_colors[poi], marker='o', s=100,
+                                alpha=1.0, edgecolor='k', linewidth=1.5)
+            plt.scatter(actual_poi_indices, dissipation[actual_poi_indices],
+                        color='red', marker='x')
+            plt.xlabel("Sample Index")
+            plt.ylabel("Dissipation")
+            plt.title("Dissipation vs Index (QModel Labels)")
+            plt.clim(-0.5, 5.5)
 
-        #     plt.tight_layout()
-        #     plt.show()
-        # return extracted_predictions
+            plt.tight_layout()
+            plt.show()
+        return extracted_predictions
 
 
 if __name__ == "__main__":
@@ -296,6 +360,7 @@ if __name__ == "__main__":
     import random
     random.shuffle(test_content)
     for i, (data_file, poi_file) in enumerate(test_content):
+        logging.info(f"Predicting on data file `{data_file}`.")
         poi_indices = pd.read_csv(poi_file, header=None)
         qmp.predict(file_buffer=data_file,
                     actual_poi_indices=poi_indices.values)
