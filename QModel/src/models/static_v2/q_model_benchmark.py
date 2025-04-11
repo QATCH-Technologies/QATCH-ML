@@ -11,6 +11,9 @@ from tqdm import tqdm
 from ModelData import ModelData
 from q_model_data_processor import QDataProcessor
 from q_model_predictor import QModelPredictor
+from q_image_clusterer import QClusterer
+from q_multi_model import QPredictor
+from q_single_model import QModelPredict
 import time
 logging.basicConfig(
     level=logging.DEBUG,
@@ -21,6 +24,20 @@ QMODEL_V2_BOOSTER_PATH = os.path.join(
     "QModel", "SavedModels", "qmodel_v2", "qmodel_v2.json")
 QMODEL_V2_SCALER_PATH = os.path.join(
     "QModel", "SavedModels", "qmodel_v2", "qmodel_scaler.pkl")
+Q_IMAGE_CLUSTER_PATH = os.path.join("QModel", "SavedModels", "cluster.joblib")
+Q_MULTI_MODEL_0_PATH = os.path.join(
+    "QModel", "SavedModels", "QMultiType_0.json")
+Q_MULTI_MODEL_1_PATH = os.path.join(
+    "QModel", "SavedModels", "QMultiType_1.json")
+Q_MULTI_MODEL_2_PATH = os.path.join(
+    "QModel", "SavedModels", "QMultiType_2.json")
+
+Q_SINGLE_PREDICTOR_1 = os.path.join("QModel", "SavedModels", "QModel_1.json")
+Q_SINGLE_PREDICTOR_2 = os.path.join("QModel", "SavedModels", "QModel_2.json")
+Q_SINGLE_PREDICTOR_3 = os.path.join("QModel", "SavedModels", "QModel_3.json")
+Q_SINGLE_PREDICTOR_4 = os.path.join("QModel", "SavedModels", "QModel_4.json")
+Q_SINGLE_PREDICTOR_5 = os.path.join("QModel", "SavedModels", "QModel_5.json")
+Q_SINGLE_PREDICTOR_6 = os.path.join("QModel", "SavedModels", "QModel_6.json")
 
 
 @singledispatch
@@ -70,6 +87,38 @@ def _(predictor: 'QModelPredictor', file_buffer, actual_poi_indices):
         qmodel_v2_points.append(qmodel_v2_predictions.get(
             poi, {}).get('indices', [None])[0])
     return qmodel_v2_points
+
+
+@predict_dispatch.register
+def _(predictor: 'QClusterer', file_buffer, actual_poi_indices):
+    label = predictor.predict_label(file_buffer=file_buffer)
+    predictor_0 = QPredictor(Q_MULTI_MODEL_0_PATH)
+    predictor_1 = QPredictor(Q_MULTI_MODEL_1_PATH)
+    predictor_2 = QPredictor(Q_MULTI_MODEL_2_PATH)
+    try:
+        if label == 0:
+            candidates = predictor_0.predict(
+                file_buffer=file_buffer, run_type=label)
+        elif label == 1:
+            candidates = predictor_1.predict(
+                file_buffer=file_buffer, run_type=label)
+        elif label == 2:
+            candidates = predictor_2.predict(
+                file_buffer=file_buffer, run_type=label)
+        q_predictor_points = []
+        for c in candidates:
+            q_predictor_points.append(c[0][0])
+    except Exception as e:
+        logging.error(f"QMultiModel prediction failed with error {e}.")
+        q_predictor_points = [-1, -1, -1, -1, -1, -1]
+
+    return q_predictor_points
+
+
+@predict_dispatch.register
+def _(predictor: 'QModelPredict', file_buffer, actual_poi_indices):
+    q_single_model_points = predictor.predict(file_buffer)
+    return q_single_model_points
 
 
 def compute_metrics(actual: List[int], predicted: List[int]) -> dict:
@@ -186,37 +235,71 @@ class Benchmarker:
         return aggregated_metrics
 
     def plot_benchmark_metrics(self, aggregated_metrics: dict):
-        metric_keys = ["mae", "mse", "rmse", "mean_error",
-                       "median_absolute_error", "r_squared", "std_error"]
-        # Add runtime to the list of metrics if desired
+        # Define remapping for model names.
+        model_name_mapping = {
+            "ModelData": "ModelData",          # stays the same
+            "QModelPredictor": "QModel V3",
+            "QClusterer": "QModel V2",
+            "QModelPredict": "QModel V1"
+        }
+
+        # Define the metric keys and corresponding descriptions.
+        metric_keys = [
+            "mae", "mse", "rmse", "mean_error",
+            "median_absolute_error", "r_squared", "std_error"
+        ]
+        metric_descriptions = {
+            "mae": "Mean Absolute Error: The average absolute difference between predictions and actual values.",
+            "mse": "Mean Squared Error: The average squared difference between predictions and actual values.",
+            "rmse": "Root Mean Squared Error: The square root of the MSE, measuring error magnitude.",
+            "mean_error": "Mean Error: The average error, indicating bias in predictions.",
+            "median_absolute_error": "Median Absolute Error: The median of the absolute differences, less sensitive to outliers.",
+            "r_squared": "R^2: Proportion of variance in the data explained by the model.",
+            "std_error": "Standard Error: The standard deviation of the prediction errors."
+        }
+        runtime_description = "Average Runtime: The mean execution time per model (in seconds)."
+
+        # Optionally include runtime in the list.
         all_metrics = metric_keys + ["avg_time"]
 
+        # Prepare model and POI names.
         model_names = list(aggregated_metrics.keys())
         poi_names = list(aggregated_metrics[model_names[0]].keys())
-        plt.style.use('ggplot')
 
-        # Plot metrics that are computed per POI.
+        # Choose a preferred style or fall back if not available.
+        preferred_style = 'seaborn-whitegrid'
+        if preferred_style in plt.style.available:
+            plt.style.use(preferred_style)
+        else:
+            plt.style.use('ggplot')
+
+        # Plot per-POI metrics.
         for metric in metric_keys:
             fig, ax = plt.subplots(figsize=(12, 8))
-            # exclude avg_time (if it shares same structure)
-            x = np.arange(len(poi_names) - 1)
+
+            # Filter out POI names to only include those that match your criteria.
+            pois_to_plot = [poi for poi in poi_names if "POI" in poi]
+            x = np.arange(len(pois_to_plot))
             bar_width = 0.8 / len(model_names)
 
             for idx, model in enumerate(model_names):
+                # Use the remapped name for display.
+                display_model = model_name_mapping.get(model, model)
                 metric_values = [aggregated_metrics[model]
-                                 [poi][metric] for poi in poi_names if "POI" in poi]
+                                 [poi][metric] for poi in pois_to_plot]
                 bar_positions = x + idx * bar_width
                 bars = ax.bar(
                     bar_positions,
                     metric_values,
                     bar_width,
-                    label=model,
+                    label=display_model,
                     edgecolor='black'
                 )
-                offset = max(metric_values) * \
-                    0.01 if max(metric_values) > 0 else 0.05
+                # Annotate each bar with its value.
                 for bar in bars:
                     height = bar.get_height()
+                    offset = max(metric_values) * \
+                        0.01 if max(metric_values) > 0 else 0.05
                     ax.text(
                         bar.get_x() + bar.get_width() / 2,
                         height + offset,
@@ -225,25 +308,36 @@ class Benchmarker:
                         va='bottom',
                         fontsize=10
                     )
+            # Adjust x-axis ticks.
             ax.set_xticks(x + bar_width * (len(model_names) - 1) / 2)
-            ax.set_xticklabels(
-                [poi for poi in poi_names if "POI" in poi], fontsize=12)
+            ax.set_xticklabels(pois_to_plot, fontsize=12)
             ax.set_ylabel(metric.upper(), fontsize=12)
-            ax.set_title(f'{metric.upper()} by POI for each Model',
+            ax.set_title(f'{metric.upper()} by POI for Each Model',
                          fontsize=14, fontweight='bold')
             ax.legend(title="Models", fontsize=10, title_fontsize=10)
             ax.grid(True, linestyle='--', alpha=0.7)
+
+            # Add a description box for the metric.
+            description = metric_descriptions.get(metric, "")
+            ax.text(0.98, 0.98, description,
+                    transform=ax.transAxes, fontsize=10,
+                    verticalalignment='top', horizontalalignment='right',
+                    bbox=dict(facecolor='white', alpha=0.8, edgecolor='gray'))
             plt.tight_layout()
             plt.show()
 
-        # Plot average runtime (global, not per-POI)
+        # Plot average runtime (global, not per-POI).
         fig, ax = plt.subplots(figsize=(8, 6))
+        # Use the remapped names when displaying model runtimes.
         model_runtimes = [aggregated_metrics[model]["avg_time"]
                           for model in model_names]
-        bars = ax.bar(model_names, model_runtimes, edgecolor='black')
+        display_model_names = [model_name_mapping.get(
+            model, model) for model in model_names]
+        bars = ax.bar(display_model_names, model_runtimes, edgecolor='black')
         ax.set_ylabel("Average Runtime (s)", fontsize=12)
         ax.set_title("Average Runtime for Each Model",
                      fontsize=14, fontweight='bold')
+
         for bar in bars:
             height = bar.get_height()
             ax.text(
@@ -254,6 +348,11 @@ class Benchmarker:
                 va='bottom',
                 fontsize=10
             )
+        # Add runtime description.
+        ax.text(0.98, 0.98, runtime_description,
+                transform=ax.transAxes, fontsize=10,
+                verticalalignment='top', horizontalalignment='right',
+                bbox=dict(facecolor='white', alpha=0.8, edgecolor='gray'))
         plt.tight_layout()
         plt.show()
 
@@ -264,7 +363,11 @@ if __name__ == "__main__":
         ModelData(),
         QModelPredictor(booster_path=QMODEL_V2_BOOSTER_PATH,
                         scaler_path=QMODEL_V2_SCALER_PATH),
+        QClusterer(model_path="QModel/SavedModels/cluster.joblib"),
+        QModelPredict(predictor_path_1=Q_SINGLE_PREDICTOR_1, predictor_path_2=Q_SINGLE_PREDICTOR_2, predictor_path_3=Q_SINGLE_PREDICTOR_3,
+                      predictor_path_4=Q_SINGLE_PREDICTOR_4, predictor_path_5=Q_SINGLE_PREDICTOR_5, predictor_path_6=Q_SINGLE_PREDICTOR_6)
+
     ]
     benchmarker = Benchmarker(predictors=predictors)
     aggregated_metrics = benchmarker.run(
-        test_directory=test_directory, test_size=np.inf)
+        test_directory=test_directory, test_size=100)

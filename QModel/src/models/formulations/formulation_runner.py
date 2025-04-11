@@ -4,26 +4,32 @@ import joblib
 import xgboost as xgb
 
 # Load the Keras neural network model.
-nn_model = tf.keras.models.load_model("viscosity_model.h5")
+nn_model = tf.keras.models.load_model(
+    r"QModel\src\models\formulations\viscosity_model.h5")
 print("Neural Network model loaded successfully.")
 
 # Load scikit-learn models.
-linear_model = joblib.load("linear_regression_model.pkl")
+linear_model = joblib.load(
+    r"QModel\src\models\formulations\linear_regression_model.pkl")
 print("Linear Regression model loaded successfully.")
 
-poly_model = joblib.load("polynomial_regression_model.pkl")
+poly_model = joblib.load(
+    r"QModel\src\models\formulations\polynomial_regression_model.pkl")
 print("Polynomial Regression model loaded successfully.")
 
-rf_model = joblib.load("random_forest_model.pkl")
+rf_model = joblib.load(
+    r"QModel\src\models\formulations\random_forest_model.pkl")
 print("Random Forest model loaded successfully.")
 
 # Load the feature scaler used during training.
-scaler = joblib.load("scaler.pkl")
+scaler = joblib.load(
+    r"QModel\src\models\formulations\scaler.pkl")
 print("Feature scaler loaded successfully.")
 
 # Load the dictionary of XGBoost models that were saved during training.
 # Each target was modeled individually, so this dictionary keys should be the target names.
-xgb_models = joblib.load("xgboost_models.pkl")
+xgb_models = joblib.load(
+    r"QModel\src\models\formulations\xgboost_models.pkl")
 print("XGBoost models loaded successfully.")
 
 # Define the target order (make sure it is the same order as used during training).

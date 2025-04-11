@@ -1,4 +1,3 @@
-import io
 import xgboost as xgb
 import logging
 from sklearn.pipeline import Pipeline
@@ -9,149 +8,128 @@ from q_model_data_processor import QDataProcessor
 from ModelData import ModelData
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy.signal import find_peaks
+from numba import njit
+
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-
-""" The percentage of the run data to ignore from the head of a difference curve. """
-HEAD_TRIM_PERCENTAGE = 0.05
-""" The percentage of the run data to ignore from the tail of a difference curve. """
-TAIL_TRIM_PERCENTAGE = 0.5
+logging.getLogger('matplotlib').setLevel(logging.WARNING)
+logging.getLogger('PIL').setLevel(logging.WARNING)
+logging.getLogger('numba.core').setLevel(logging.WARNING)
 
 
 class PostProcesses:
     @staticmethod
-    def _normalize(data):
+    def _normalize(data: np.ndarray):
         return (data - np.min(data)) / (np.max(data) - np.min(data))
 
-    @staticmethod
-    def post_poi_1(candidates: dict, feature_vector: pd.DataFrame, actual_poi: np.ndarray, plotting: bool = True):
-        candidate_indices: list = candidates.get("indices")
-        unmod = candidate_indices[0]
+    @njit
+    def ordering_numba(
+        poi1_indices, poi3_indices, poi4_indices, poi5_indices, poi6_indices,
+        relative_times
+    ):
+        valid1 = np.zeros(poi1_indices.shape[0], dtype=np.bool_)
+        valid3 = np.zeros(poi3_indices.shape[0], dtype=np.bool_)
+        valid4 = np.zeros(poi4_indices.shape[0], dtype=np.bool_)
+        valid5 = np.zeros(poi5_indices.shape[0], dtype=np.bool_)
+        valid6 = np.zeros(poi6_indices.shape[0], dtype=np.bool_)
 
-        # Move the candidate index closest to lb_idx to the front
-
-        dissipation = PostProcesses._normalize(
-            feature_vector["Dissipation"].values)
-        difference = PostProcesses._normalize(
-            feature_vector["Difference"].values)
-        resonance_frequency = PostProcesses._normalize(
-            feature_vector["Resonance_Frequency"].values)
-
-        baseline_window = np.average(
-            dissipation[int(0.03 * len(dissipation)):2*int(0.03 * len(dissipation))])
-        exceed_indices = np.where(
-            dissipation[int(0.01 * len(dissipation)):] > 5*baseline_window)[0]
-        if exceed_indices.size > 0:
-            lb_idx = exceed_indices[0]
-        else:
-            lb_idx = feature_vector[feature_vector['ModelData_Guess']
-                                    == 1].index[0]
-
-        closest_idx = min(candidate_indices, key=lambda x: abs(x - lb_idx))
-        candidate_indices.remove(closest_idx)
-        candidate_indices.insert(0, closest_idx)
-        if abs(actual_poi[0] - candidate_indices[0]) > 4 and plotting:
-            plt.figure()
-            plt.plot(dissipation, c='grey')
-            plt.plot(resonance_frequency, c='brown')
-            plt.plot(difference, c='tan')
-            plt.scatter(candidate_indices, dissipation[candidate_indices])
-            plt.scatter(actual_poi,
-                        dissipation[actual_poi], c='red', marker='x')
-            plt.axvline(candidate_indices[0], linestyle='dotted')
-            plt.axvline(unmod, linestyle='dotted', color='r')
-            plt.axvline(lb_idx)
-            plt.axvline(2*int(0.03 * len(dissipation)), color='black')
-            plt.title(
-                f"POI1 Post-Process w/ delta {actual_poi[0] - candidate_indices[0]}")
-            plt.show()
-
-    @staticmethod
-    def post_poi_2(candidates: dict, feature_vector: pd.DataFrame, actual_poi: np.ndarray,  previous_poi: int, plotting: bool = False):
-        candidate_indices = candidates.get("indices")
-        unmod = candidate_indices[1]
-
-        dissipation = PostProcesses._normalize(
-            feature_vector["Dissipation"].values)
-        difference = PostProcesses._normalize(
-            feature_vector["Difference"].values)
-        head_trim = int(
-            len(difference) * 0.05)
-        trimmed_difference = difference[head_trim:]
-        trend = np.linspace(0, max(trimmed_difference),
-                            len(trimmed_difference))
-        adjusted_difference = trimmed_difference - trend
-        # Calculate the index and rb_idx as in your code
-        index = int(np.argmax(adjusted_difference) +
-                    (0.1 * np.argmax(adjusted_difference)))
-        rb_idx = min(index, len(difference) - 1) + head_trim
-
-        # Filter candidates: select only those candidate indices that are > previous_poi and < rb_idx
-        valid_candidates = [
-            idx for idx in candidate_indices if previous_poi + 1 < idx < rb_idx]
-
-        # Check if we have any valid candidates
-        if valid_candidates:
-            best_candidate = max(valid_candidates)
-        else:
-            best_candidate = candidate_indices[0]
-
-        if abs(actual_poi[1] - best_candidate) > 10 and plotting:
-            plt.figure()
-            plt.plot(dissipation, c='grey', label="Dissipation")
-            plt.plot(difference, c='tan', label="Difference")
-            plt.scatter(candidate_indices, dissipation[candidate_indices])
-            plt.scatter(actual_poi,
-                        dissipation[actual_poi], c='red', marker='x', label=f'Actual: {actual_poi}')
-            plt.axvline(best_candidate, linestyle='dotted')
-            plt.axvline(unmod, linestyle='dotted',
-                        color='r', label=f"Best: {unmod}")
-            plt.axvline(best_candidate)
-            plt.title(
-                f"POI2 Post-Process w/ delta {actual_poi[1] -best_candidate}")
-            plt.show()
+        for i in range(poi1_indices.shape[0]):
+            t1 = relative_times[poi1_indices[i]]
+            for j in range(poi3_indices.shape[0]):
+                t3 = relative_times[poi3_indices[j]]
+                if t3 <= t1:
+                    continue
+                delta1 = t3 - t1
+                for k in range(poi4_indices.shape[0]):
+                    t4 = relative_times[poi4_indices[k]]
+                    if t4 <= t3:
+                        continue
+                    delta2 = t4 - t3
+                    if delta2 < delta1:
+                        continue
+                    for l in range(poi5_indices.shape[0]):
+                        t5 = relative_times[poi5_indices[l]]
+                        if t5 <= t4:
+                            continue
+                        delta3 = t5 - t4
+                        if delta3 < delta1 or delta3 < delta2:
+                            continue
+                        for m in range(poi6_indices.shape[0]):
+                            t6 = relative_times[poi6_indices[m]]
+                            if t6 <= t5:
+                                continue
+                            delta4 = t6 - t5
+                            if delta4 < delta1 or delta4 < delta2 or delta4 < delta3:
+                                continue
+                            valid1[i] = True
+                            valid3[j] = True
+                            valid4[k] = True
+                            valid5[l] = True
+                            valid6[m] = True
+        return valid1, valid3, valid4, valid5, valid6
 
     @staticmethod
-    def post_poi_3(candidates: dict, feature_vector: pd.DataFrame, actual_poi: np.ndarray,  previous_poi: int, plotting: bool = False):
-        candidate_indices = candidates.get("indices")
+    def ordering(predictions: dict, relative_times: np.ndarray):
+        poi1_indices = np.array(predictions["POI1"]["indices"])
+        poi3_indices = np.array(predictions["POI3"]["indices"])
+        poi4_indices = np.array(predictions["POI4"]["indices"])
+        poi5_indices = np.array(predictions["POI5"]["indices"])
+        poi6_indices = np.array(predictions["POI6"]["indices"])
+
+        valid1, valid3, valid4, valid5, valid6 = PostProcesses.ordering_numba(
+            poi1_indices, poi3_indices, poi4_indices, poi5_indices, poi6_indices,
+            relative_times
+        )
+
+        # Rebuild the predictions dictionary only with valid candidates:
+        filtered_predictions = {}
+        for poi in ["POI1", "POI3", "POI4", "POI5", "POI6"]:
+            data = predictions[poi]
+            # Create boolean mask for each POI.
+            if poi == "POI1":
+                mask = valid1
+            elif poi == "POI3":
+                mask = valid3
+            elif poi == "POI4":
+                mask = valid4
+            elif poi == "POI5":
+                mask = valid5
+            elif poi == "POI6":
+                mask = valid6
+            filtered_indices = [idx for idx, valid in zip(
+                data["indices"], mask) if valid]
+            filtered_confidences = [conf for conf, valid in zip(
+                data["confidences"], mask) if valid]
+            filtered_predictions[poi] = {
+                "indices": filtered_indices,
+                "confidences": filtered_confidences
+            }
+        # POI2 is not part of the combination check.
+        filtered_predictions["POI2"] = predictions["POI2"]
+        return filtered_predictions
 
     @staticmethod
-    def post_poi_4(candidates: dict, feature_vector: pd.DataFrame, actual_poi: np.ndarray,  previous_poi: int, plotting: bool = False):
-        candidate_indices = candidates.get("indices")
+    def final_check(filtered_predictions: dict, extracted_predictions: dict, model_data_labels: list) -> dict:
+        poi_keys = [f"POI{i}" for i in range(1, 7)]
 
-    @staticmethod
-    def post_poi_5(candidates: dict, feature_vector: pd.DataFrame, actual_poi: np.ndarray, previous_poi: int,  plotting: bool = False):
-        candidate_indices = candidates.get("indices")
+        for key in poi_keys:
+            fp = filtered_predictions.get(key, {})
+            fp_indices = fp.get("indices", [])
 
-    @staticmethod
-    def post_poi_6(candidates: dict, feature_vector: pd.DataFrame, actual_poi: np.ndarray, previous_poi: int,  plotting: bool = False):
-        candidate_indices = candidates.get("indices")
-        dissipation = PostProcesses._normalize(
-            feature_vector["Dissipation_DoG_SVM_Score"].values) * -1
-        difference = PostProcesses._normalize(
-            feature_vector["Difference"].values)
-        resonance_frequency = PostProcesses._normalize(
-            feature_vector["Difference_DoG_SVM_Score"].values)
-        filtered_candidates = candidate_indices
+            if not fp_indices:
+                ep = extracted_predictions.get(key, {})
+                ep_confidences = ep.get("confidences", [])
+                filtered_predictions.setdefault(
+                    key, {})['indices'] = [model_data_labels[i]]
+                filtered_predictions[key]['confidences'] = ep_confidences[0]
 
-        if abs(actual_poi[5] - candidate_indices[0]) > 20 and plotting:
-            plt.figure()
-            plt.plot(dissipation, c='grey')
-            plt.plot(resonance_frequency, c='brown')
-            plt.plot(difference, c='tan')
-            plt.scatter(candidate_indices, dissipation[candidate_indices])
-            plt.scatter(actual_poi,
-                        dissipation[actual_poi], c='red', marker='x')
-            plt.axvline(candidate_indices[0], linestyle='dotted')
-            plt.title(
-                f"POI6 Post-Process w/ delta {actual_poi[5] - candidate_indices[0]}")
-            plt.show()
+        return filtered_predictions
 
 
 class QModelPredictor:
+
     def __init__(self, booster_path: str, scaler_path: str) -> None:
         if booster_path is None or booster_path == "" or not os.path.exists(booster_path):
             logging.error(
@@ -174,6 +152,14 @@ class QModelPredictor:
         except Exception as e:
             logging.error(
                 f'Error loading model from path `{scaler_path}` with exception: `{e}`')
+        self._feature_vector = None
+        self._model_data_labels = None
+
+    def get_feature_vector(self) -> pd.DataFrame:
+        return self._feature_vector
+
+    def get_model_data_labels(self) -> list:
+        return self._model_data_labels
 
     def _load_scaler(self, scaler_path: str) -> Pipeline:
         scaler = None
@@ -291,9 +277,11 @@ class QModelPredictor:
             return
         model_data_labels = self._get_model_data_predictions(
             file_buffer=file_buffer)
+        self._model_data_labels = model_data_labels
         file_buffer = self._reset_file_buffer(file_buffer=file_buffer)
         feature_vector = QDataProcessor.process_data(
             file_buffer=file_buffer, live=True)
+        self._feature_vector = feature_vector
         transformed_feature_vector = self._scaler.transform(
             feature_vector.values)
         ddata = xgb.DMatrix(transformed_feature_vector)
@@ -303,7 +291,7 @@ class QModelPredictor:
         # --- Plotting Section (Optional) ---
         if actual_poi_indices is not None:
             plt.figure(figsize=(14, 6))
-            dissipation = feature_vector['Dissipation'].values
+            dissipation = feature_vector['Dissipation_smooth'].values
             poi_colors = {1: 'pink', 2: 'blue', 3: 'green',
                           4: 'orange', 5: 'purple', 6: 'cyan'}
 
@@ -313,7 +301,7 @@ class QModelPredictor:
             plt.scatter(model_data_labels,
                         dissipation[model_data_labels])
             plt.scatter(actual_poi_indices,
-                        dissipation[actual_poi_indices], marker='x', color='red')
+                        dissipation[actual_poi_indices], marker='*', color='red')
             plt.xlabel("Sample Index")
             plt.ylabel("Dissipation")
             plt.title("Dissipation vs Index (Model Data Labels)")
@@ -324,10 +312,23 @@ class QModelPredictor:
             plt.plot(dissipation, color='grey')
             for poi in range(1, 7):
                 key = f"POI{poi}"
-                poi_data = extracted_predictions.get(key, {})
-                indices = poi_data.get("indices", [])
-                if indices:
-                    indices_arr = np.array(indices)
+                unfiltered_poi_data = extracted_predictions.get(key, {})
+                unfiltered_indices = unfiltered_poi_data.get("indices", [])
+                if unfiltered_indices:
+                    indices_arr = np.array(unfiltered_indices)
+                    y_vals = dissipation[indices_arr]
+                    # Plot all predictions with a lower alpha
+                    plt.scatter(indices_arr, y_vals, color=poi_colors[poi],
+                                marker='x', alpha=0.5, label=f'POI {poi}')
+                    # Highlight the highest confidence guess (first in the sorted list)
+                    highest_index = indices_arr[0]
+                    plt.scatter(highest_index, dissipation[highest_index],
+                                color=poi_colors[poi], marker='x', s=100,
+                                alpha=1.0, edgecolor='black', linewidth=1.5)
+                filtered_poi_data = extracted_predictions.get(key, {})
+                filtered_indices = filtered_poi_data.get("indices", [])
+                if filtered_indices:
+                    indices_arr = np.array(filtered_indices)
                     y_vals = dissipation[indices_arr]
                     # Plot all predictions with a lower alpha
                     plt.scatter(indices_arr, y_vals, color=poi_colors[poi],
@@ -336,7 +337,7 @@ class QModelPredictor:
                     highest_index = indices_arr[0]
                     plt.scatter(highest_index, dissipation[highest_index],
                                 color=poi_colors[poi], marker='o', s=100,
-                                alpha=1.0, edgecolor='k', linewidth=1.5)
+                                alpha=1.0, edgecolor='black', linewidth=1.5)
             plt.scatter(actual_poi_indices, dissipation[actual_poi_indices],
                         color='red', marker='x')
             plt.xlabel("Sample Index")
@@ -349,18 +350,58 @@ class QModelPredictor:
         return extracted_predictions
 
 
+def descriminator_dataset_gen(booster_path: str, scaler_path: str, training_directory: str, output_directory: str):
+    training_content = QDataProcessor.load_content(data_dir=training_directory)
+    qmp = QModelPredictor(booster_path, scaler_path)
+    import random
+    random.shuffle(training_content)
+    poi_features = {"POI1": None, "POI2": None,
+                    "POI3": None, "POI4": None, "POI5": None, "POI6": None}
+    for i, (data_file, poi_file) in enumerate(training_content):
+        poi_indices = pd.read_csv(poi_file, header=None).values
+        r_time_df = pd.read_csv(data_file)
+
+        predictions = qmp.predict(file_buffer=data_file)
+        model_data_labels = qmp.get_model_data_labels()
+        feature_vector = qmp.get_feature_vector()
+        feature_vector['Relative_time'] = r_time_df['Relative_time']
+        feature_vector["Target"] = 0
+
+        for i, poi in enumerate(poi_features.keys()):
+            working_copy = feature_vector.copy()
+            indices = predictions.get(poi).get("indices")
+            indices.append(model_data_labels[i])
+            actual = poi_indices[i]
+            min_idx = min(indices)
+            max_idx = max(indices)
+            if actual >= min_idx and actual <= max_idx:
+                working_copy.loc[actual, 'Target'] = 1
+                logging.info(f'Adding target at {actual}.')
+            else:
+                logging.warning(f'No target added for {actual}.')
+            poi_features[poi] = pd.concat([poi_features[poi],
+                                           working_copy.iloc[min_idx:max_idx].copy()])
+    for poi in poi_features.keys():
+        output_file = os.path.join(
+            output_directory, f"{poi}_dataset.pkl")
+        poi_features[poi].to_pickle(output_file)
+
+
 if __name__ == "__main__":
     booster_path = os.path.join(
         "QModel", "SavedModels", "qmodel_v2", "qmodel_v2.json")
     scaler_path = os.path.join(
         "QModel", "SavedModels", "qmodel_v2", "qmodel_scaler.pkl")
-    test_dir = os.path.join('content', 'static', 'test')
-    test_content = QDataProcessor.load_content(data_dir=test_dir)
-    qmp = QModelPredictor(booster_path=booster_path, scaler_path=scaler_path)
-    import random
-    random.shuffle(test_content)
-    for i, (data_file, poi_file) in enumerate(test_content):
-        logging.info(f"Predicting on data file `{data_file}`.")
-        poi_indices = pd.read_csv(poi_file, header=None)
-        qmp.predict(file_buffer=data_file,
-                    actual_poi_indices=poi_indices.values)
+    test_dir = os.path.join('content', 'static', 'valid')
+
+    descriminator_dataset_gen(booster_path, scaler_path, test_dir, os.path.join(
+        "cache", "q_model"))
+    # test_content = QDataProcessor.load_content(data_dir=test_dir)
+    # qmp = QModelPredictor(booster_path=booster_path, scaler_path=scaler_path)
+    # import random
+    # random.shuffle(test_content)
+    # for i, (data_file, poi_file) in enumerate(test_content):
+    #     logging.info(f"Predicting on data file `{data_file}`.")
+    #     poi_indices = pd.read_csv(poi_file, header=None)
+    #     qmp.predict(file_buffer=data_file,
+    #                 actual_poi_indices=poi_indices.values)
