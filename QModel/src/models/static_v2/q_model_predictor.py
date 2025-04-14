@@ -4,11 +4,12 @@ from sklearn.pipeline import Pipeline
 import pickle
 import os
 import pandas as pd
-from q_model_data_processor import QDataProcessor
 from ModelData import ModelData
 import matplotlib.pyplot as plt
 import numpy as np
 from numba import njit
+from q_model_data_processor import QDataProcessor
+from sklearn.cluster import DBSCAN
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -127,6 +128,22 @@ class PostProcesses:
 
         return filtered_predictions
 
+    def post_poi_4(candidates: dict, feature_vector: pd.DataFrame, actual: np.ndarray = None, eps=10) -> dict:
+
+        # Normalize the dissipation values (this example assumes a simple normalization method)
+        dissipation = PostProcesses._normalize(
+            np.array(feature_vector["Dissipation_smooth"].values))
+
+        # Retrieve candidate indices for POI4
+        poi_4_candidates = candidates.get("POI4", {}).get("indices", [])
+
+        min_idx, max_idx = min(poi_4_candidates), max(poi_4_candidates)
+        plt.figure()
+        plt.plot(dissipation[min_idx:max_idx])
+        plt.axvline(poi_4_candidates[0] - min_idx)
+        plt.show()
+        return
+
 
 class QModelPredictor:
 
@@ -140,6 +157,8 @@ class QModelPredictor:
 
         self._booster: xgb.Booster = xgb.Booster()
         self._scaler: Pipeline = None
+        self._descriminator = None
+
         try:
             self._booster.load_model(fname=booster_path)
             logging.info(f'Booster loaded from path `{booster_path}`.')
@@ -152,6 +171,7 @@ class QModelPredictor:
         except Exception as e:
             logging.error(
                 f'Error loading model from path `{scaler_path}` with exception: `{e}`')
+
         self._feature_vector = None
         self._model_data_labels = None
 
@@ -249,23 +269,35 @@ class QModelPredictor:
                 f"Data file missing required columns: `{', '.join(missing)}`.")
         return df
 
-    def _extract_predictions(self, predicted_probablities: np.ndarray, model_data_labels: np.ndarray):
-        poi_results = {}
-        predicted_labels = np.argmax(predicted_probablities, axis=1)
+    def _extract_predictions(self, predicted_probabilities: np.ndarray, model_data_labels: np.ndarray):
+        poi_results = {f"POI{poi}": {"indices": [], "confidences": []}
+                       for poi in range(1, 7)}
+
+        predicted_labels = np.argmax(predicted_probabilities, axis=1)
+        valid_pois = np.arange(1, 7)
+        candidate_indices = np.where(np.isin(predicted_labels, valid_pois))[0]
+
+        # For each candidate, reassign based on closeness to the model_data_labels reference.
+        for idx in candidate_indices:
+            distances = np.abs(idx - model_data_labels)
+            closest_ref = np.argmin(distances)
+            poi_key = f"POI{closest_ref + 1}"
+            confidence = predicted_probabilities[idx, closest_ref + 1]
+            poi_results[poi_key]["indices"].append(idx)
+            poi_results[poi_key]["confidences"].append(confidence)
+
         for poi in range(1, 7):
             key = f"POI{poi}"
-            indices = np.where(predicted_labels == poi)[0]
-            if indices.size == 0:
-                poi_results[key] = {"indices": [
-                    model_data_labels[poi - 1]], "confidences": [0]}
+            if len(poi_results[key]["indices"]) == 0:
+                poi_results[key]["indices"] = [model_data_labels[poi - 1]]
+                poi_results[key]["confidences"] = [0]
             else:
-                confidences = predicted_probablities[indices, poi]
-                sort_order = np.argsort(-confidences)
-                sorted_indices = indices[sort_order].tolist()
-                sorted_confidences = confidences[sort_order].tolist()
+                conf_array = np.array(poi_results[key]["confidences"])
+                idx_array = np.array(poi_results[key]["indices"])
+                sort_order = np.argsort(-conf_array)
+                poi_results[key]["indices"] = idx_array[sort_order].tolist()
+                poi_results[key]["confidences"] = conf_array[sort_order].tolist()
 
-                poi_results[key] = {"indices": sorted_indices,
-                                    "confidences": sorted_confidences}
         return poi_results
 
     def predict(self, file_buffer: str, forecast_start: int = -1, forecast_end: int = -1, actual_poi_indices: np.ndarray = None):
@@ -288,6 +320,8 @@ class QModelPredictor:
         predicted_probabilites = self._booster.predict(ddata)
         extracted_predictions = self._extract_predictions(
             predicted_probabilites, model_data_labels)
+        PostProcesses.post_poi_4(
+            candidates=extracted_predictions, feature_vector=self._feature_vector, actual=actual_poi_indices)
         # --- Plotting Section (Optional) ---
         if actual_poi_indices is not None:
             plt.figure(figsize=(14, 6))
@@ -350,58 +384,19 @@ class QModelPredictor:
         return extracted_predictions
 
 
-def descriminator_dataset_gen(booster_path: str, scaler_path: str, training_directory: str, output_directory: str):
-    training_content = QDataProcessor.load_content(data_dir=training_directory)
-    qmp = QModelPredictor(booster_path, scaler_path)
-    import random
-    random.shuffle(training_content)
-    poi_features = {"POI1": None, "POI2": None,
-                    "POI3": None, "POI4": None, "POI5": None, "POI6": None}
-    for i, (data_file, poi_file) in enumerate(training_content):
-        poi_indices = pd.read_csv(poi_file, header=None).values
-        r_time_df = pd.read_csv(data_file)
-
-        predictions = qmp.predict(file_buffer=data_file)
-        model_data_labels = qmp.get_model_data_labels()
-        feature_vector = qmp.get_feature_vector()
-        feature_vector['Relative_time'] = r_time_df['Relative_time']
-        feature_vector["Target"] = 0
-
-        for i, poi in enumerate(poi_features.keys()):
-            working_copy = feature_vector.copy()
-            indices = predictions.get(poi).get("indices")
-            indices.append(model_data_labels[i])
-            actual = poi_indices[i]
-            min_idx = min(indices)
-            max_idx = max(indices)
-            if actual >= min_idx and actual <= max_idx:
-                working_copy.loc[actual, 'Target'] = 1
-                logging.info(f'Adding target at {actual}.')
-            else:
-                logging.warning(f'No target added for {actual}.')
-            poi_features[poi] = pd.concat([poi_features[poi],
-                                           working_copy.iloc[min_idx:max_idx].copy()])
-    for poi in poi_features.keys():
-        output_file = os.path.join(
-            output_directory, f"{poi}_dataset.pkl")
-        poi_features[poi].to_pickle(output_file)
-
-
 if __name__ == "__main__":
     booster_path = os.path.join(
         "QModel", "SavedModels", "qmodel_v2", "qmodel_v2.json")
     scaler_path = os.path.join(
         "QModel", "SavedModels", "qmodel_v2", "qmodel_scaler.pkl")
     test_dir = os.path.join('content', 'static', 'valid')
-
-    descriminator_dataset_gen(booster_path, scaler_path, test_dir, os.path.join(
-        "cache", "q_model"))
-    # test_content = QDataProcessor.load_content(data_dir=test_dir)
-    # qmp = QModelPredictor(booster_path=booster_path, scaler_path=scaler_path)
-    # import random
-    # random.shuffle(test_content)
-    # for i, (data_file, poi_file) in enumerate(test_content):
-    #     logging.info(f"Predicting on data file `{data_file}`.")
-    #     poi_indices = pd.read_csv(poi_file, header=None)
-    #     qmp.predict(file_buffer=data_file,
-    #                 actual_poi_indices=poi_indices.values)
+    test_content = QDataProcessor.load_content(data_dir=test_dir)
+    qmp = QModelPredictor(booster_path=booster_path, scaler_path=scaler_path)
+    import random
+    random.shuffle(test_content)
+    for i, (data_file, poi_file) in enumerate(test_content):
+        logging.info(f"Predicting on data file `{data_file}`.")
+        poi_indices = pd.read_csv(poi_file, header=None)
+        logging.info(poi_indices)
+        qmp.predict(file_buffer=data_file,
+                    actual_poi_indices=poi_indices.values)

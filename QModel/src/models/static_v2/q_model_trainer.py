@@ -579,7 +579,7 @@ class QModelTrainer:
 if __name__ == "__main__":
     TRAINING = True
     booster_path = os.path.join(
-        "QModel", "SavedModels", "qmodel_v2", "qmodel_v2.json")
+        "QModel", "SavedModels", "qmodel_v2", "qmodel_v2_w_rtime.json")
     if TRAINING:
         ft = QModelTrainer(classes=[
             "NO_POI", "POI1", "POI2", "POI3", "POI4", "POI5", "POI6"], regen_data=True)
