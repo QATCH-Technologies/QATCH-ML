@@ -74,7 +74,6 @@ def _(predictor: 'ModelData', file_buffer, actual_poi_indices):
             if isinstance(pt, int):
                 model_data_points.append(pt)
             elif isinstance(pt, list) and pt:
-                # Taking the index corresponding to the maximum value in the sublist
                 model_data_points.append(max(pt, key=lambda x: x[1])[0])
     return model_data_points
 
@@ -126,30 +125,20 @@ def compute_metrics(actual: List[int], predicted: List[int]) -> dict:
         raise ValueError(
             "The number of predicted indices does not match the number of actual indices.")
 
-    # Convert to NumPy arrays for efficiency
     actual_np = np.array(actual)
     predicted_np = np.array(predicted)
-
     differences = np.abs(actual_np - predicted_np)
     mae = np.mean(differences)
     mse = np.mean((actual_np - predicted_np) ** 2)
     rmse = math.sqrt(mse)
-
-    # Mean error (bias)
     mean_error = np.mean(actual_np - predicted_np)
-
-    # Median Absolute Error
     medae = np.median(differences)
-
-    # R-squared Score
     ss_tot = np.sum((actual_np - np.mean(actual_np)) ** 2)
     ss_res = np.sum((actual_np - predicted_np) ** 2)
     r_squared = 1 - ss_res/ss_tot if ss_tot != 0 else None
 
-    # Standard Deviation of the Differences
     std_error = np.std(actual_np - predicted_np)
 
-    # Optionally, Mean Absolute Percentage Error (if no actual value is zero)
     try:
         mape = np.mean(differences / np.abs(actual_np)) * 100
     except ZeroDivisionError:
@@ -171,7 +160,6 @@ def compute_metrics(actual: List[int], predicted: List[int]) -> dict:
 class Benchmarker:
     def __init__(self, predictors: List):
         self._predictors = predictors
-        # Now each model’s result dictionary includes a "runtimes" list.
         self.results = {
             type(model).__name__: {"actual": [],
                                    "predicted": [], "runtimes": []}
@@ -179,33 +167,26 @@ class Benchmarker:
         }
 
     def run(self, test_directory: str, test_size: int, plotting: bool = True):
-        # Load and shuffle test content
         test_content = QDataProcessor.load_content(
             data_dir=test_directory, num_datasets=test_size)
         random.shuffle(test_content)
 
         for data_file, poi_file in tqdm(test_content, desc="<Benchmarking>"):
-            # Read the actual POI indices (each file should have 6 values)
             poi_indices_df = pd.read_csv(poi_file, header=None)
             actual_indices = poi_indices_df.values.flatten().tolist()
 
             for model in self._predictors:
                 model_name = type(model).__name__
-
-                # Start timing the prediction call.
                 start_time = time.perf_counter()
                 predictions = predict_dispatch(
                     model,
                     file_buffer=data_file,
                     actual_poi_indices=poi_indices_df.values
                 )
-                # Stop timing and calculate elapsed time.
                 elapsed_time = time.perf_counter() - start_time
 
-                # Record predictions and actual values.
                 self.results[model_name]["predicted"].append(predictions)
                 self.results[model_name]["actual"].append(actual_indices)
-                # Record the runtime.
                 self.results[model_name]["runtimes"].append(elapsed_time)
 
         aggregated_metrics = {}
@@ -225,7 +206,6 @@ class Benchmarker:
                     logging.error(
                         f"Error computing aggregated metrics for {model_name} - POI {poi_index+1}: {ve}"
                     )
-            # Calculate the average runtime (in seconds) for the model.
             avg_runtime = np.mean(data["runtimes"])
             aggregated_metrics[model_name]["avg_time"] = avg_runtime
             logging.info(f"Average runtime for {model_name}: {avg_runtime}")
@@ -235,15 +215,13 @@ class Benchmarker:
         return aggregated_metrics
 
     def plot_benchmark_metrics(self, aggregated_metrics: dict):
-        # Define remapping for model names.
         model_name_mapping = {
-            "ModelData": "ModelData",          # stays the same
+            "ModelData": "ModelData",
             "QModelPredictor": "QModel V3",
             "QClusterer": "QModel V2",
             "QModelPredict": "QModel V1"
         }
 
-        # Define the metric keys and corresponding descriptions.
         metric_keys = [
             "mae", "mse", "rmse", "mean_error",
             "median_absolute_error", "r_squared", "std_error"
@@ -258,32 +236,23 @@ class Benchmarker:
             "std_error": "Standard Error: The standard deviation of the prediction errors."
         }
         runtime_description = "Average Runtime: The mean execution time per model (in seconds)."
-
-        # Optionally include runtime in the list.
         all_metrics = metric_keys + ["avg_time"]
-
-        # Prepare model and POI names.
         model_names = list(aggregated_metrics.keys())
         poi_names = list(aggregated_metrics[model_names[0]].keys())
 
-        # Choose a preferred style or fall back if not available.
         preferred_style = 'seaborn-whitegrid'
         if preferred_style in plt.style.available:
             plt.style.use(preferred_style)
         else:
             plt.style.use('ggplot')
 
-        # Plot per-POI metrics.
         for metric in metric_keys:
             fig, ax = plt.subplots(figsize=(12, 8))
-
-            # Filter out POI names to only include those that match your criteria.
             pois_to_plot = [poi for poi in poi_names if "POI" in poi]
             x = np.arange(len(pois_to_plot))
             bar_width = 0.8 / len(model_names)
 
             for idx, model in enumerate(model_names):
-                # Use the remapped name for display.
                 display_model = model_name_mapping.get(model, model)
                 metric_values = [aggregated_metrics[model]
                                  [poi][metric] for poi in pois_to_plot]
@@ -295,7 +264,6 @@ class Benchmarker:
                     label=display_model,
                     edgecolor='black'
                 )
-                # Annotate each bar with its value.
                 for bar in bars:
                     height = bar.get_height()
                     offset = max(metric_values) * \
@@ -317,7 +285,6 @@ class Benchmarker:
             ax.legend(title="Models", fontsize=10, title_fontsize=10)
             ax.grid(True, linestyle='--', alpha=0.7)
 
-            # Add a description box for the metric.
             description = metric_descriptions.get(metric, "")
             ax.text(0.98, 0.98, description,
                     transform=ax.transAxes, fontsize=10,
@@ -326,9 +293,7 @@ class Benchmarker:
             plt.tight_layout()
             plt.show()
 
-        # Plot average runtime (global, not per-POI).
         fig, ax = plt.subplots(figsize=(8, 6))
-        # Use the remapped names when displaying model runtimes.
         model_runtimes = [aggregated_metrics[model]["avg_time"]
                           for model in model_names]
         display_model_names = [model_name_mapping.get(
@@ -348,7 +313,6 @@ class Benchmarker:
                 va='bottom',
                 fontsize=10
             )
-        # Add runtime description.
         ax.text(0.98, 0.98, runtime_description,
                 transform=ax.transAxes, fontsize=10,
                 verticalalignment='top', horizontalalignment='right',
