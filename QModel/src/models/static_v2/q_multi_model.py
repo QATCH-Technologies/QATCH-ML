@@ -7,6 +7,7 @@ from hyperopt import STATUS_OK, Trials, fmin, hp, tpe
 from hyperopt.early_stop import no_progress_loss
 from sklearn.model_selection import train_test_split
 import pickle
+<<<<<<< HEAD
 from scipy.signal import find_peaks
 from scipy.interpolate import interp1d
 
@@ -67,6 +68,16 @@ except:
     QDataPipeline_found = False
 if not QDataPipeline_found:
     raise ImportError("Cannot find 'QDataPipeline' in any expected location.")
+=======
+from scipy.signal import find_peaks, savgol_filter
+from scipy.interpolate import interp1d
+from q_constants import *
+from q_data_pipeline import QDataPipeline
+from ModelData import ModelData
+TAG = ["QMultiModel"]
+# from ModelData import ModelData
+Architecture_found = False
+>>>>>>> 6ca98df2f5a52f7b981069fbe4ae7585b44df6d8
 
 
 class QMultiModel:
@@ -113,8 +124,11 @@ class QMultiModel:
         dataset: pd.DataFrame = None,
         predictors: list = None,
         target_features: str = "Class",
+<<<<<<< HEAD
         num_targets: int = 7,
         eval_metric: str = "auc",
+=======
+>>>>>>> 6ca98df2f5a52f7b981069fbe4ae7585b44df6d8
     ) -> None:
         """
         Initializes the XGBoost model with the specified dataset, predictors, and target features.
@@ -156,7 +170,11 @@ class QMultiModel:
         """
         self.__params__ = {
             "objective": "multi:softprob",
+<<<<<<< HEAD
             "eval_metric": eval_metric,
+=======
+            "eval_metric": "auc",
+>>>>>>> 6ca98df2f5a52f7b981069fbe4ae7585b44df6d8
             "eta": 0.175,
             "max_depth": 5,
             "min_child_weight": 4.0,
@@ -169,7 +187,12 @@ class QMultiModel:
             "tree_method": "auto",
             "sampling_method": "gradient_based",
             "seed": SEED,
+<<<<<<< HEAD
             "num_class": num_targets,
+=======
+            # "multi_strategy": "multi_output_tree",
+            "num_class": 7,
+>>>>>>> 6ca98df2f5a52f7b981069fbe4ae7585b44df6d8
         }
         self.__train_df__, self.__test_df__ = train_test_split(
             dataset, test_size=TEST_SIZE, random_state=SEED, shuffle=True
@@ -198,8 +221,12 @@ class QMultiModel:
             (self.__dtrain__, "train"),
             (self.__dvalid__, "valid"),
         ]
+<<<<<<< HEAD
         self.__num_targets__ = num_targets
         self.__eval_metric__ = eval_metric
+=======
+
+>>>>>>> 6ca98df2f5a52f7b981069fbe4ae7585b44df6d8
         self.__model__ = None
 
     def train_model(self) -> None:
@@ -279,6 +306,7 @@ class QMultiModel:
             nfold=NUMBER_KFOLDS,
             stratified=True,
             early_stopping_rounds=20,
+<<<<<<< HEAD
             metrics=[self.__eval_metric__],
             verbose_eval=VERBOSE_EVAL,
             seed=SEED,
@@ -289,6 +317,13 @@ class QMultiModel:
         else:
             best_score = results[f"test-{self.__eval_metric__}-mean"].min()
             return {"loss": best_score, "status": STATUS_OK}
+=======
+            metrics=["auc"],
+            verbose_eval=VERBOSE_EVAL,
+        )
+        best_score = results["test-auc-mean"].max()
+        return {"loss": best_score, "status": STATUS_OK}
+>>>>>>> 6ca98df2f5a52f7b981069fbe4ae7585b44df6d8
 
     def tune(self, evaluations: int = 250) -> dict:
         """
@@ -328,7 +363,11 @@ class QMultiModel:
                 "max_delta_step", np.arange(1, 10, 1, dtype="int")
             ),
             "subsample": hp.uniform("subsample", 0.5, 1),
+<<<<<<< HEAD
             "eval_metric": self.__eval_metric__,
+=======
+            "eval_metric": "auc",
+>>>>>>> 6ca98df2f5a52f7b981069fbe4ae7585b44df6d8
             "objective": "multi:softprob",
             "nthread": NUM_THREADS,
             "booster": "gbtree",
@@ -337,7 +376,11 @@ class QMultiModel:
             "sampling_method": "gradient_based",
             "seed": SEED,
             # "multi_strategy": "multi_output_tree",
+<<<<<<< HEAD
             "num_class": self.__num_targets__,
+=======
+            "num_class": 7,
+>>>>>>> 6ca98df2f5a52f7b981069fbe4ae7585b44df6d8
         }
         trials = Trials()
         best_hyperparams = fmin(
@@ -466,6 +509,7 @@ class QPredictor:
             bounds = self.__label_1__["Class_" + str(poi_num)]
         elif type == 2:
             bounds = self.__label_2__["Class_" + str(poi_num)]
+<<<<<<< HEAD
 
         lq = bounds["lq"]
         uq = bounds["uq"]
@@ -480,6 +524,14 @@ class QPredictor:
             )
         except ValueError as e:
             return prediction, (lq_idx, uq_idx)
+=======
+        lq = bounds["lq"]
+        uq = bounds["uq"]
+        adj = np.where((rel_time_norm >= lq) & (rel_time_norm <= uq), 1, 0)
+        adjustment = np.concatenate(
+            (np.zeros(i), np.array(adj), (np.zeros(len(prediction) - j)))
+        )
+>>>>>>> 6ca98df2f5a52f7b981069fbe4ae7585b44df6d8
         if len(prediction) == len(adjustment):
             adj_prediction = prediction * adjustment
             lq_idx = next((i for i, x in enumerate(adj) if x == 1), -1) + i
@@ -488,6 +540,12 @@ class QPredictor:
             )
             return adj_prediction, (lq_idx, uq_idx)
 
+<<<<<<< HEAD
+=======
+        lq_idx = next((i for i, x in enumerate(adj) if x == 1), -1) + i
+        uq_idx = next((i for i, x in reversed(
+            list(enumerate(adj))) if x == 1), -1) + i
+>>>>>>> 6ca98df2f5a52f7b981069fbe4ae7585b44df6d8
         return prediction, (lq_idx, uq_idx)
 
     def find_and_sort_peaks(self, signal):
@@ -503,6 +561,59 @@ class QPredictor:
         sorted_peaks = peaks[sorted_indices]
         return sorted_peaks
 
+<<<<<<< HEAD
+=======
+    def peak_density(self, signal, peaks, segment_le):
+        density = len(peaks) / len(signal)
+        return density
+
+    def find_dynamic_increase(
+        self, data, target_points=5, multiplier=3.0, reduction_factor=0.5, window_size=3
+    ):
+        if window_size < 2 or window_size >= len(data):
+            return -1
+
+        # Calculate the first derivative (differences between consecutive points)
+        diff = np.diff(data)
+        slope_change = []
+        for i in range(len(diff) - window_size + 1):
+            # Calculate the slope change over the current window
+            window_slope_change = np.mean(np.diff(diff[i: i + window_size]))
+            slope_change.append(window_slope_change)
+
+        slope_change = np.array(slope_change)
+
+        # Calculate baseline threshold (std deviation of slope changes in the sliding windows)
+        baseline = np.std(slope_change)
+
+        significant_points = []
+        current_multiplier = multiplier
+
+        # Iteratively reduce the threshold until enough significant points are found
+        while len(significant_points) < target_points and current_multiplier > 0:
+            # Calculate the current dynamic threshold
+            dynamic_threshold = current_multiplier * baseline
+
+            # Find new points where the change in slope exceeds the dynamic threshold
+            new_points = np.where(slope_change > dynamic_threshold)[0]
+
+            # Add new significant points to the list, ensuring no duplicates
+            for point in new_points:
+                if point + window_size - 1 not in [
+                    p for p in significant_points
+                ]:  # Adjust for window size
+                    significant_points.append(
+                        point + window_size - 1
+                    )  # Store index and slope change
+                    if len(significant_points) >= target_points:
+                        break
+
+            # Reduce the multiplier for the next iteration
+            current_multiplier *= reduction_factor
+
+        return significant_points[:target_points]
+
+>>>>>>> 6ca98df2f5a52f7b981069fbe4ae7585b44df6d8
     def find_zero_slope_regions(self, data, threshold=1e-3, min_region_length=1):
         # Calculate the first derivative (approximate slope)
         slopes = np.diff(data)
@@ -578,13 +689,21 @@ class QPredictor:
             distances_to_peaks = np.abs(all_peaks - adjusted_guess)
             nearest_peak = all_peaks[np.argmin(distances_to_peaks)]
             adjusted_guess = nearest_peak
+<<<<<<< HEAD
 
+=======
+>>>>>>> 6ca98df2f5a52f7b981069fbe4ae7585b44df6d8
         if md_guess is not None:
             # Define the maximum allowable deviation (adjust as needed)
             MAX_DEVIATION = 50
             if abs(adjusted_guess - md_guess) > MAX_DEVIATION:
                 adjusted_guess = md_guess
+<<<<<<< HEAD
             return adjusted_guess
+=======
+
+        return md_guess
+>>>>>>> 6ca98df2f5a52f7b981069fbe4ae7585b44df6d8
 
     def adjustment_poi_2(self, initial_guess, dissipation_data, bounds, poi_1_estimate):
         """Adjusts the point of interest (POI) within specified bounds, influenced by another POI.
@@ -1356,8 +1475,13 @@ class QPredictor:
 
         def sort_and_remove_point(arr, point):
             arr = np.array(arr)
+<<<<<<< HEAD
             if len(arr) > MAX_GUESSES - 1:
                 arr = arr[: MAX_GUESSES - 1]
+=======
+            if len(arr) > 10 - 1:
+                arr = arr[: 10 - 1]
+>>>>>>> 6ca98df2f5a52f7b981069fbe4ae7585b44df6d8
             arr.sort()
 
             return arr[arr != point]

@@ -47,14 +47,10 @@ STARTING_THRESHOLD_FACTOR = 50
 
 class QDataProcessor:
     @staticmethod
-<<<<<<< HEAD
     def load_content(data_dir: str, num_datasets: int = np.inf, column: str = 'Dissipation') -> list:
-=======
-    def load_content(data_dir: str, num_datasets: int = np.inf) -> list:
         if not os.path.exists(data_dir):
             logging.error("Data directory does not exist.")
             return
->>>>>>> 6ca98df2f5a52f7b981069fbe4ae7585b44df6d8
         logging.info(f"Loading content from {data_dir}")
         loaded_content = []
 
@@ -363,7 +359,7 @@ class QDataProcessor:
         return baseline, shift
 
     @staticmethod
-    def compute_super(series: pd.Series) -> pd.Series:
+    def compute_super_gradient(series: pd.Series) -> pd.Series:
 
         window = int(len(series) * 0.01)
         if window % 2 == 0:
@@ -388,21 +384,8 @@ class QDataProcessor:
         )
 
     @staticmethod
-    def compute_graident(data_series: pd.Series, time_series: pd.Series):
-        if len(data_series) != len(time_series):
-            raise ValueError(
-                "`data_series` and `time_series` must have the same length")
-        if len(data_series) < 2:
-            raise ValueError("Need at least two points to compute a gradient")
-
-        y = data_series.to_numpy(dtype=float)
-        t = time_series.to_numpy(dtype=float)
-
-        # compute dy/dt
-        grad = np.gradient(y, t)
-
-        # return as a pandas Series with the original index
-        return pd.Series(grad, index=data_series.index)
+    def compute_graident(series: pd.Series):
+        return series.diff()
 
     @staticmethod
     def noise_filter(series: pd.Series):
@@ -473,8 +456,8 @@ class QDataProcessor:
         df['Dissipation_DoG_baseline'], df['Dissipation_DoG_shift'] = QDataProcessor.compute_rolling_baseline_and_shift(
             df['Dissipation_DoG'], baseline_window
         )
-        # df['Dissipation_DoG_SVM_Score'] = QDataProcessor.compute_ocsvm_score(
-        #     df['Dissipation_DoG_shift'])
+        df['Dissipation_DoG_SVM_Score'] = QDataProcessor.compute_ocsvm_score(
+            df['Dissipation_DoG_shift'])
 
         # `Resonance_Frequency` DoG processing
         df['Resonance_Frequency_DoG'] = QDataProcessor.compute_DoG(
@@ -483,8 +466,8 @@ class QDataProcessor:
         df['Resonance_Frequency_DoG_baseline'], df['Resonance_Frequency_DoG_shift'] = QDataProcessor.compute_rolling_baseline_and_shift(
             df['Resonance_Frequency_DoG'], baseline_window
         )
-        # df['Resonance_Frequency_DoG_SVM_Score'] = QDataProcessor.compute_ocsvm_score(
-        #     df['Resonance_Frequency_DoG_shift'])
+        df['Resonance_Frequency_DoG_SVM_Score'] = QDataProcessor.compute_ocsvm_score(
+            df['Resonance_Frequency_DoG_shift'])
 
         # `Difference` DoG processing
         df['Difference_DoG'] = QDataProcessor.compute_DoG(
@@ -493,26 +476,26 @@ class QDataProcessor:
         df['Difference_DoG_baseline'], df['Difference_DoG_shift'] = QDataProcessor.compute_rolling_baseline_and_shift(
             df['Difference_DoG'], baseline_window
         )
-        # df['Difference_DoG_SVM_Score'] = QDataProcessor.compute_ocsvm_score(
-        #     df['Difference_DoG_shift'])
+        df['Difference_DoG_SVM_Score'] = QDataProcessor.compute_ocsvm_score(
+            df['Difference_DoG_shift'])
 
         # Compute `super_gradient` column.
-        df['Super_Dissipation'] = QDataProcessor.compute_super(
+        df['Super_Dissipation'] = QDataProcessor.compute_super_gradient(
             df['Dissipation'])
-        df['Super_Difference'] = QDataProcessor.compute_super(
+        df['Super_Difference'] = QDataProcessor.compute_super_gradient(
             df['Difference'])
-        df['Super_Resonance_Frequency'] = QDataProcessor.compute_super(
+        df['Super_Resonance_Frequency'] = QDataProcessor.compute_super_gradient(
             df['Resonance_Frequency'])
-        df['Super_Cumulative'] = QDataProcessor.compute_super(
+        df['Super_Cumulative'] = QDataProcessor.compute_super_gradient(
             df['Cumulative'])
 
         # Compute gradients
         df["Gradient_Dissipation"] = QDataProcessor.compute_graident(
-            df["Dissipation"], df["Relative_time"])
+            df["Dissipation"])
         df["Gradient_Resonance_Frequency"] = QDataProcessor.compute_graident(
-            df["Resonance_Frequency"], df["Relative_time"])
+            df["Resonance_Frequency"])
         df["Gradient_Difference"] = QDataProcessor.compute_graident(
-            df["Difference"], df["Relative_time"])
+            df["Difference"])
 
         # Noise filter data
         df["Filtered_Dissipation"] = QDataProcessor.noise_filter(
@@ -684,113 +667,7 @@ class QDataProcessor:
         return pd.DataFrame(labels)
 
     @staticmethod
-    def process_fill(poi_file: str, length_df: int) -> pd.DataFrame:
-        if not isinstance(poi_file, str) or not poi_file.strip():
-            raise ValueError("poi_file must be a non-empty string.")
-        if not os.path.exists(poi_file):
-            raise ValueError(f"POI file '{poi_file}' does not exist.")
-        if not isinstance(length_df, int) or length_df <= 0:
-            raise ValueError("length_df must be a positive integer.")
-
-        poi_df = pd.read_csv(poi_file, header=None)
-        poi_positions = poi_df[0].astype(int).values
-
-        if len(poi_positions) < 6:
-            raise ValueError("POI file does not contain enough fill indices.")
-        poi_positions = np.sort(poi_positions)
-
-        labels = np.empty(length_df, dtype=int)
-        labels[:poi_positions[0]] = 0
-        for i in range(5):
-            start = poi_positions[i]
-            end = poi_positions[i+1]
-            labels[start:end] = i + 1
-        labels[poi_positions[5]:] = 6
-
-        return pd.DataFrame(labels)
-
-    @staticmethod
-    def process_single_poi(poi_file: str, length_df: int, poi_num: int) -> (pd.DataFrame, np.ndarray):
-        # --- input validation ---
-        if not isinstance(poi_file, str) or not poi_file.strip():
-            raise ValueError("poi_file must be a non-empty string.")
-        if not os.path.exists(poi_file):
-            raise ValueError(f"POI file '{poi_file}' does not exist.")
-        if not isinstance(length_df, int) or length_df <= 0:
-            raise ValueError("length_df must be a positive integer.")
-        if not isinstance(poi_num, int) or poi_num < 1:
-            raise ValueError(
-                "poi_num must be a positive integer (1-based index).")
-
-        # --- read & sort POI positions ---
-        poi_df = pd.read_csv(poi_file, header=None)
-        poi_positions = np.sort(poi_df.iloc[:, 0].astype(int).values)
-
-        if len(poi_positions) < poi_num:
-            raise ValueError(f"POI file contains only {len(poi_positions)} positions, "
-                             f"cannot select poi_num={poi_num}.")
-
-        # --- build binary label array ---
-        labels = np.zeros(length_df, dtype=int)
-        idx = poi_positions[poi_num - 1]
-
-        if idx < 0 or idx >= length_df:
-            raise ValueError(
-                f"Selected POI position {idx} is out of bounds for length_df={length_df}.")
-
-        labels[idx] = 1
-
-        # --- return a DataFrame plus the raw positions array ---
-        return pd.DataFrame({'label': labels}), poi_positions
-
-    @staticmethod
-    def process_poi_regression(
-        poi_file: str,
-        length_df: int,
-        normalize: bool = False
-    ) -> pd.DataFrame:
-        """
-        Read the six true POI row‐indices from `poi_file` and
-        return a DataFrame with one row:
-           POI1, POI2, POI3, POI4, POI5, POI6
-
-        If normalize=True, each index is divided by length_df
-        to give a fraction in [0,1].
-        """
-        # --- input validation ---
-        if not isinstance(poi_file, str) or not poi_file.strip():
-            raise ValueError("poi_file must be a non-empty string.")
-        if not os.path.exists(poi_file):
-            raise FileNotFoundError(f"POI file '{poi_file}' does not exist.")
-        if not isinstance(length_df, int) or length_df <= 0:
-            raise ValueError("length_df must be a positive integer.")
-
-        # --- load the six indices ---
-        poi_df = pd.read_csv(poi_file, header=None)
-        positions = poi_df[0].astype(int).values
-        if positions.size < 6:
-            raise ValueError(
-                f"Expected at least 6 POI positions, got {positions.size}"
-            )
-        pois = positions[:6].astype(float)
-
-        # --- optional normalization to [0,1] ---
-        if normalize:
-            pois = pois / length_df
-
-        # --- build one‐row DataFrame ---
-        columns = [f"POI{i+1}" for i in range(6)]
-        data = dict(zip(columns, pois.tolist()))
-        return pd.DataFrame([data])
-
-    @staticmethod
     def process_data(file_buffer: Union[str, pd.DataFrame], live: bool = True) -> pd.DataFrame:
-        if live:
-            required_cols = ["Relative_time",
-                             "Dissipation", "Resonance_Frequency"]
-        else:
-            required_cols = ["Relative_time", "Dissipation",
-                             "Resonance_Frequency", "POI"]
         df: pd.DataFrame = None
         if isinstance(file_buffer, pd.DataFrame):
             df = file_buffer.copy()
@@ -800,11 +677,17 @@ class QDataProcessor:
             raise IOError(
                 f"Error processing file with path `{file_buffer}`."
             )
-        df = df[required_cols].copy()
+
+        if live:
+            required_cols = ["Relative_time",
+                             "Dissipation", "Resonance_Frequency"]
+        else:
+            required_cols = ["Relative_time", "Dissipation",
+                             "Resonance_Frequency", "POI"]
         if df.empty or not all(col in df.columns for col in required_cols):
             raise ValueError(
-                f"The dataset is empty or missing required columns with columns {df.columns}.")
-
+                "The dataset is empty or missing required columns.")
+        df = df[required_cols].copy()
         if df.empty:
             raise ValueError(
                 "DataFrame is empty after filtering required columns.")

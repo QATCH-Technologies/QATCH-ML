@@ -23,8 +23,48 @@ MULTICLASS_EVAL_METRICS = ['merror', 'mlogloss', 'auc', 'aucpr']
 TRAIN_PATH = os.path.join("content", "static", 'train')
 TEST_PATH = os.path.join("content", "static", "test")
 VALID_PATH = os.path.join("content", "static", "valid")
+<<<<<<< HEAD
 TRAIN_NUM = 100
 TEST_VALID_NUM = 33
+=======
+SCALER_PATH = os.path.join(
+    "QModel", "SavedModels", "qmodel_v2", "qmodel_boundary_scaler.pkl")
+TRAIN_NUM = np.inf
+TEST_VALID_NUM = np.inf
+>>>>>>> 6ca98df2f5a52f7b981069fbe4ae7585b44df6d8
+
+
+class LossFunctions:
+    def distance_weighted_softmax_loss(num_classes: int, tolerance: int = 0):
+        def loss(y_pred: np.ndarray, dtrain: xgb.DMatrix):
+            y_true = dtrain.get_label().astype(int)
+            y_pred = y_pred.reshape(-1, num_classes)
+
+            # Softmax
+            exp_preds = np.exp(y_pred - np.max(y_pred, axis=1, keepdims=True))
+            probs = exp_preds / np.sum(exp_preds, axis=1, keepdims=True)
+
+            grad = np.zeros_like(probs)
+            hess = np.zeros_like(probs)
+
+            for i in range(y_true.shape[0]):
+                true_class = y_true[i]
+                for k in range(num_classes):
+                    dist = abs(k - true_class)
+
+                    if dist <= tolerance:
+                        weight = 0
+                    else:
+                        weight = dist - tolerance
+
+                    indicator = 1.0 if k == true_class else 0.0
+                    p = probs[i, k]
+                    grad[i, k] = weight * (p - indicator)
+                    hess[i, k] = weight * p * (1 - p)
+
+            return grad.reshape(-1), hess.reshape(-1)
+
+        return loss
 
 
 class QModelTrainer:
@@ -56,8 +96,7 @@ class QModelTrainer:
             os.makedirs(self.cache_dir)
 
         # File path for persisting the scaler
-        self.scaler_file = os.path.join(
-            "QModel", "SavedModels", "qmodel_v2", "qmodel_scaler.pkl")
+        self.scaler_file = SCALER_PATH
         self.scaler: Optional[Pipeline] = None
 
         # In-memory caches
@@ -120,7 +159,7 @@ class QModelTrainer:
     def get_data(self, data_file: str, poi_file: str, live: bool = False):
         try:
             data_df = QDataProcessor.process_data(data_file, live=True)
-            poi_df = QDataProcessor.process_poi(
+            poi_df = QDataProcessor.process_fill(
                 poi_file, length_df=len(data_df))
             data_df['POI'] = poi_df
             return data_df
@@ -269,7 +308,9 @@ class QModelTrainer:
                 num_boost_round=self.params.get('n_boost_round', 10),
                 evals=[(dtrain, "train"), (dval, "val")],
                 evals_result=evals_result,
-                xgb_model=booster
+                xgb_model=booster,
+                obj=LossFunctions.distance_weighted_softmax_loss(
+                    num_classes=6, tolerance=1)
             )
 
             # Use the dynamic evaluation metric to get losses
@@ -320,7 +361,7 @@ class QModelTrainer:
             plt.ioff()
             plt.show()
 
-    def test(self, booster_path: str):
+    def test_poi(self, booster_path: str):
         # Load booster if it hasn't been loaded yet.
         if self.booster is None:
             self.booster = xgb.Booster()
@@ -459,6 +500,144 @@ class QModelTrainer:
 
         return overall_accuracy
 
+    def test_fill(self, booster_path: str):
+        # Load booster if it hasn't been loaded yet.
+        if self.booster is None:
+            self.booster = xgb.Booster()
+            self.booster.load_model(booster_path)
+
+        # Ensure the scaler is loaded for test transformations.
+        if self.scaler is None:
+            if os.path.exists(self.scaler_file):
+                self._load_scaler()
+            else:
+                logging.error(
+                    "Scaler not available. Please train the model first.")
+                return
+
+        test_cache_path = os.path.join(self.cache_dir, "test_dmatrix.pkl")
+        regenerate = self.regen_data and not self._test_data_regenerated
+
+        # Attempt to load cached test datasets if available and regeneration is not required.
+        if not regenerate and os.path.exists(test_cache_path):
+            try:
+                with open(test_cache_path, "rb") as f:
+                    self.cached_test_datasets = pickle.load(f)
+                logging.info("Loaded cached test datasets from disk.")
+            except Exception as e:
+                logging.error(f"Error loading cached test datasets: {e}")
+                self.cached_test_datasets = None
+
+        # If no cached data or regeneration is needed, build and cache the test dataset.
+        if self.cached_test_datasets is None or regenerate:
+            test_datasets = self.build_dataset(self.test_content, live=False)
+            if not test_datasets:
+                logging.warning("No test datasets found.")
+                return
+            self.cached_test_datasets = test_datasets
+            with open(test_cache_path, "wb") as f:
+                pickle.dump(test_datasets, f)
+            logging.info("Cached test datasets to disk.")
+
+        # Mark that test slice regeneration has been completed.
+        self._test_data_regenerated = True
+        test_slices = self.cached_test_datasets
+
+        # Set up matplotlib live plotting: two vertically arranged subplots.
+        plt.ion()
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
+
+        # Prepare colors
+        pred_colors = {1: 'red', 2: 'blue', 3: 'green',
+                       4: 'orange', 5: 'purple', 6: 'cyan'}
+        act_colors = {1: '#a50f15', 2: '#08519c', 3: '#238b45',
+                      4: '#d94801', 5: '#6a51a3', 6: '#17becf'}
+
+        plt.ion()
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
+
+        total_correct = total_samples = 0
+        dataset_accuracies = []
+        all_preds, all_labels = [], []
+
+        for slice_idx, df in enumerate(self.cached_test_datasets):
+            y_true = df['POI'].values
+            X = df.drop(columns=['POI']).values
+            X_scaled = self.scaler.transform(X)
+            dtest = xgb.DMatrix(X_scaled)
+            probs = self.booster.predict(dtest)
+            preds = np.argmax(
+                probs, axis=1) if probs.ndim == 2 else probs.astype(int)
+
+            # accuracy
+            correct = np.sum(preds == y_true)
+            total_correct += correct
+            total_samples += len(y_true)
+            acc = correct/len(y_true)
+            dataset_accuracies.append(acc)
+            all_preds.extend(preds.tolist())
+            all_labels.extend(y_true.tolist())
+
+            if self.live_plot_enabled:
+                ax1.clear()
+                x = np.arange(len(df))
+                ax1.plot(x, df['Dissipation'],
+                         color='black', label='Dissipation')
+
+                # predicted boundaries
+                pred_legend = set()
+                for cls in np.unique(preds):
+                    if cls == 0:
+                        continue
+                    idxs = np.where(preds == cls)[0]
+                    left, right = idxs.min(), idxs.max()
+                    # left dashed
+                    label = f'Pred {cls} start' if cls not in pred_legend else None
+                    ax1.axvline(left, color=pred_colors[cls], linestyle='--',
+                                linewidth=2, label=label)
+                    # right dashed
+                    label = f'Pred {cls} end' if f'end{cls}' not in pred_legend else None
+                    ax1.axvline(right, color=pred_colors[cls], linestyle=':',
+                                linewidth=2, label=label)
+                    pred_legend.update({cls, f'end{cls}'})
+
+                # actual boundaries
+                act_legend = set()
+                for cls in np.unique(y_true):
+                    if cls == 0:
+                        continue
+                    idxs = np.where(y_true == cls)[0]
+                    left, right = idxs.min(), idxs.max()
+                    # left solid
+                    label = f'Actual {cls} start' if cls not in act_legend else None
+                    ax1.axvline(left, color=act_colors[cls], linestyle='-',
+                                linewidth=2, label=label)
+                    act_legend.update({cls, f'end{cls}'})
+
+                ax1.set_title(
+                    f"Slice {slice_idx+1}: Dissipation with Boundaries")
+                ax1.set_xlabel("Sample Index")
+                ax1.set_ylabel("Dissipation")
+                ax1.legend(loc='upper right')
+
+                # accuracy subplot
+                ax2.clear()
+                ax2.plot(range(len(dataset_accuracies)), dataset_accuracies,
+                         marker='o', linestyle='-')
+                ax2.set_ylim(0, 1)
+                ax2.set_title("Accuracy per Test Slice")
+                ax2.set_xlabel("Test Slice")
+                ax2.set_ylabel("Accuracy")
+                ax2.grid(True)
+
+                plt.pause(1)
+
+        overall_acc = total_correct/total_samples
+        logging.info(f"Overall accuracy: {overall_acc*100:.2f}%")
+        plt.ioff()
+        plt.show()
+        return overall_acc
+
     def tune(self, n_trials: int = 50, num_boost_round: int = 50, early_stopping_rounds: int = 10):
         """Tune model hyperparameters using Optuna with cached DMatrices."""
         dtrain, dval = self._prepare_dmatrices()
@@ -579,13 +758,13 @@ class QModelTrainer:
 if __name__ == "__main__":
     TRAINING = True
     booster_path = os.path.join(
-        "QModel", "SavedModels", "qmodel_v2", "qmodel_v2.json")
+        "QModel", "SavedModels", "qmodel_v2", "qmodel_v2_loss.json")
     if TRAINING:
         ft = QModelTrainer(classes=[
-            "NO_POI", "POI1", "POI2", "POI3", "POI4", "POI5", "POI6"], regen_data=True)
+            "NO_POI", "POI1", "POI2", "POI3", "POI4", "POI5", "POI6"], regen_data=False)
         ft.toggle_live_plot(True)  # Enable live plotting
-        ft.search(num_boost_round=10)
-        ft.tune()
+        # ft.search(num_boost_round=10)
+        # ft.tune()
         ft.train()
         ft.save_model(save_path=booster_path)
-        ft.test(booster_path=booster_path)
+        ft.test_poi(booster_path=booster_path)
