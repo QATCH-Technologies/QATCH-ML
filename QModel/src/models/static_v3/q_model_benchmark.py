@@ -14,17 +14,11 @@ from q_model_predictor import QModelPredictor
 from q_image_clusterer import QClusterer
 from q_multi_model import QPredictor
 from q_single_model import QModelPredict
-from q_image_clusterer import QClusterer
-from q_multi_model import QPredictor
-from q_single_model import QModelPredict
 import time
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-logging.getLogger("matplotlib").setLevel(logging.WARNING)
-logging.getLogger("PIL").setLevel(logging.WARNING)
-
 
 QMODEL_V2_BOOSTER_PATH = os.path.join(
     "QModel", "SavedModels", "qmodel_v3", "qmodel_v3_booster.json")
@@ -92,38 +86,6 @@ def _(predictor: 'QModelPredictor', file_buffer, actual_poi_indices):
         qmodel_v2_points.append(qmodel_v2_predictions.get(
             poi, {}).get('indices', [None])[0])
     return qmodel_v2_points
-
-
-@predict_dispatch.register
-def _(predictor: 'QClusterer', file_buffer, actual_poi_indices):
-    label = predictor.predict_label(file_buffer=file_buffer)
-    predictor_0 = QPredictor(Q_MULTI_MODEL_0_PATH)
-    predictor_1 = QPredictor(Q_MULTI_MODEL_1_PATH)
-    predictor_2 = QPredictor(Q_MULTI_MODEL_2_PATH)
-    try:
-        if label == 0:
-            candidates = predictor_0.predict(
-                file_buffer=file_buffer, run_type=label)
-        elif label == 1:
-            candidates = predictor_1.predict(
-                file_buffer=file_buffer, run_type=label)
-        elif label == 2:
-            candidates = predictor_2.predict(
-                file_buffer=file_buffer, run_type=label)
-        q_predictor_points = []
-        for c in candidates:
-            q_predictor_points.append(c[0][0])
-    except Exception as e:
-        logging.error(f"QMultiModel prediction failed with error {e}.")
-        q_predictor_points = [-1, -1, -1, -1, -1, -1]
-
-    return q_predictor_points
-
-
-@predict_dispatch.register
-def _(predictor: 'QModelPredict', file_buffer, actual_poi_indices):
-    q_single_model_points = predictor.predict(file_buffer)
-    return q_single_model_points
 
 
 @predict_dispatch.register
@@ -282,36 +244,9 @@ class Benchmarker:
             "std_error": "Standard Error: The standard deviation of the prediction errors."
         }
         runtime_description = "Average Runtime: The mean execution time per model (in seconds)."
-        model_name_mapping = {
-            "ModelData": "ModelData",
-            "QModelPredictor": "QModel V3",
-            "QClusterer": "QModel V2",
-            "QModelPredict": "QModel V1"
-        }
-
-        metric_keys = [
-            "mae", "mse", "rmse", "mean_error",
-            "median_absolute_error", "r_squared", "std_error"
-        ]
-        metric_descriptions = {
-            "mae": "Mean Absolute Error: The average absolute difference between predictions and actual values.",
-            "mse": "Mean Squared Error: The average squared difference between predictions and actual values.",
-            "rmse": "Root Mean Squared Error: The square root of the MSE, measuring error magnitude.",
-            "mean_error": "Mean Error: The average error, indicating bias in predictions.",
-            "median_absolute_error": "Median Absolute Error: The median of the absolute differences, less sensitive to outliers.",
-            "r_squared": "R^2: Proportion of variance in the data explained by the model.",
-            "std_error": "Standard Error: The standard deviation of the prediction errors."
-        }
-        runtime_description = "Average Runtime: The mean execution time per model (in seconds)."
         all_metrics = metric_keys + ["avg_time"]
         model_names = list(aggregated_metrics.keys())
         poi_names = list(aggregated_metrics[model_names[0]].keys())
-
-        preferred_style = 'seaborn-whitegrid'
-        if preferred_style in plt.style.available:
-            plt.style.use(preferred_style)
-        else:
-            plt.style.use('ggplot')
 
         preferred_style = 'seaborn-whitegrid'
         if preferred_style in plt.style.available:
@@ -323,15 +258,11 @@ class Benchmarker:
             fig, ax = plt.subplots(figsize=(12, 8))
             pois_to_plot = [poi for poi in poi_names if "POI" in poi]
             x = np.arange(len(pois_to_plot))
-            pois_to_plot = [poi for poi in poi_names if "POI" in poi]
-            x = np.arange(len(pois_to_plot))
             bar_width = 0.8 / len(model_names)
 
             for idx, model in enumerate(model_names):
                 display_model = model_name_mapping.get(model, model)
-                display_model = model_name_mapping.get(model, model)
                 metric_values = [aggregated_metrics[model]
-                                 [poi][metric] for poi in pois_to_plot]
                                  [poi][metric] for poi in pois_to_plot]
                 bar_positions = x + idx * bar_width
                 bars = ax.bar(
@@ -339,13 +270,10 @@ class Benchmarker:
                     metric_values,
                     bar_width,
                     label=display_model,
-                    label=display_model,
                     edgecolor='black'
                 )
                 for bar in bars:
                     height = bar.get_height()
-                    offset = max(metric_values) * \
-                        0.01 if max(metric_values) > 0 else 0.05
                     offset = max(metric_values) * \
                         0.01 if max(metric_values) > 0 else 0.05
                     ax.text(
@@ -357,22 +285,13 @@ class Benchmarker:
                         fontsize=10
                     )
             # Adjust x-axis ticks.
-            # Adjust x-axis ticks.
             ax.set_xticks(x + bar_width * (len(model_names) - 1) / 2)
             ax.set_xticklabels(pois_to_plot, fontsize=12)
-            ax.set_xticklabels(pois_to_plot, fontsize=12)
             ax.set_ylabel(metric.upper(), fontsize=12)
-            ax.set_title(f'{metric.upper()} by POI for Each Model',
             ax.set_title(f'{metric.upper()} by POI for Each Model',
                          fontsize=14, fontweight='bold')
             ax.legend(title="Models", fontsize=10, title_fontsize=10)
             ax.grid(True, linestyle='--', alpha=0.7)
-
-            description = metric_descriptions.get(metric, "")
-            ax.text(0.98, 0.98, description,
-                    transform=ax.transAxes, fontsize=10,
-                    verticalalignment='top', horizontalalignment='right',
-                    bbox=dict(facecolor='white', alpha=0.8, edgecolor='gray'))
 
             description = metric_descriptions.get(metric, "")
             ax.text(0.98, 0.98, description,
@@ -388,13 +307,9 @@ class Benchmarker:
         display_model_names = [model_name_mapping.get(
             model, model) for model in model_names]
         bars = ax.bar(display_model_names, model_runtimes, edgecolor='black')
-        display_model_names = [model_name_mapping.get(
-            model, model) for model in model_names]
-        bars = ax.bar(display_model_names, model_runtimes, edgecolor='black')
         ax.set_ylabel("Average Runtime (s)", fontsize=12)
         ax.set_title("Average Runtime for Each Model",
                      fontsize=14, fontweight='bold')
-
 
         for bar in bars:
             height = bar.get_height()
@@ -410,10 +325,6 @@ class Benchmarker:
                 transform=ax.transAxes, fontsize=10,
                 verticalalignment='top', horizontalalignment='right',
                 bbox=dict(facecolor='white', alpha=0.8, edgecolor='gray'))
-        ax.text(0.98, 0.98, runtime_description,
-                transform=ax.transAxes, fontsize=10,
-                verticalalignment='top', horizontalalignment='right',
-                bbox=dict(facecolor='white', alpha=0.8, edgecolor='gray'))
         plt.tight_layout()
         plt.show()
 
@@ -421,13 +332,8 @@ class Benchmarker:
 if __name__ == "__main__":
     test_directory = os.path.join("content", "static", "test")
     predictors = [
-        ModelData(),
         QModelPredictor(booster_path=QMODEL_V2_BOOSTER_PATH,
                         scaler_path=QMODEL_V2_SCALER_PATH),
-        QClusterer(model_path="QModel/SavedModels/cluster.joblib"),
-        QModelPredict(predictor_path_1=Q_SINGLE_PREDICTOR_1, predictor_path_2=Q_SINGLE_PREDICTOR_2, predictor_path_3=Q_SINGLE_PREDICTOR_3,
-                      predictor_path_4=Q_SINGLE_PREDICTOR_4, predictor_path_5=Q_SINGLE_PREDICTOR_5, predictor_path_6=Q_SINGLE_PREDICTOR_6)
-
         QClusterer(model_path="QModel/SavedModels/cluster.joblib"),
         QModelPredict(predictor_path_1=Q_SINGLE_PREDICTOR_1, predictor_path_2=Q_SINGLE_PREDICTOR_2, predictor_path_3=Q_SINGLE_PREDICTOR_3,
                       predictor_path_4=Q_SINGLE_PREDICTOR_4, predictor_path_5=Q_SINGLE_PREDICTOR_5, predictor_path_6=Q_SINGLE_PREDICTOR_6)
