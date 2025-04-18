@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from numba import njit
 from q_model_data_processor import QDataProcessor
-from discriminator_predictor import DiscriminatorPredictor
+
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -166,21 +166,15 @@ class PostProcesses:
 
 class QModelPredictor:
 
-    def __init__(self, booster_path: str, scaler_path: str, discriminator_path: str) -> None:
+    def __init__(self, booster_path: str, scaler_path: str) -> None:
         if booster_path is None or booster_path == "" or not os.path.exists(booster_path):
             logging.error(
                 f'Booster path `{booster_path}` is empty string or does not exist.')
         if scaler_path is None or scaler_path == "" or not os.path.exists(scaler_path):
             logging.error(
                 f'Scaler path `{scaler_path}` is empty string or does not exist.')
-        if discriminator_path is None or discriminator_path == "" or not os.path.exists(discriminator_path):
-            logging.error(
-                f'Discriminator path `{discriminator_path}` is empty string or does not exist.')
-
         self._booster: xgb.Booster = xgb.Booster()
         self._scaler: Pipeline = None
-        self._discriminator = DiscriminatorPredictor(discriminator_path)
-
         try:
             self._booster.load_model(fname=booster_path)
             logging.info(f'Booster loaded from path `{booster_path}`.')
@@ -291,70 +285,6 @@ class QModelPredictor:
                 f"Data file missing required columns: `{', '.join(missing)}`.")
         return df
 
-    def _get_discriminator_features(self, extracted_predictions: np.ndarray, model_data_labels: list, feature_vector: pd.DataFrame):
-
-        poi_features = {f"POI{i}": pd.DataFrame() for i in range(1, 7)}
-
-        # Define neighbor mapping to include candidate indices from neighboring POIs.
-        neighbors_map = {
-            "POI4": ["POI5"],  # For POI4, include POI5's candidates.
-            "POI5": ["POI6"],  # For POI5, include POI6's candidates.
-            "POI6": ["POI5"]   # For POI6, include POI5's candidates.
-        }
-
-        # Process each POI.
-        for i, poi in enumerate(poi_features.keys()):
-            diff_values = feature_vector["Difference"].values
-            diss_values = feature_vector["Dissipation"].values
-            rf_values = feature_vector["Resonance_Frequency"].values
-            n_features = len(diff_values)
-            x_full = np.arange(n_features)
-            # Clean any infinite or NaN values.
-            for i, poi in enumerate(poi_features.keys()):
-                # --- Build the candidate index list with source labeling ---
-                # Get candidate indices from the POI and its neighbors.
-                self_candidates = extracted_predictions.get(
-                    poi, {}).get("indices", []).copy()
-
-                # Create dictionary mapping candidate index -> source label.
-                candidate_sources = {}
-                for cand in self_candidates:
-                    candidate_sources[cand] = "self"
-
-                # Include the reference candidate from model_data_labels (assumed "self").
-                ref = model_data_labels[i]
-                if ref not in candidate_sources:
-                    candidate_sources[ref] = "self"
-
-                # Create sorted candidate indices.
-                combined_indices = sorted(candidate_sources.keys())
-                # Convert to a NumPy array and ensure all indices fall within the feature vector range.
-                x_candidates = np.array(combined_indices)
-                x_candidates = np.clip(x_candidates, 0, n_features - 1)
-
-                # --- Interpolate feature values on the full x-axis ---
-                # np.interp automatically extends values outside xp by using the first/last fp values.
-                diff_interp = np.interp(
-                    x_full, x_candidates, diff_values[x_candidates])
-                diss_interp = np.interp(
-                    x_full, x_candidates, diss_values[x_candidates])
-                rf_interp = np.interp(x_full, x_candidates,
-                                      rf_values[x_candidates])
-
-                # Build the discriminator DataFrame with length equal to the full feature vector.
-                discrim_vector = pd.DataFrame({
-                    "Difference": diff_interp,
-                    "Dissipation": diss_interp,
-                    "Resonance_Frequency": rf_interp,
-                })
-
-                discrim_vector.replace([np.inf, -np.inf], np.nan, inplace=True)
-                discrim_vector.fillna(0, inplace=True)
-
-                poi_features[poi] = pd.concat(
-                    [poi_features[poi], discrim_vector], ignore_index=True)
-        return poi_features
-
     def _extract_predictions(self, predicted_probablities: np.ndarray, model_data_labels: np.ndarray):
         poi_results = {}
         predicted_labels = np.argmax(predicted_probablities, axis=1)
@@ -374,6 +304,61 @@ class QModelPredictor:
                                     "confidences": sorted_confidences}
         return poi_results
 
+    def determine_best_positions(self, extracted_predictions: dict, weight_confidence=0.6, weight_proximity=0.2, weight_discriminator=0.2):
+        """
+        Determine the single best position for each POI using combined criteria.
+
+        Args:
+            extracted_predictions (dict): Output from `_extract_predictions`.
+            weight_confidence (float): Importance of confidence (0 to 1).
+            weight_proximity (float): Importance of proximity to model labels.
+            weight_discriminator (float): Importance of discriminator scores.
+
+        Returns:
+            dict: Best position index per POI.
+        """
+        best_positions = {}
+        dissipation_curve = self._feature_vector['Dissipation_smooth'].values
+        model_labels = np.array(self._model_data_labels)
+
+        for poi in range(1, 7):
+            key = f"POI{poi}"
+            preds = extracted_predictions[key]
+            indices = np.array(preds['indices'])
+            confidences = np.array(preds['confidences'])
+
+            if len(indices) == 0:
+                best_positions[key] = None
+                continue
+
+            # Normalize confidences
+            norm_conf = confidences / (np.max(confidences) + 1e-6)
+
+            # Calculate proximity scores (inverse normalized distance to model label)
+            proximity = np.abs(indices - model_labels[poi - 1])
+            norm_proximity = 1 - (proximity / (np.max(proximity) + 1e-6))
+
+            # Discriminator scores
+            discriminator_scores = np.array([
+                self._discriminator.predict_proba(dissipation_curve, idx, poi)
+                for idx in indices
+            ])
+            norm_discriminator = discriminator_scores / \
+                (np.max(discriminator_scores) + 1e-6)
+
+            # Combined weighted score
+            combined_scores = (
+                weight_confidence * norm_conf +
+                weight_proximity * norm_proximity +
+                weight_discriminator * norm_discriminator
+            )
+
+            # Select best index
+            best_idx = indices[np.argmax(combined_scores)]
+            best_positions[key] = best_idx
+
+        return best_positions
+
     def predict(self, file_buffer: str, forecast_start: int = -1, forecast_end: int = -1, actual_poi_indices: np.ndarray = None):
         try:
             df = self._validate_file_buffer(file_buffer=file_buffer)
@@ -390,41 +375,11 @@ class QModelPredictor:
         self._feature_vector = feature_vector
         transformed_feature_vector = self._scaler.transform(
             feature_vector.values)
-        ddata = xgb.DMatrix(transformed_feature_vector)
+
+        ddata = xgb.DMatrix(self._feature_vector)
         predicted_probabilites = self._booster.predict(ddata)
         extracted_predictions = self._extract_predictions(
             predicted_probabilites, model_data_labels)
-        # discrim_features = self._get_discriminator_features(
-        #     extracted_predictions=extracted_predictions, model_data_labels=model_data_labels, feature_vector=feature_vector)
-        # poi_1_discrim = self._discriminator.predict(
-        #     discrim_features, poi="POI1")
-        # poi_2_discrim = self._discriminator.predict(
-        #     discrim_features, poi="POI2")
-        # poi_3_discrim = self._discriminator.predict(
-        #     discrim_features, poi="POI3")
-        # poi_4_discrim = self._discriminator.predict(
-        #     discrim_features, poi="POI4")
-        # poi_5_discrim = self._discriminator.predict(
-        #     discrim_features, poi="POI5")
-        # poi_6_discrim = self._discriminator.predict(
-        #     discrim_features, poi="POI6")
-        # logging.info(f'POI1: {np.argmax(poi_1_discrim)}')
-        # discrim_pred_1 = np.argmax(poi_1_discrim)
-
-        # logging.info(f'POI2: {np.argmax(poi_2_discrim)}')
-        # discrim_pred_2 = np.argmax(poi_2_discrim)
-
-        # logging.info(f'POI3: {np.argmax(poi_3_discrim)}')
-        # discrim_pred_3 = np.argmax(poi_3_discrim)
-
-        # logging.info(f'POI4: {np.argmax(poi_4_discrim)}')
-        # discrim_pred_4 = np.argmax(poi_4_discrim)
-
-        # logging.info(f'POI5: {np.argmax(poi_5_discrim)}')
-        # discrim_pred_5 = np.argmax(poi_5_discrim)
-
-        # logging.info(f'POI6: {np.argmax(poi_6_discrim)}')
-        # discrim_pred_6 = np.argmax(poi_6_discrim)
 
         # --- Plotting Section (Optional) ---
         if actual_poi_indices is not None:
@@ -476,13 +431,6 @@ class QModelPredictor:
                     plt.scatter(highest_index, dissipation[highest_index],
                                 color=poi_colors[poi], marker='o', s=100,
                                 alpha=1.0, edgecolor='black', linewidth=1.5)
-            # plt.axvline(discrim_pred_1, color='pink')
-            # plt.axvline(discrim_pred_2, color='blue')
-            # plt.axvline(discrim_pred_3, color='green')
-            # plt.axvline(discrim_pred_4, color='yellow')
-            # plt.axvline(discrim_pred_5, color='purple')
-            # plt.axvline(discrim_pred_6, color='cyan')
-
             plt.scatter(actual_poi_indices, dissipation[actual_poi_indices],
                         color='red', marker='x')
             plt.xlabel("Sample Index")
@@ -500,12 +448,10 @@ if __name__ == "__main__":
         "QModel", "SavedModels", "qmodel_v2", "qmodel_v2.json")
     scaler_path = os.path.join(
         "QModel", "SavedModels", "qmodel_v2", "qmodel_scaler.pkl")
-    discriminator_path = os.path.join(
-        "QModel", "SavedModels", "qmodel_v2", "point_descriminator.pkl")
     test_dir = os.path.join('content', 'static', 'valid')
     test_content = QDataProcessor.load_content(data_dir=test_dir)
     qmp = QModelPredictor(booster_path=booster_path,
-                          scaler_path=scaler_path, discriminator_path=discriminator_path)
+                          scaler_path=scaler_path)
     import random
     random.shuffle(test_content)
     for i, (data_file, poi_file) in enumerate(test_content):

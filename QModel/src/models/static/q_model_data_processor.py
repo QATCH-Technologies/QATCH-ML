@@ -48,6 +48,9 @@ STARTING_THRESHOLD_FACTOR = 50
 class QDataProcessor:
     @staticmethod
     def load_content(data_dir: str, num_datasets: int = np.inf, column: str = 'Dissipation') -> list:
+        if not os.path.exists(data_dir):
+            logging.error("Data directory does not exist.")
+            return
         logging.info(f"Loading content from {data_dir}")
         loaded_content = []
 
