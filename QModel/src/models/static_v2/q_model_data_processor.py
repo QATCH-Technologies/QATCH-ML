@@ -48,9 +48,6 @@ STARTING_THRESHOLD_FACTOR = 50
 class QDataProcessor:
     @staticmethod
     def load_content(data_dir: str, num_datasets: int = np.inf, column: str = 'Dissipation') -> list:
-        if not os.path.exists(data_dir):
-            logging.error("Data directory does not exist.")
-            return
         logging.info(f"Loading content from {data_dir}")
         loaded_content = []
 
@@ -359,7 +356,7 @@ class QDataProcessor:
         return baseline, shift
 
     @staticmethod
-    def compute_super_gradient(series: pd.Series) -> pd.Series:
+    def compute_super(series: pd.Series) -> pd.Series:
 
         window = int(len(series) * 0.01)
         if window % 2 == 0:
@@ -384,8 +381,21 @@ class QDataProcessor:
         )
 
     @staticmethod
-    def compute_graident(series: pd.Series):
-        return series.diff()
+    def compute_graident(data_series: pd.Series, time_series: pd.Series):
+        if len(data_series) != len(time_series):
+            raise ValueError(
+                "`data_series` and `time_series` must have the same length")
+        if len(data_series) < 2:
+            raise ValueError("Need at least two points to compute a gradient")
+
+        y = data_series.to_numpy(dtype=float)
+        t = time_series.to_numpy(dtype=float)
+
+        # compute dy/dt
+        grad = np.gradient(y, t)
+
+        # return as a pandas Series with the original index
+        return pd.Series(grad, index=data_series.index)
 
     @staticmethod
     def noise_filter(series: pd.Series):
@@ -480,22 +490,22 @@ class QDataProcessor:
             df['Difference_DoG_shift'])
 
         # Compute `super_gradient` column.
-        df['Super_Dissipation'] = QDataProcessor.compute_super_gradient(
+        df['Super_Dissipation'] = QDataProcessor.compute_super(
             df['Dissipation'])
-        df['Super_Difference'] = QDataProcessor.compute_super_gradient(
+        df['Super_Difference'] = QDataProcessor.compute_super(
             df['Difference'])
-        df['Super_Resonance_Frequency'] = QDataProcessor.compute_super_gradient(
+        df['Super_Resonance_Frequency'] = QDataProcessor.compute_super(
             df['Resonance_Frequency'])
-        df['Super_Cumulative'] = QDataProcessor.compute_super_gradient(
+        df['Super_Cumulative'] = QDataProcessor.compute_super(
             df['Cumulative'])
 
         # Compute gradients
         df["Gradient_Dissipation"] = QDataProcessor.compute_graident(
-            df["Dissipation"])
+            df["Dissipation"], df["Relative_time"])
         df["Gradient_Resonance_Frequency"] = QDataProcessor.compute_graident(
-            df["Resonance_Frequency"])
+            df["Resonance_Frequency"], df["Relative_time"])
         df["Gradient_Difference"] = QDataProcessor.compute_graident(
-            df["Difference"])
+            df["Difference"], df["Relative_time"])
 
         # Noise filter data
         df["Filtered_Dissipation"] = QDataProcessor.noise_filter(

@@ -7,9 +7,7 @@ import os
 import pandas as pd
 from q_model_data_processor import QDataProcessor
 from ModelData import ModelData
-import matplotlib.pyplot as plt
 import numpy as np
-from scipy.signal import find_peaks
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -19,136 +17,6 @@ logging.basicConfig(
 HEAD_TRIM_PERCENTAGE = 0.05
 """ The percentage of the run data to ignore from the tail of a difference curve. """
 TAIL_TRIM_PERCENTAGE = 0.5
-
-
-class PostProcesses:
-    @staticmethod
-    def _normalize(data):
-        return (data - np.min(data)) / (np.max(data) - np.min(data))
-
-    @staticmethod
-    def post_poi_1(candidates: dict, feature_vector: pd.DataFrame, actual_poi: np.ndarray, plotting: bool = True):
-        candidate_indices: list = candidates.get("indices")
-        unmod = candidate_indices[0]
-
-        # Move the candidate index closest to lb_idx to the front
-
-        dissipation = PostProcesses._normalize(
-            feature_vector["Dissipation"].values)
-        difference = PostProcesses._normalize(
-            feature_vector["Difference"].values)
-        resonance_frequency = PostProcesses._normalize(
-            feature_vector["Resonance_Frequency"].values)
-
-        baseline_window = np.average(
-            dissipation[int(0.03 * len(dissipation)):2*int(0.03 * len(dissipation))])
-        exceed_indices = np.where(
-            dissipation[int(0.01 * len(dissipation)):] > 5*baseline_window)[0]
-        if exceed_indices.size > 0:
-            lb_idx = exceed_indices[0]
-        else:
-            lb_idx = feature_vector[feature_vector['ModelData_Guess']
-                                    == 1].index[0]
-
-        closest_idx = min(candidate_indices, key=lambda x: abs(x - lb_idx))
-        candidate_indices.remove(closest_idx)
-        candidate_indices.insert(0, closest_idx)
-        if abs(actual_poi[0] - candidate_indices[0]) > 4 and plotting:
-            plt.figure()
-            plt.plot(dissipation, c='grey')
-            plt.plot(resonance_frequency, c='brown')
-            plt.plot(difference, c='tan')
-            plt.scatter(candidate_indices, dissipation[candidate_indices])
-            plt.scatter(actual_poi,
-                        dissipation[actual_poi], c='red', marker='x')
-            plt.axvline(candidate_indices[0], linestyle='dotted')
-            plt.axvline(unmod, linestyle='dotted', color='r')
-            plt.axvline(lb_idx)
-            plt.axvline(2*int(0.03 * len(dissipation)), color='black')
-            plt.title(
-                f"POI1 Post-Process w/ delta {actual_poi[0] - candidate_indices[0]}")
-            plt.show()
-
-    @staticmethod
-    def post_poi_2(candidates: dict, feature_vector: pd.DataFrame, actual_poi: np.ndarray,  previous_poi: int, plotting: bool = False):
-        candidate_indices = candidates.get("indices")
-        unmod = candidate_indices[1]
-
-        dissipation = PostProcesses._normalize(
-            feature_vector["Dissipation"].values)
-        difference = PostProcesses._normalize(
-            feature_vector["Difference"].values)
-        head_trim = int(
-            len(difference) * 0.05)
-        trimmed_difference = difference[head_trim:]
-        trend = np.linspace(0, max(trimmed_difference),
-                            len(trimmed_difference))
-        adjusted_difference = trimmed_difference - trend
-        # Calculate the index and rb_idx as in your code
-        index = int(np.argmax(adjusted_difference) +
-                    (0.1 * np.argmax(adjusted_difference)))
-        rb_idx = min(index, len(difference) - 1) + head_trim
-
-        # Filter candidates: select only those candidate indices that are > previous_poi and < rb_idx
-        valid_candidates = [
-            idx for idx in candidate_indices if previous_poi + 1 < idx < rb_idx]
-
-        # Check if we have any valid candidates
-        if valid_candidates:
-            best_candidate = max(valid_candidates)
-        else:
-            best_candidate = candidate_indices[0]
-
-        if abs(actual_poi[1] - best_candidate) > 10 and plotting:
-            plt.figure()
-            plt.plot(dissipation, c='grey', label="Dissipation")
-            plt.plot(difference, c='tan', label="Difference")
-            plt.scatter(candidate_indices, dissipation[candidate_indices])
-            plt.scatter(actual_poi,
-                        dissipation[actual_poi], c='red', marker='x', label=f'Actual: {actual_poi}')
-            plt.axvline(best_candidate, linestyle='dotted')
-            plt.axvline(unmod, linestyle='dotted',
-                        color='r', label=f"Best: {unmod}")
-            plt.axvline(best_candidate)
-            plt.title(
-                f"POI2 Post-Process w/ delta {actual_poi[1] -best_candidate}")
-            plt.show()
-
-    @staticmethod
-    def post_poi_3(candidates: dict, feature_vector: pd.DataFrame, actual_poi: np.ndarray,  previous_poi: int, plotting: bool = False):
-        candidate_indices = candidates.get("indices")
-
-    @staticmethod
-    def post_poi_4(candidates: dict, feature_vector: pd.DataFrame, actual_poi: np.ndarray,  previous_poi: int, plotting: bool = False):
-        candidate_indices = candidates.get("indices")
-
-    @staticmethod
-    def post_poi_5(candidates: dict, feature_vector: pd.DataFrame, actual_poi: np.ndarray, previous_poi: int,  plotting: bool = False):
-        candidate_indices = candidates.get("indices")
-
-    @staticmethod
-    def post_poi_6(candidates: dict, feature_vector: pd.DataFrame, actual_poi: np.ndarray, previous_poi: int,  plotting: bool = False):
-        candidate_indices = candidates.get("indices")
-        dissipation = PostProcesses._normalize(
-            feature_vector["Dissipation_DoG_SVM_Score"].values) * -1
-        difference = PostProcesses._normalize(
-            feature_vector["Difference"].values)
-        resonance_frequency = PostProcesses._normalize(
-            feature_vector["Difference_DoG_SVM_Score"].values)
-        filtered_candidates = candidate_indices
-
-        if abs(actual_poi[5] - candidate_indices[0]) > 20 and plotting:
-            plt.figure()
-            plt.plot(dissipation, c='grey')
-            plt.plot(resonance_frequency, c='brown')
-            plt.plot(difference, c='tan')
-            plt.scatter(candidate_indices, dissipation[candidate_indices])
-            plt.scatter(actual_poi,
-                        dissipation[actual_poi], c='red', marker='x')
-            plt.axvline(candidate_indices[0], linestyle='dotted')
-            plt.title(
-                f"POI6 Post-Process w/ delta {actual_poi[5] - candidate_indices[0]}")
-            plt.show()
 
 
 class QModelPredictor:
@@ -261,6 +129,7 @@ class QModelPredictor:
             missing = required_columns - set(df.columns)
             raise ValueError(
                 f"Data file missing required columns: `{', '.join(missing)}`.")
+
         return df
 
     def _extract_predictions(self, predicted_probablities: np.ndarray, model_data_labels: np.ndarray):
@@ -269,7 +138,9 @@ class QModelPredictor:
         for poi in range(1, 7):
             key = f"POI{poi}"
             indices = np.where(predicted_labels == poi)[0]
+
             if indices.size == 0:
+
                 poi_results[key] = {"indices": [
                     model_data_labels[poi - 1]], "confidences": [0]}
             else:
@@ -280,6 +151,7 @@ class QModelPredictor:
 
                 poi_results[key] = {"indices": sorted_indices,
                                     "confidences": sorted_confidences}
+
         return poi_results
 
     def predict(self, file_buffer: str, forecast_start: int = -1, forecast_end: int = -1, actual_poi_indices: np.ndarray = None):
@@ -300,8 +172,13 @@ class QModelPredictor:
         predicted_probabilites = self._booster.predict(ddata)
         extracted_predictions = self._extract_predictions(
             predicted_probabilites, model_data_labels)
+
+        # Retrieve the initial fill region, i.e. left and right boundaries
+        (lb_time, lb_index), (rb_time, rb_index) = QDataProcessor.find_initial_fill_region(
+            feature_vector['Difference'], df['Relative_time'])
         # --- Plotting Section (Optional) ---
         if actual_poi_indices is not None:
+            import matplotlib.pyplot as plt
             plt.figure(figsize=(14, 6))
             dissipation = feature_vector['Dissipation'].values
             poi_colors = {1: 'pink', 2: 'blue', 3: 'green',
@@ -314,6 +191,8 @@ class QModelPredictor:
                         dissipation[model_data_labels])
             plt.scatter(actual_poi_indices,
                         dissipation[actual_poi_indices], marker='x', color='red')
+            plt.axvline(lb_index, color='black', linestyle='dotted')
+            plt.axvline(rb_index, color='black', linestyle='dotted')
             plt.xlabel("Sample Index")
             plt.ylabel("Dissipation")
             plt.title("Dissipation vs Index (Model Data Labels)")
@@ -337,6 +216,8 @@ class QModelPredictor:
                     plt.scatter(highest_index, dissipation[highest_index],
                                 color=poi_colors[poi], marker='o', s=100,
                                 alpha=1.0, edgecolor='k', linewidth=1.5)
+            plt.axvline(lb_index, color='black', linestyle='dotted')
+            plt.axvline(rb_index, color='black', linestyle='dotted')
             plt.scatter(actual_poi_indices, dissipation[actual_poi_indices],
                         color='red', marker='x')
             plt.xlabel("Sample Index")
@@ -357,10 +238,6 @@ if __name__ == "__main__":
     test_dir = os.path.join('content', 'static', 'test')
     test_content = QDataProcessor.load_content(data_dir=test_dir)
     qmp = QModelPredictor(booster_path=booster_path, scaler_path=scaler_path)
-    import random
-    random.shuffle(test_content)
     for i, (data_file, poi_file) in enumerate(test_content):
-        logging.info(f"Predicting on data file `{data_file}`.")
         poi_indices = pd.read_csv(poi_file, header=None)
-        qmp.predict(file_buffer=data_file,
-                    actual_poi_indices=poi_indices.values)
+        qmp.predict(file_buffer=data_file, actual_poi_indices=poi_indices)

@@ -23,8 +23,8 @@ MULTICLASS_EVAL_METRICS = ['merror', 'mlogloss', 'auc', 'aucpr']
 TRAIN_PATH = os.path.join("content", "static", 'train')
 TEST_PATH = os.path.join("content", "static", "test")
 VALID_PATH = os.path.join("content", "static", "valid")
-TRAIN_NUM = 100
-TEST_VALID_NUM = 33
+TRAIN_NUM = np.inf
+TEST_VALID_NUM = np.inf
 
 
 class QModelTrainer:
