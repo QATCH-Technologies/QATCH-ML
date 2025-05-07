@@ -1,137 +1,209 @@
+import sys
+import pickle
 import pandas as pd
-import numpy as np
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler, PolynomialFeatures, MinMaxScaler
-from sklearn.linear_model import LinearRegression
-from sklearn.ensemble import RandomForestRegressor
+from PyQt5 import QtWidgets, QtCore
+from PyQt5.QtGui import QDoubleValidator
+from PyQt5.QtWidgets import QFileDialog, QMessageBox
+
 from sklearn.pipeline import Pipeline
-from sklearn.metrics import mean_squared_error
-import joblib
-import xgboost as xgb
-from keras.models import Sequential
-from keras.layers import Dense
-from keras.optimizers import Adam
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.multioutput import MultiOutputRegressor
+from xgboost import XGBRegressor
 
-# ---------------------------
-# Data Loading and Preprocessing
-# ---------------------------
-df = pd.read_csv(
-    r"C:\Users\QATCH\dev\QATCH-ML\QModel\src\models\formulations\FormulaTRaining_v2.csv")
+# Feature definitions (must match training)
+CATEGORICAL_FEATURES = ['Protein type', 'Buffer', 'Sugar', 'Surfactant']
+NUMERIC_FEATURES = ['Protein', 'Temperature', 'Sugar (M)', 'TWEEN']
+VISCOUS_COLUMNS = [
+    'Viscosity @ 100',
+    'Viscosity  @ 1000',
+    'Viscosity  @ 10000',
+    'Viscosity  @ 100000',
+    'Viscosity @ 15000000',
+]
+DEFAULT_MODEL_PATH = 'viscosity_model.pkl'
 
-# Define features (inputs) and targets (outputs)
-X = df[['Protein', 'Sucrose (M)']]
-Y = df[['Viscosity@100', 'Viscosity@1000', 'Viscosity@10000',
-        'Viscosity@100000', 'Viscosity@15000000']]
 
-# Split data into training and testing sets (80% training, 20% test)
-X_train, X_test, Y_train, Y_test = train_test_split(
-    X, Y, test_size=0.2, random_state=42
-)
+class ViscosityPredictorGUI(QtWidgets.QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle('Viscosity Profile Predictor')
+        self.df = None
+        self.X = None
+        self.y = None
+        self._load_model()
+        self._init_ui()
 
-scaler = Pipeline([
-    # ('standard', StandardScaler()),
-    ('minmax', MinMaxScaler(feature_range=(0, 1)))
-])
-X_train_scaled = scaler.fit_transform(X_train)
-X_test_scaled = scaler.transform(X_test)
-joblib.dump(
-    scaler, r"C:\Users\QATCH\dev\QATCH-ML\QModel\src\models\formulations\scaler.pkl")
-print("Scaler saved as 'scaler.pkl'")
+    def _build_pipeline(self):
+        # Create preprocessing + model pipeline
+        preprocessor = ColumnTransformer([
+            ('onehot', OneHotEncoder(handle_unknown='ignore'), CATEGORICAL_FEATURES),
+            ('scaler', StandardScaler(),                   NUMERIC_FEATURES),
+        ])
+        return Pipeline([
+            ('preproc', preprocessor),
+            ('regressor', MultiOutputRegressor(
+                XGBRegressor(
+                    n_estimators=200,
+                    learning_rate=0.05,
+                    max_depth=4,
+                    objective='reg:squarederror',
+                    random_state=42
+                )
+            )),
+        ])
 
-# ---------------------------
-# 1. Linear Regression Model
-# ---------------------------
-linear_model = LinearRegression()
-linear_model.fit(X_train_scaled, Y_train)
-linear_pred = linear_model.predict(X_test_scaled)
-mse_linear = mean_squared_error(Y_test, linear_pred)
-print("Linear Regression MSE:", mse_linear)
-joblib.dump(linear_model,
-            r"C:\Users\QATCH\dev\QATCH-ML\QModel\src\models\formulations\linear_regression_model.pkl")
-print("Linear Regression model saved as 'linear_regression_model.pkl'")
+    def _load_model(self):
+        # Try loading an existing model, or build a fresh pipeline
+        try:
+            with open(DEFAULT_MODEL_PATH, 'rb') as f:
+                self.model = pickle.load(f)
+        except Exception:
+            self.model = self._build_pipeline()
 
-# ---------------------------
-# 2. Polynomial Regression Model (degree = 2)
-# ---------------------------
-poly_model = Pipeline([
-    ('poly', PolynomialFeatures(degree=2, include_bias=False)),
-    ('linear', LinearRegression())
-])
-poly_model.fit(X_train_scaled, Y_train)
-poly_pred = poly_model.predict(X_test_scaled)
-mse_poly = mean_squared_error(Y_test, poly_pred)
-print("Polynomial Regression MSE:", mse_poly)
-joblib.dump(
-    poly_model, r"C:\Users\QATCH\dev\QATCH-ML\QModel\src\models\formulations\polynomial_regression_model.pkl")
-print("Polynomial Regression model saved as 'polynomial_regression_model.pkl'")
+    def _init_ui(self):
+        layout = QtWidgets.QVBoxLayout()
 
-# ---------------------------
-# 3. Random Forest Regression Model
-# ---------------------------
-rf_model = RandomForestRegressor(n_estimators=100, random_state=42)
-rf_model.fit(X_train_scaled, Y_train)
-rf_pred = rf_model.predict(X_test_scaled)
-mse_rf = mean_squared_error(Y_test, rf_pred)
-print("Random Forest Regression MSE:", mse_rf)
-joblib.dump(
-    rf_model, r"C:\Users\QATCH\dev\QATCH-ML\QModel\src\models\formulations\random_forest_model.pkl")
-print("Random Forest model saved as 'random_forest_model.pkl'")
-# ---------------------------
-# 4. Neural Network Regression Model
-# ---------------------------
-nn_model = Sequential([
-    Dense(32, activation='relu', input_shape=(X_train_scaled.shape[1],)),
-    Dense(64, activation='relu'),
-    Dense(32, activation='relu'),
-    Dense(Y_train.shape[1])
-])
+        # Dataset & training controls
+        btn_layout = QtWidgets.QHBoxLayout()
+        self.load_btn = QtWidgets.QPushButton('Load Dataset')
+        self.load_btn.clicked.connect(self._on_load_dataset)
+        btn_layout.addWidget(self.load_btn)
 
-nn_model.compile(optimizer=Adam(learning_rate=0.001), loss='mse')
-nn_model.fit(X_train_scaled, Y_train, epochs=100, batch_size=8, verbose=0)
+        self.train_btn = QtWidgets.QPushButton('Train Model')
+        self.train_btn.clicked.connect(self._on_train_model)
+        self.train_btn.setEnabled(False)
+        btn_layout.addWidget(self.train_btn)
 
-nn_pred = nn_model.predict(X_test_scaled)
-mse_nn = mean_squared_error(Y_test, nn_pred)
-print("Neural Network Regression MSE:", mse_nn)
-nn_model.save("QModel/src/formulations/viscosity_model.h5")
-print("Neural Network model saved as 'viscosity_model.h5'")
-# ---------------------------
-# 5. XGBoost Models (One per target)
-# ---------------------------
-# XGBoost does not natively support multi-output regression in a single booster.
-# Instead, we loop over each target column and train a separate model.
-xgb_models = {}      # Dictionary to store the models
-mse_xgb = {}         # Dictionary to store MSE for each target
-params = {
-    'objective': 'reg:squarederror',  # Use reg:squarederror for regression
-    'eval_metric': 'rmse',
-    'seed': 42
-}
-num_rounds = 100
+        self.pred_dataset_btn = QtWidgets.QPushButton('Predict on Dataset')
+        self.pred_dataset_btn.clicked.connect(self._on_predict_dataset)
+        self.pred_dataset_btn.setEnabled(False)
+        btn_layout.addWidget(self.pred_dataset_btn)
 
-for col in Y.columns:
-    print(f"\nTraining XGBoost model for target: {col}")
-    # Create DMatrix for training and testing for the given target
-    dtrain = xgb.DMatrix(X_train_scaled, label=Y_train[col])
-    dtest = xgb.DMatrix(X_test_scaled, label=Y_test[col])
+        layout.addLayout(btn_layout)
 
-    # Train the model using the XGBoost native API
-    xgb_model = xgb.train(params, dtrain, num_boost_round=num_rounds, evals=[
-                          (dtest, 'eval')], verbose_eval=False)
+        # Single‐sample prediction form
+        form = QtWidgets.QFormLayout()
+        self.inputs = {}
+        # Populate categorical combos from pipeline definition (if available)
+        try:
+            preproc = self.model.named_steps['preproc']
+            onehot = preproc.named_transformers_['onehot']
+            categories = onehot.categories_
+        except Exception:
+            categories = [[] for _ in CATEGORICAL_FEATURES]
 
-    # Make predictions and calculate MSE for the current target
-    xgb_pred = xgb_model.predict(dtest)
-    mse_val = mean_squared_error(Y_test[col], xgb_pred)
-    print(f"XGBoost MSE for {col}: {mse_val}")
+        for feat, cats in zip(CATEGORICAL_FEATURES, categories):
+            combo = QtWidgets.QComboBox()
+            combo.addItems([str(c) for c in cats])
+            form.addRow(feat + ':', combo)
+            self.inputs[feat] = combo
 
-    # Save the model to a file (one file per target)
-    model_filename = f"C:/Users/QATCH/dev/QATCH-ML/QModel/src/models/formulations/xgboost_model_{col}.json"
-    xgb_model.save_model(model_filename)
-    print(f"XGBoost model for {col} saved as '{model_filename}'")
+        # Numeric inputs
+        for feat in NUMERIC_FEATURES:
+            line = QtWidgets.QLineEdit()
+            line.setValidator(QDoubleValidator(0.0, 1e12, 6))
+            form.addRow(feat + ':', line)
+            self.inputs[feat] = line
 
-    # Store the model and its MSE in dictionaries
-    xgb_models[col] = xgb_model
-    mse_xgb[col] = mse_val
-# Optionally, save the dictionary of models using joblib
-joblib.dump(
-    xgb_models, r"C:\Users\QATCH\dev\QATCH-ML\QModel\src\models\formulations\xgboost_models.pkl")
-print("\nAll XGBoost models saved as 'xgboost_models.pkl'")
+        layout.addLayout(form)
+
+        # Predict button for single inputs
+        self.predict_btn = QtWidgets.QPushButton('Predict Single')
+        self.predict_btn.clicked.connect(self._on_predict)
+        layout.addWidget(self.predict_btn)
+
+        # Results display
+        result_group = QtWidgets.QGroupBox('Predicted Viscosity Profile')
+        result_layout = QtWidgets.QFormLayout()
+        self.result_labels = {}
+        for col in VISCOUS_COLUMNS:
+            lbl = QtWidgets.QLabel('-')
+            result_layout.addRow(col + ':', lbl)
+            self.result_labels[col] = lbl
+        result_group.setLayout(result_layout)
+        layout.addWidget(result_group)
+
+        self.setLayout(layout)
+
+    def _on_load_dataset(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, 'Open CSV', '', 'CSV Files (*.csv)')
+        if not path:
+            return
+        try:
+            df = pd.read_csv(path)
+            required = set(CATEGORICAL_FEATURES +
+                           NUMERIC_FEATURES + VISCOUS_COLUMNS)
+            if not required.issubset(df.columns):
+                missing = required - set(df.columns)
+                QMessageBox.warning(self, 'Invalid Data',
+                                    f'Missing columns: {missing}')
+                return
+            self.df = df
+            self.X = df[CATEGORICAL_FEATURES + NUMERIC_FEATURES]
+            self.y = df[VISCOUS_COLUMNS]
+            self.train_btn.setEnabled(True)
+            QMessageBox.information(
+                self, 'Dataset Loaded', f'Loaded {len(df)} rows.')
+        except Exception as e:
+            QMessageBox.warning(self, 'Load Error', str(e))
+
+    def _on_train_model(self):
+        if self.df is None:
+            QMessageBox.warning(self, 'No Data', 'Load a dataset first.')
+            return
+        try:
+            self.model = self._build_pipeline()
+            self.model.fit(self.X, self.y)
+            save_path, _ = QFileDialog.getSaveFileName(
+                self, 'Save Model', DEFAULT_MODEL_PATH, 'Pickle (*.pkl)')
+            if save_path:
+                with open(save_path, 'wb') as f:
+                    pickle.dump(self.model, f)
+            self.pred_dataset_btn.setEnabled(True)
+            QMessageBox.information(
+                self, 'Training Complete', 'Model trained successfully.')
+        except Exception as e:
+            QMessageBox.warning(self, 'Training Error', str(e))
+
+    def _on_predict_dataset(self):
+        if self.df is None:
+            QMessageBox.warning(self, 'No Data', 'Load and train model first.')
+            return
+        try:
+            preds = self.model.predict(self.X)
+            df_out = self.df.copy()
+            for i, col in enumerate(VISCOUS_COLUMNS):
+                df_out[col] = preds[:, i]
+            save_path, _ = QFileDialog.getSaveFileName(
+                self, 'Save Predictions', 'predictions.csv', 'CSV Files (*.csv)')
+            if save_path:
+                df_out.to_csv(save_path, index=False)
+                QMessageBox.information(
+                    self, 'Saved', f'Predictions saved to {save_path}')
+        except Exception as e:
+            QMessageBox.warning(self, 'Prediction Error', str(e))
+
+    def _on_predict(self):
+        try:
+            data = {f: [self.inputs[f].currentText()]
+                    for f in CATEGORICAL_FEATURES}
+            for f in NUMERIC_FEATURES:
+                txt = self.inputs[f].text()
+                if txt == '':
+                    raise ValueError(f'Missing value for {f}')
+                data[f] = [float(txt)]
+            df = pd.DataFrame(data)
+            preds = self.model.predict(df)[0]
+            for col, val in zip(VISCOUS_COLUMNS, preds):
+                self.result_labels[col].setText(f'{val:.3f}')
+        except Exception as e:
+            QMessageBox.warning(self, 'Prediction Error', str(e))
+
+
+if __name__ == '__main__':
+    app = QtWidgets.QApplication(sys.argv)
+    window = ViscosityPredictorGUI()
+    window.show()
+    sys.exit(app.exec_())
