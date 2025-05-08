@@ -102,11 +102,11 @@ class PFDataProcessor:
                 "corrcoef": float(np.corrcoef(curve1, curve2)[0, 1])}
 
     @staticmethod
-    def _generate_features(df_slice: pd.DataFrame,
-                           label: str,
-                           sampling_rate: float = 1.0,
-                           full_curve: np.ndarray = None,
-                           detected_poi1: int = None) -> Dict[str, float]:
+    def generate_features(df_slice: pd.DataFrame,
+                          label: str,
+                          sampling_rate: float = 1.0,
+                          full_curve: np.ndarray = None,
+                          detected_poi1: int = None) -> Dict[str, float]:
         curve = df_slice.values.flatten()
         feats = {"segment_label": label, "slice_length": len(curve)}
         if detected_poi1 is not None:
@@ -184,7 +184,7 @@ class PFDataProcessor:
                 plt.tight_layout()
                 plt.show()
 
-            feat = PFDataProcessor._generate_features(
+            feat = PFDataProcessor.generate_features(
                 df_slice_rel,
                 label,
                 sampling_rate,
@@ -231,6 +231,42 @@ class PFDataProcessor:
         y = df_feats['target']
         X = df_feats.drop(columns=['segment_label', 'target', 'dataset_id'])
         return X, y
+
+    @classmethod
+    def process_single_run(cls,
+                           run_dir: str,
+                           column: str = 'Dissipation',
+                           sampling_rate: float = 1.0,
+                           plot_slices: bool = False
+                           ) -> Tuple[pd.DataFrame, int, np.ndarray]:
+        """
+        Processes a single run directory in live context:
+        - loads the data and POI CSV
+        - slices and generates features
+        - returns feature vectors, actual POI count, and raw dissipation curve
+        """
+        # find data and poi paths
+        content = cls.load_content(run_dir, num_datasets=1, column=column)
+        if not content:
+            raise FileNotFoundError(f"No valid run found in {run_dir}")
+        data_path, poi_path = content[0]
+
+        # load raw data
+        df = pd.read_csv(data_path)
+        poi_vals = pd.read_csv(
+            poi_path, header=None).values.flatten().astype(int)
+
+        # generate slice-based features
+        df_col = df[[column]]
+        feats = cls._slice_and_summarize(
+            df_col, poi_vals, sampling_rate, plot_slices)
+
+        # actual count
+        actual_count = int(len(poi_vals))
+        # raw dissipation curve
+        raw_curve = df[column].values
+        feats.drop(columns=['segment_label'], inplace=True)
+        return feats, actual_count, raw_curve
 
 
 if __name__ == "__main__":
