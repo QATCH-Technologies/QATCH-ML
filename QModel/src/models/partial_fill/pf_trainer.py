@@ -9,9 +9,11 @@ from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.metrics import log_loss, accuracy_score, classification_report, confusion_matrix
-from typing import Tuple
+from typing import Tuple, Optional
 import random
 from pf_data_processor_v2 import PFDataProcessor
+from sklearn.feature_selection import mutual_info_classif
+
 SEED = 42
 TRAINING_DIRECTORY = os.path.join('content', 'static', 'train')
 TEST_DIRECTORY = os.path.join('content', 'static', 'test')
@@ -36,10 +38,15 @@ class PFTrainer:
         self._test_directory = test_directory
         self._validation_directory = validation_directory
         self._test_content = None
+        self._dtrain = None
+        self._dvalid = None
 
     def train(self, eval_metric: str = 'mlogloss', plotting: bool = False) -> None:
-        dtrain, dval = self._load_ddata()
-
+        if self._dtrain is None or self._dvalid is None:
+            dtrain, dval = self._load_ddata()
+        else:
+            dtrain = self._dtrain
+            dval = self._dvalid
         total_rounds = 50
         early_stopping_rounds = 5
         best_val_loss = float("inf")
@@ -110,8 +117,56 @@ class PFTrainer:
             plt.ioff()
             plt.show()
 
-    def tune(self) -> None:
-        pass
+    def tune(self, n_trials: int = 50, timeout: Optional[int] = None) -> None:
+
+        def objective(trial: optuna.Trial) -> float:
+            trial_params = {
+                'max_depth': trial.suggest_int('max_depth', 3, 12),
+                'learning_rate': trial.suggest_float('learning_rate', 1e-3, 0.3, log=True),
+                'subsample': trial.suggest_float('subsample', 0.5, 1.0),
+                'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 1.0),
+                'min_child_weight': trial.suggest_int('min_child_weight', 1, 10),
+                'gamma': trial.suggest_float('gamma', 0.0, 5.0),
+                'objective': self._params.get('objective', 'multi:softprob'),
+                'eval_metric': self._params.get('eval_metric', 'mlogloss'),
+                'n_jobs': self._params.get('n_jobs', -1),
+                'num_class':        7,
+            }
+            self._params.update(trial_params)
+            if self._dtrain is None or self._dvalid is None:
+                dtrain, dval = self._load_ddata()
+            else:
+                dtrain = self._dtrain
+                dval = self._dvalid
+            evals_result = {}
+            booster = xgb.train(
+                trial_params,
+                dtrain,
+                num_boost_round=self._params.get('n_boost_round', 1000),
+                evals=[(dtrain, 'train'), (dval, 'val')],
+                early_stopping_rounds=self._params.get(
+                    'early_stopping_rounds', 10),
+                evals_result=evals_result,
+                verbose_eval=False,
+            )
+            val_history = evals_result['val'][trial_params['eval_metric']]
+            best_val = val_history[-1]
+            best_iter = len(val_history)
+            trial.set_user_attr('best_iteration', best_iter)
+
+            return best_val
+        study = optuna.create_study(direction='minimize')
+        study.optimize(objective, n_trials=n_trials, timeout=timeout)
+        self._params.update(study.best_params)
+        best_it = study.best_trial.user_attrs.get('best_iteration')
+        if best_it is not None:
+            self._params['n_boost_round'] = best_it
+
+        print(
+            f"Optuna tuning done 🎉 best {self._params['eval_metric']}="
+            f"{study.best_value:.5f} (trial #{study.best_trial.number+1}),"
+            f" n_boost_round={self._params['n_boost_round']}"
+        )
 
     def test(self, num_datasets: int, plotting: bool = False) -> None:
         self.load_model(BASE_DIR)
@@ -218,7 +273,7 @@ class PFTrainer:
         }
         return params
 
-    def _generate_dataset(self, data_dir: str, num_datasets: int):
+    def _generate_dataset(self, data_dir: str, num_datasets: int, plotting: bool = False):
         content = PFDataProcessor.load_content(
             data_dir=data_dir, num_datasets=num_datasets)
         dataset = pd.DataFrame()
@@ -242,6 +297,50 @@ class PFTrainer:
         y = dataset['label']
         dataset.drop(columns=['label'], inplace=True)
         X = dataset
+
+        def plot_feature_importances(X: pd.DataFrame,
+                                     y: pd.Series,
+                                     top_n: int = 5):
+            """
+            For each class in y:
+            – Compute |Pearson r| against a one‐vs‐all indicator → “linear” importance
+            – Compute mutual_info_classif          → “nonlinear” importance
+            Then plot the top_n of each side by side.
+            """
+            classes = sorted(y.unique())
+
+            for cls in classes:
+                # one‐vs‐all indicator
+                y_bin = (y == cls).astype(int)
+
+                # linear importance: |corr|
+                corrs = X.corrwith(y_bin).abs().sort_values(
+                    ascending=False).head(top_n)
+
+                # nonlinear importance: mutual info
+                mi = mutual_info_classif(
+                    X, y_bin, discrete_features=False, random_state=0)
+                mi_ser = pd.Series(mi, index=X.columns).sort_values(
+                    ascending=False).head(top_n)
+
+                # new figure for this class
+                fig, (ax_lin, ax_mi) = plt.subplots(
+                    1, 2, figsize=(10, 4), sharey=False
+                )
+
+                corrs.plot.bar(ax=ax_lin)
+                ax_lin.set_title(f"Class {cls}-Top {top_n} by |Pearson r|")
+                ax_lin.set_ylabel("|Correlation|")
+                ax_lin.tick_params(axis='x', rotation=90)
+
+                mi_ser.plot.bar(ax=ax_mi)
+                ax_mi.set_title(f"Class {cls}-Top {top_n} by Mutual Info")
+                ax_mi.set_ylabel("Mutual Information")
+                ax_mi.tick_params(axis='x', rotation=90)
+
+                plt.tight_layout()
+                plt.show()
+        plot_feature_importances(X=X, y=y, top_n=20)
         return X, y
 
     def _load_ddata(self) -> Tuple[xgb.DMatrix, xgb.DMatrix]:
@@ -276,7 +375,8 @@ class PFTrainer:
         # Create XGBoost DMatrix objects
         dtrain = xgb.DMatrix(X_train_scaled, label=y_train)
         dvalid = xgb.DMatrix(X_valid_scaled, label=y_valid)
-
+        self._dtrain = dtrain
+        self._dvalid = dvalid
         return dtrain, dvalid
 
     def _load_scaler(self, base_dir) -> None:
@@ -309,7 +409,7 @@ if __name__ == "__main__":
                         test_directory=TEST_DIRECTORY,
                         validation_directory=VALIDATION_DIRECTORY,
                         classes=[0, 1, 2, 3, 4, 5, 6])
-    # trainer.tune()
-    # trainer.train(plotting=True)
-    # trainer.save_model(save_dir=BASE_DIR)
+    trainer.tune()
+    trainer.train(plotting=True)
+    trainer.save_model(save_dir=BASE_DIR)
     trainer.test(num_datasets=np.inf, plotting=True)

@@ -133,29 +133,41 @@ class PFDataProcessor:
     @staticmethod
     def generate_features(dataframe: pd.DataFrame,
                           sampling_rate: float = 1.0,
-                          detected_poi1: int = None) -> Dict[str, float]:
-
+                          detected_poi1=None) -> pd.DataFrame:
         feat_columns = ["Dissipation", "Resonance_Frequency", "Relative_time"]
-        dataframe = dataframe[feat_columns].copy()
-        relative_time = dataframe['Relative_time'].values
-        feats = pd.DataFrame()
-        feats["run_length"] = [len(dataframe)]
-        if detected_poi1 is not None:
-            feats["time_since_detected_fill"] = [
-                float(max(relative_time) - relative_time[detected_poi1])]
-        else:
-            feats["time_since_detected_fill"] = [0.0]
+        df = dataframe[feat_columns].copy()
 
+        if detected_poi1 is None:
+            idx = None
+        else:
+            flat = np.atleast_1d(detected_poi1).flat[0]
+            idx = int(flat)
+
+        meas_cols = ["Dissipation", "Resonance_Frequency"]
+        if idx is not None and idx > 0:
+            baseline = df[meas_cols].iloc[:idx].mean()
+        else:
+            baseline = df[meas_cols].mean()
+        df[meas_cols] = df[meas_cols].subtract(baseline)
+        time_scale = 30 * 60
+        df["Relative_time"] = df["Relative_time"] / time_scale
+        feats = pd.DataFrame({"run_length": [len(df)]})
+
+        if idx is not None and 0 <= idx < len(df):
+            last_t = df["Relative_time"].iloc[-1]   # pure scalar
+            fill_t = df["Relative_time"].iloc[idx]  # pure scalar
+            delta_norm = last_t - fill_t
+        else:
+            delta_norm = 0.0
+        delta_norm = float(np.clip(delta_norm, 0.0, 1.0))
+        feats["time_since_detected_fill"] = [delta_norm]
+        feats = pd.concat([feats, PFDataProcessor._curve_stats(df)], axis=1)
+        feats = pd.concat([feats, PFDataProcessor._peak_features(df)], axis=1)
+        feats = pd.concat([feats, PFDataProcessor._curve_dynamics(df)], axis=1)
         feats = pd.concat(
-            [feats, PFDataProcessor._curve_stats(dataframe)], axis=1)
+            [feats, PFDataProcessor._fft_features(df, sampling_rate)], axis=1)
         feats = pd.concat(
-            [feats, PFDataProcessor._peak_features(dataframe)], axis=1)
-        feats = pd.concat(
-            [feats, PFDataProcessor._curve_dynamics(dataframe)], axis=1)
-        feats = pd.concat([feats, PFDataProcessor._fft_features(
-            dataframe, sampling_rate)], axis=1)
-        feats = pd.concat(
-            [feats, PFDataProcessor._cross_corr_features(dataframe)], axis=1)
+            [feats, PFDataProcessor._cross_corr_features(df)], axis=1)
 
         return feats
 
