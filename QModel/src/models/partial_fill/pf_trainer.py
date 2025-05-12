@@ -1,3 +1,4 @@
+import itertools
 import os
 import numpy as np
 import pandas as pd
@@ -172,6 +173,10 @@ class PFTrainer:
         self.load_model(BASE_DIR)
         self._test_content = PFDataProcessor.load_content(
             self._test_directory, num_datasets=num_datasets)
+
+        y_true, y_pred = [], []
+
+        # loop over each run and collect predictions
         for i, (data_file, poi_file) in enumerate(self._test_content):
             data_df = pd.read_csv(data_file)
             pois = pd.read_csv(poi_file, header=None).values
@@ -182,65 +187,96 @@ class PFTrainer:
             simulated_poi_1 = None
             if num_pois >= 1:
                 simulated_poi_1 = random.randint(pois[0], pois[0] + 10)
+
+            # generate + scale features
             features = PFDataProcessor.generate_features(
                 sliced_df, detected_poi1=simulated_poi_1)
             scaled_features = self._scaler.transform(features)
             ddata = xgb.DMatrix(scaled_features)
+
+            # predict
             probs = self._booster.predict(ddata)
-            pred = np.argmax(probs, axis=1)
-            predicted_poi = pred[0]
+            pred = np.argmax(probs, axis=1)[0]
 
-            is_correct = num_pois == predicted_poi
+            # record for overall stats
+            y_true.append(num_pois)
+            y_pred.append(pred)
 
-            if plotting:
-                # Create a figure with two subplots: one for the dissipation curve, one for the POI bar chart
-                fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(
-                    12, 10), gridspec_kw={'height_ratios': [2, 1]})
+            # per-run plotting (unchanged)
+            if False:
+                fig, (ax1, ax2) = plt.subplots(
+                    2, 1, figsize=(12, 10), gridspec_kw={'height_ratios': [2, 1]})
 
-                # Plot the dissipation curve in the first subplot (ax1)
-                ax1.plot(data_df['Relative_time'].values, data_df['Dissipation'].values,
-                         label='Dissipation Curve', color='b', linewidth=2)
+                # dissipation curve
+                ax1.plot(data_df['Relative_time'], data_df['Dissipation'],
+                         label='Full Curve', linewidth=2)
+                ax1.plot(data_df['Relative_time'][:slice_idx],
+                         data_df['Dissipation'][:slice_idx],
+                         label='Sliced Portion', linewidth=2, color='orange')
+                ax1.set_xlabel('Relative Time')
+                ax1.set_ylabel('Dissipation')
+                ax1.set_title(f"Run {i+1}")
+                ax1.grid(True, linestyle='--', linewidth=0.5)
 
-                # Highlight the sliced portion of the curve with a different color
-                ax1.plot(data_df['Relative_time'].values[:slice_idx],
-                         data_df['Dissipation'].values[:slice_idx],
-                         label='Sliced Portion', color='orange', linewidth=2)
-
-                ax1.set_xlabel('Relative Time', fontsize=12)
-                ax1.set_ylabel('Dissipation', fontsize=12, color='b')
-                ax1.tick_params(axis='y', labelcolor='b')
-                ax1.set_title(
-                    f"Dissipation Curve for Dataset {i+1}", fontsize=14)
-
-                # Add gridlines for better readability
-                ax1.grid(True, which='both', linestyle='--', linewidth=0.5)
-
-                # Horizontal bar plot for actual vs predicted POIs in the second subplot (ax2)
-                ax2.barh(['Actual POIs'], [num_pois], color='r', height=0.5,
-                         edgecolor='black', alpha=0.7, label='Actual POIs')
-                ax2.barh(['Predicted POIs'], [predicted_poi], color='g',
-                         height=0.5, edgecolor='black', alpha=0.7, label='Predicted POIs')
-
-                ax2.set_xlabel('Number of POIs', fontsize=12)
-                # Set the x-axis limit for better comparison
+                # actual vs. predicted POIs
+                is_correct = (num_pois == pred)
+                ax2.barh(['Actual'], [num_pois], label='Actual',
+                         edgecolor='black', alpha=0.7)
+                ax2.barh(['Predicted'], [pred], label='Predicted',
+                         edgecolor='black', alpha=0.7)
                 ax2.set_xlim(0, 6)
+                ax2.set_xlabel('POI Count')
                 ax2.set_title(
-                    f"Predicted vs Actual POIs for Dataset {i+1}", fontsize=14)
-
-                # Add gridlines to the bar plot for better readability
+                    "Actual vs. Predicted POIs" + (" ✓" if is_correct else " ✗"))
                 ax2.grid(True, axis='x', linestyle='--', linewidth=0.5)
-
-                # Add an indicator for whether the prediction is correct
-                result_text = "Correct Prediction!" if is_correct else "Incorrect Prediction"
-                ax2.text(0.5, 0.5, result_text, ha='center', va='center', fontsize=14,
-                         color='black', fontweight='bold', transform=ax2.transAxes)
-
-                # Display the legend
                 ax2.legend()
 
-                # Display the plot
                 plt.tight_layout()
                 plt.show()
+
+        # --- overall metrics & plots ---
+        if plotting and y_true:
+            # 1. Overall accuracy
+            acc = accuracy_score(y_true, y_pred)
+            print(f"Overall accuracy: {acc:.2%}")
+
+            fig, ax = plt.subplots(figsize=(4, 5))
+            ax.bar(['Accuracy'], [acc], edgecolor='black')
+            ax.set_ylim(0, 1)
+            ax.set_ylabel('Accuracy')
+            ax.set_title('Overall Model Accuracy')
+            ax.text(0, acc + 0.02, f"{acc:.2%}",
+                    ha='center', va='bottom', fontweight='bold')
+            plt.tight_layout()
+            plt.show()
+
+            # 2. Confusion matrix
+            # assume classes are 0 through max observed
+            classes = sorted(set(y_true) | set(y_pred))
+            cm = confusion_matrix(y_true, y_pred, labels=classes)
+
+            fig, ax = plt.subplots(figsize=(6, 5))
+            im = ax.imshow(cm, interpolation='nearest', cmap='Blues')
+            ax.figure.colorbar(im, ax=ax)
+
+            ax.set(
+                xticks=np.arange(len(classes)),
+                yticks=np.arange(len(classes)),
+                xticklabels=classes, yticklabels=classes,
+                xlabel='Predicted label',
+                ylabel='True label',
+                title='Confusion Matrix'
+            )
+
+            # annotate counts
+            thresh = cm.max() / 2
+            for i, j in itertools.product(range(cm.shape[0]), range(cm.shape[1])):
+                ax.text(j, i, cm[i, j],
+                        ha='center', va='center',
+                        color='white' if cm[i, j] > thresh else 'black')
+
+            plt.tight_layout()
+            plt.show()
 
     def save_model(self, save_dir: str) -> None:
         try:
@@ -409,7 +445,7 @@ if __name__ == "__main__":
                         test_directory=TEST_DIRECTORY,
                         validation_directory=VALIDATION_DIRECTORY,
                         classes=[0, 1, 2, 3, 4, 5, 6])
-    trainer.tune()
-    trainer.train(plotting=True)
-    trainer.save_model(save_dir=BASE_DIR)
+    # trainer.tune()
+    # trainer.train(plotting=True)
+    # trainer.save_model(save_dir=BASE_DIR)
     trainer.test(num_datasets=np.inf, plotting=True)

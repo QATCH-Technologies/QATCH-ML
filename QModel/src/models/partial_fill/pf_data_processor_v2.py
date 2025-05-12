@@ -10,7 +10,6 @@ import warnings
 from scipy.stats import skew, kurtosis
 from scipy.signal import find_peaks, peak_prominences, peak_widths
 import matplotlib.pyplot as plt
-from sklearn.feature_selection import mutual_info_regression
 
 
 class PFDataProcessor:
@@ -131,6 +130,27 @@ class PFDataProcessor:
         return corr_results
 
     @staticmethod
+    def _sample_interval_features(df: pd.DataFrame,
+                                  intervals: List[float] = None) -> pd.DataFrame:
+        """
+        Sample each column of `df` at the given fractional positions
+        (e.g. 0.0, 0.1, ..., 1.0) and return one‐row DataFrame of those values.
+        """
+        if intervals is None:
+            # 0%, 10%, 20%, …, 100%
+            intervals = [i / 10 for i in range(11)]
+
+        n = len(df)
+        samples = {}
+        for col in df.columns:
+            for p in intervals:
+                # index at fraction p of the way through (clamped to valid range)
+                idx = min(int(round(p * (n - 1))), n - 1)
+                samples[f"{col}_p{int(p * 100)}"] = float(df[col].iloc[idx])
+
+        return pd.DataFrame([samples])
+
+    @staticmethod
     def generate_features(dataframe: pd.DataFrame,
                           sampling_rate: float = 1.0,
                           detected_poi1=None) -> pd.DataFrame:
@@ -168,6 +188,9 @@ class PFDataProcessor:
             [feats, PFDataProcessor._fft_features(df, sampling_rate)], axis=1)
         feats = pd.concat(
             [feats, PFDataProcessor._cross_corr_features(df)], axis=1)
+        feats = pd.concat([feats,
+                           PFDataProcessor._sample_interval_features(df)],
+                          axis=1)
 
         return feats
 
