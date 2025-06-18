@@ -29,9 +29,12 @@ import argparse
 import csv
 from pathlib import Path
 from typing import Optional, Set, List
+from datetime import date
+
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
-
+import xml.etree.ElementTree as ET
+from datetime import datetime
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -72,7 +75,7 @@ class DatasetFetcher:
 
     BAD_BATCHES = ["MM240506", "DD240501"]
 
-    def __init__(self, source_dir: str, target_dir: str, num_files: Optional[int] = None):
+    def __init__(self, source_dir: str, target_dir: str, num_files: Optional[int] = None, min_start_date: date = date(2025, 1, 1)):
         """Initializes the DatasetFetcher.
 
         Args:
@@ -86,6 +89,7 @@ class DatasetFetcher:
         self.num_files = num_files
         self.existing_runs: Set[str] = set()
         self.run_dirs: List[Path] = []
+        self.min_start_date = min_start_date
 
     def load_existing_files(self) -> None:
         """Loads the identifiers of previously processed runs from the target directory.
@@ -103,20 +107,56 @@ class DatasetFetcher:
             f"Successfully loaded {len(self.existing_runs)} previously processed runs.")
 
     def check_xml_validity(self, xml_path: Path) -> bool:
-        """Checks if an XML file is valid by ensuring it does not contain disallowed batch identifiers.
+        """
+        Checks if an XML file is valid by ensuring it does not contain disallowed batch identifiers
+        and that its <metric name="start" value="YYYY-MM-DD"/> is on or after self.min_start_date.
 
         Args:
             xml_path (Path): Path to the XML file.
 
         Returns:
-            bool: True if the XML file is valid; False if it contains any disallowed batch identifiers.
+            bool: True if the XML file is valid; False otherwise.
         """
+        # First: parse out the <metric name="start" .../> date
+        try:
+            tree = ET.parse(xml_path)
+            root = tree.getroot()
+
+            # find the <metric name="start" ... /> element anywhere under run_info/metrics
+            start_metric = root.find(
+                ".//run_info/metrics/metric[name='start']")
+            if start_metric is not None:
+                date_str = start_metric.get("value", "")
+                # adjust the format string if your date includes time, e.g. "%Y-%m-%dT%H:%M:%S"
+                try:
+                    file_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+                except ValueError:
+                    logging.warning(
+                        f"Unrecognized date format in {xml_path.name}: '{date_str}'")
+                    return False
+
+                if file_date < self.min_start_date:
+                    logging.debug(
+                        f"Omitting XML file {xml_path.name}: start date {file_date} before threshold {self.min_start_date}."
+                    )
+                    return False
+
+        except ET.ParseError as e:
+            logging.error(f"XML parse error for {xml_path.name}: {e}")
+            return False
+        except Exception as e:
+            logging.error(
+                f"Error reading start metric in {xml_path.name}: {e}")
+            return False
+
+        # Next: your original batch‐identifier check
         try:
             with xml_path.open("r", errors="ignore") as f:
                 for line in f:
                     if any(bad in line.upper() for bad in self.BAD_BATCHES):
                         logging.debug(
-                            f"Omitting XML file {xml_path.name} due to disallowed batch identifier.")
+                            f"Omitting XML file {xml_path.name} due to disallowed batch identifier."
+                        )
                         return False
             return True
         except Exception as e:

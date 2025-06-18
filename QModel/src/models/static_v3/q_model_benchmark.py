@@ -4,6 +4,8 @@ import logging
 import pandas as pd
 import numpy as np
 import os
+import shutil
+from matplotlib.lines import Line2D
 import matplotlib.pyplot as plt
 import math
 from typing import List
@@ -158,68 +160,80 @@ def compute_metrics(actual: List[int], predicted: List[int]) -> dict:
 
 
 class Benchmarker:
-    def __init__(self, predictors: List):
+    def __init__(self, predictors: List, bad_cases_dir: str = "bad_case_plots"):
         self._predictors = predictors
+        self.bad_cases_dir = bad_cases_dir
+        # aggregate storage for final metrics
         self.results = {
             type(model).__name__: {"actual": [],
                                    "predicted": [], "runtimes": []}
             for model in predictors
         }
+        # will hold dicts: data_file, actual, predicted, bad_flags, tolerance
+        self.bad_cases: List[dict] = []
 
     def run(self, test_directory: str, test_size: int, plotting: bool = True):
+        # 1) Recreate bad‐cases directory
+        if os.path.exists(self.bad_cases_dir):
+            shutil.rmtree(self.bad_cases_dir)
+        os.makedirs(self.bad_cases_dir, exist_ok=True)
+        self.bad_cases.clear()
+
+        # 2) Load test set
         test_content = QDataProcessor.load_content(
-            data_dir=test_directory, num_datasets=test_size)
+            data_dir=test_directory, num_datasets=test_size
+        )
         random.shuffle(test_content)
 
         for data_file, poi_file in tqdm(test_content, desc="<Benchmarking>"):
+            # ground‐truth POIs
             poi_indices_df = pd.read_csv(poi_file, header=None)
             actual_indices = poi_indices_df.values.flatten().tolist()
 
+            df = pd.read_csv(data_file)
+            num_samples = len(df)
+            times = df["Relative_time"].values
+            max_time = times.max()
+
+            tol_low = max_time / 1000
+            tol_high = max_time / 100
+            tol_list = [tol_low]*3 + [tol_high]*3
+
             for model in self._predictors:
                 model_name = type(model).__name__
-                start_time = time.perf_counter()
-                predictions = predict_dispatch(
-                    model,
-                    file_buffer=data_file,
-                    actual_poi_indices=poi_indices_df.values
+                start = time.perf_counter()
+                predicted = predict_dispatch(
+                    model, file_buffer=data_file, actual_poi_indices=poi_indices_df.values
                 )
-                elapsed_time = time.perf_counter() - start_time
+                elapsed = time.perf_counter() - start
 
-                self.results[model_name]["predicted"].append(predictions)
                 self.results[model_name]["actual"].append(actual_indices)
-                self.results[model_name]["runtimes"].append(elapsed_time)
+                self.results[model_name]["predicted"].append(predicted)
+                self.results[model_name]["runtimes"].append(elapsed)
 
-        aggregated_metrics = {}
-        for model_name, data in self.results.items():
-            aggregated_metrics[model_name] = {}
-            for poi_index in range(6):
+                if model_name == "QModelPredictor":
+                    diffs_time = [
+                        abs(times[a] - times[p])
+                        for a, p in zip(actual_indices, predicted)
+                    ]
+                    bad_flags = [
+                        (diff > tol_list[i]) if i != 2 else False
+                        for i, diff in enumerate(diffs_time)
+                    ]
+                    if any(bad_flags):
+                        self.bad_cases.append({
+                            "data_file":   data_file,
+                            "actual":      actual_indices,
+                            "predicted":   predicted,
+                            "bad_flags":   bad_flags,
+                            "tolerances":  tol_list
+                        })
 
-                try:
-                    actual_i = [actual[poi_index] for actual in data["actual"]]
-                    predicted_i = [pred[poi_index]
-                                   for pred in data["predicted"]]
-                    metrics = compute_metrics(
-                        actual=actual_i, predicted=predicted_i)
-                    aggregated_metrics[model_name][f"POI{poi_index+1}"] = metrics
-                    logging.info(
-                        f"Aggregated metrics for {model_name} - POI {poi_index+1}: {metrics}"
-                    )
-                except Exception as ve:
-                    logging.error(
-                        f"Error computing aggregated metrics for {model_name} - POI {poi_index+1}: {ve}"
-                    )
-                    pred = data["predicted"]
-                    logging.error(f"-- List was {pred}")
-            try:
-                avg_runtime = np.mean(data["runtimes "])
-                aggregated_metrics[model_name]["avg_time"] = avg_runtime
-                logging.info(
-                    f"Average runtime for {model_name}: {avg_runtime}")
-            except:
-                aggregated_metrics[model_name]["avg_time"] = 0
-
+        # 3) Compute / plot metrics
+        aggregated_metrics = self._aggregate_metrics()
         if plotting:
             self.plot_benchmark_metrics(aggregated_metrics)
+            self._plot_bad_cases()
         return aggregated_metrics
 
     def plot_benchmark_metrics(self, aggregated_metrics: dict):
@@ -328,9 +342,113 @@ class Benchmarker:
         plt.tight_layout()
         plt.show()
 
+    def _aggregate_metrics(self):
+        aggregated = {}
+        for model_name, data in self.results.items():
+            aggregated[model_name] = {}
+            for i in range(6):
+                actual_i = [a[i] for a in data["actual"]]
+                predicted_i = [p[i] for p in data["predicted"]]
+                aggregated[model_name][f"POI{i+1}"] = compute_metrics(
+                    actual_i, predicted_i)
+            aggregated[model_name]["avg_time"] = float(
+                np.mean(data["runtimes"]))
+        return aggregated
+
+    def _plot_bad_cases(self):
+        """Plot each bad run, highlighting only the POIs outside tolerance and showing
+        tolerance values and time-off annotations; predicted POIs are vertical lines."""
+        for case in self.bad_cases:
+            df = pd.read_csv(case["data_file"])
+            times = df["Relative_time"].values
+            diss = df["Dissipation"].values
+            tol_list = case["tolerances"]
+
+            fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
+            ax.plot(times, diss, label="Dissipation", linewidth=1.5)
+
+            y_max = ax.get_ylim()[1]
+
+            for i, is_bad in enumerate(case["bad_flags"]):
+                if not is_bad:
+                    continue
+
+                actual_idx = case["actual"][i]
+                pred_idx = case["predicted"][i]
+                tol_secs = tol_list[i]
+                act_t = times[actual_idx]
+                pred_t = times[pred_idx]
+                act_d = diss[actual_idx]
+                time_off = abs(pred_t - act_t)
+
+                # shade tolerance window
+                t_min = max(act_t - tol_secs, times[0])
+                t_max = min(act_t + tol_secs, times[-1])
+                ax.axvspan(t_min, t_max, color='red', alpha=0.2)
+
+                # plot actual POI
+                ax.scatter(act_t, act_d,
+                           marker='o', s=100,
+                           edgecolors='black', facecolors='none',
+                           label='_nolegend_')
+
+                # plot predicted POI as vertical dashed line
+                ax.axvline(pred_t,
+                           color='red',
+                           linestyle='--',
+                           linewidth=2,
+                           label='_nolegend_')
+
+                # annotate tolerance and time-off
+                ax.text(act_t, y_max * 0.95,
+                        f"tol={tol_secs:.1f}s",
+                        fontsize=10, fontweight='bold',
+                        color="red",
+                        ha='center', va='top')
+
+                ax.text(pred_t, y_max * 0.90,
+                        f"off={time_off:.2f}s",
+                        fontsize=10, fontweight='bold',
+                        color="red",
+                        ha='center', va='top')
+
+                # label actual vs predicted
+                ax.text(act_t, act_d,
+                        f"A{i+1}",
+                        fontsize=10, fontweight='bold',
+                        color="black",
+                        ha='right', va='bottom')
+                ax.text(pred_t, y_max * 0.85,
+                        f"P{i+1}",
+                        fontsize=10, fontweight='bold',
+                        color="red",
+                        ha='right', va='bottom')
+
+            # styling & legend in bottom-left
+            base = os.path.splitext(os.path.basename(case["data_file"]))[0]
+            ax.set_title(f"Bad run: {base}", fontsize=16, fontweight='bold')
+            ax.set_xlabel("Relative_time (s)", fontsize=14)
+            ax.set_ylabel("Dissipation", fontsize=14)
+            ax.grid(which='both', linestyle='--', alpha=0.6)
+
+            region_patch = Line2D([0], [0], color='red', alpha=0.2, lw=10)
+            actual_marker = Line2D([0], [0],
+                                   marker='o', color='black',
+                                   markerfacecolor='none', markersize=10, lw=0)
+            pred_line = Line2D([0], [0],
+                               linestyle='--', color='red', lw=2)
+            ax.legend([actual_marker, pred_line, region_patch],
+                      ["Actual POI", "Predicted POI", "Tolerance region"],
+                      fontsize=12, loc="lower left")
+
+            plt.tight_layout()
+            out_path = os.path.join(self.bad_cases_dir, f"{base}_bad.png")
+            fig.savefig(out_path)
+            plt.close(fig)
+
 
 if __name__ == "__main__":
-    test_directory = os.path.join("content", "static", "test")
+    test_directory = os.path.join("content", "dropbox_dump")
     predictors = [
         QModelPredictor(booster_path=QMODEL_V2_BOOSTER_PATH,
                         scaler_path=QMODEL_V2_SCALER_PATH),
@@ -341,4 +459,4 @@ if __name__ == "__main__":
     ]
     benchmarker = Benchmarker(predictors=predictors)
     aggregated_metrics = benchmarker.run(
-        test_directory=test_directory, test_size=np.inf)
+        test_directory=test_directory, test_size=100)

@@ -19,7 +19,7 @@ import os
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
-from typing import Dict, List, Any, Union, Optional
+from typing import Dict, List, Any, Union, Optional, Tuple
 from scipy.signal import find_peaks, savgol_filter
 from sklearn.cluster import DBSCAN
 try:
@@ -1248,7 +1248,7 @@ class QModelPredictor:
     ) -> List[int]:
         """Filter POI1 candidates using an early-run baseline and IQR outlier removal.
 
-        Computes a baseline dissipation over the first 1–3% of the run. Any candidate
+        Computes a baseline dissipation over the first 1-3% of the run. Any candidate
         whose dissipation at its index does not exceed this baseline is discarded.
         Remaining candidates are then filtered by the interquartile range (IQR) of
         their dissipation values. Finally, the leftmost candidate is offset by
@@ -1806,6 +1806,89 @@ class QModelPredictor:
                         f"Invalid 'indices' or 'confidences' for '{key}'.")
                 data['confidences'] = confs[:len(inds)]
 
+    def _filter_poi1_three_phase(self,
+                                 indices: List[int],
+                                 confidences: List[float],
+                                 feature_vector: pd.DataFrame,
+                                 relative_time: np.ndarray
+                                 ) -> Tuple[List[int], List[float]]:
+        """
+        Three-phase POI1 filtering over a full feature_vector:
+        1. bias to first positive gradient shift in 'Dissipation'
+        2. bias to first negative shift in 'Resonance_Frequency'
+            and alignment with 'Difference_smooth'
+        3. fallback on any '*_DoG_SVM_Score' shifts
+        Returns filtered (indices, confidences) of equal length.
+        """
+        # pull out the series we need
+        dissipation = feature_vector['Dissipation'].values
+        resonance = feature_vector['Resonance_Frequency'].values
+        diff_smooth = feature_vector['Difference_smooth'].values
+
+        # collect all SVM‐score columns
+        svm_scores = {
+            col: feature_vector[col].values
+            for col in feature_vector.columns
+            if col.endswith('_DoG_SVM_Score')
+        }
+
+        # keep originals for fallback and re-mapping confidences
+        orig_inds = list(indices)
+        orig_confs = list(confidences)
+
+        # helper to pick candidates after a given timestamp
+        def pick_after(cands, times, t):
+            return [i for i in cands if times[i] > t]
+
+        # --- Phase 1: dissipation positive gradient shift ---
+        grad_d = np.gradient(dissipation, relative_time)
+        thr_d = grad_d.mean() + grad_d.std()
+        sh_d = np.where(grad_d > thr_d)[0]
+        if len(sh_d):
+            t1 = relative_time[sh_d[0]]
+            inds = pick_after(orig_inds, relative_time, t1)
+        else:
+            inds = orig_inds
+
+        # --- Phase 2: resonance negative shift + diff_smooth alignment ---
+        grad_r = np.gradient(resonance, relative_time)
+        thr_r = grad_r.mean() - grad_r.std()
+        sh_r = np.where(grad_r < thr_r)[0]
+        if len(sh_r):
+            t2 = relative_time[sh_r[0]]
+            inds = pick_after(inds, relative_time, t2)
+
+        # align to first diff_smooth shift near same time
+        grad_diff = np.gradient(diff_smooth, relative_time)
+        thr_diff = grad_diff.mean() + grad_diff.std()
+        sh_diff = np.where(grad_diff > thr_diff)[0]
+        if len(sh_diff):
+            t_diff = relative_time[sh_diff[0]]
+            avg_interval = np.mean(np.diff(sorted(relative_time[orig_inds])))
+            tol = avg_interval / 2
+            # keep if within ±tol of that shift
+            aligned = [i for i in inds if abs(
+                relative_time[i] - t_diff) <= tol]
+            inds = aligned or inds
+
+        # --- Phase 3: fallback on any *_DoG_SVM_Score shifts ---
+        if not inds:
+            for scores in svm_scores.values():
+                jumps = np.abs(np.diff(scores))
+                thr_j = jumps.mean() + jumps.std()
+                big = np.where(jumps > thr_j)[0]
+                if len(big):
+                    t3 = relative_time[big[0] + 1]
+                    inds = pick_after(orig_inds, relative_time, t3)
+                    if inds:
+                        break
+            inds = inds or orig_inds
+
+        # re-sync confidences in the filtered order
+        confs = [orig_confs[orig_inds.index(i)] for i in inds]
+
+        return inds, confs
+
     @staticmethod
     def _valid_index(idx: Any, arr: np.ndarray) -> bool:
         """Check whether idx is a valid array index into arr.
@@ -2030,15 +2113,16 @@ class QModelPredictor:
         """
         Refine POI predictions by applying baseline filtering, timing windows, and bias correction.
         """
-        filtered_poi1 = self._filter_poi1_baseline(
-            predictions.get('POI1', {}).get('indices', []),
-            dissipation_raw,
-            relative_time,
-            feature_vector['Difference_smooth'].values
+        poi1_inds, poi1_confs = self._filter_poi1_three_phase(
+            predictions['POI1']['indices'],
+            predictions['POI1']['confidences'],
+            feature_vector,
+            relative_time
         )
+
         predictions['POI1'] = {
-            'indices': filtered_poi1,
-            'confidences': predictions.get('POI1', {}).get('confidences')
+            'indices': poi1_inds,
+            'confidences': poi1_confs
         }
         # copy inputs to avoid side-effects
         best_positions = self._copy_predictions(predictions)
@@ -2133,7 +2217,7 @@ class QModelPredictor:
                 forecast_start: int = -1,
                 forecast_end: int = -1,
                 actual_poi_indices: Optional[np.ndarray] = None,
-                plotting: bool = False) -> Dict[str, Any]:
+                plotting: bool = PLOTTING) -> Dict[str, Any]:
         """Load data, run QModel v3 clustering + XGBoost prediction, and refine POIs.
 
         This method validates the input buffer or path, extracts raw and QModel v2
