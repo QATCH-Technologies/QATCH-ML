@@ -17,8 +17,8 @@ class QModelPredictorCh1:
     def __init__(self, model_dir: str):
         self.model_dir = model_dir
         self.scaler_path = os.path.join(
-            self.model_dir, "qmodel_scaler_ch1.pkl")
-        self.model_path = os.path.join(self.model_dir, "qmodel_ch1.json")
+            self.model_dir, "pf_qmodel_scaler_ch1.pkl")
+        self.model_path = os.path.join(self.model_dir, "pf_model_ch1.json")
 
         self._load_scaler()
         self._load_model()
@@ -70,3 +70,11 @@ class QModelPredictorCh1:
             return np.argmax(preds, axis=1)
         else:
             return (preds > 0.5).astype(int)
+
+
+if __name__ == "__main__":
+    predictor = QModelPredictorCh1(
+        r"C:\Users\QATCH\dev\QATCH-ML\QModel\SavedModels\pf")
+    results = predictor.predict(
+        "content/static/test/00005/M240625W10B_%30ETH_J4_3rd.csv")
+    print(results)

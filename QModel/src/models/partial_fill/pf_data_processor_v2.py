@@ -10,9 +10,13 @@ import warnings
 from scipy.stats import skew, kurtosis
 from scipy.signal import find_peaks, peak_prominences, peak_widths
 import matplotlib.pyplot as plt
+from sklearn.feature_selection import mutual_info_regression
+from scipy.signal import savgol_filter
 
 
 class PFDataProcessor:
+    SAMPLE_FACTOR = 400
+
     @staticmethod
     def load_content(data_dir: str,
                      num_datasets: int = np.inf) -> List[tuple]:
@@ -130,67 +134,68 @@ class PFDataProcessor:
         return corr_results
 
     @staticmethod
-    def _sample_interval_features(df: pd.DataFrame,
-                                  intervals: List[float] = None) -> pd.DataFrame:
-        """
-        Sample each column of `df` at the given fractional positions
-        (e.g. 0.0, 0.1, ..., 1.0) and return one‐row DataFrame of those values.
-        """
-        if intervals is None:
-            # 0%, 10%, 20%, …, 100%
-            intervals = [i / 10 for i in range(11)]
-
-        n = len(df)
-        samples = {}
-        for col in df.columns:
-            for p in intervals:
-                # index at fraction p of the way through (clamped to valid range)
-                idx = min(int(round(p * (n - 1))), n - 1)
-                samples[f"{col}_p{int(p * 100)}"] = float(df[col].iloc[idx])
-
-        return pd.DataFrame([samples])
-
-    @staticmethod
     def generate_features(dataframe: pd.DataFrame,
                           sampling_rate: float = 1.0,
-                          detected_poi1=None) -> pd.DataFrame:
-        feat_columns = ["Dissipation", "Resonance_Frequency", "Relative_time"]
-        df = dataframe[feat_columns].copy()
+                          detected_poi1: int = None) -> Dict[str, float]:
 
-        if detected_poi1 is None:
-            idx = None
-        else:
-            flat = np.atleast_1d(detected_poi1).flat[0]
-            idx = int(flat)
+        feat_columns = ["Dissipation", "Resonance_Frequency"]
+        dataframe = dataframe[feat_columns].copy()
+        feats = pd.DataFrame()
+        # feats["run_length"] = [len(dataframe)]
 
-        meas_cols = ["Dissipation", "Resonance_Frequency"]
-        if idx is not None and idx > 0:
-            baseline = df[meas_cols].iloc[:idx].mean()
-        else:
-            baseline = df[meas_cols].mean()
-        df[meas_cols] = df[meas_cols].subtract(baseline)
-        time_scale = 30 * 60
-        df["Relative_time"] = df["Relative_time"] / time_scale
-        feats = pd.DataFrame({"run_length": [len(df)]})
+        n = len(dataframe)
+        win = max(3, int(np.ceil(0.05 * n)))
+        if win % 2 == 0:
+            win += 1
+        diss = dataframe["Dissipation"].values
+        rf = dataframe["Resonance_Frequency"].values
+        # diss = savgol_filter(
+        #     diss, window_length=win, polyorder=2)
+        # rf = savgol_filter(
+        #     rf, window_length=win, polyorder=2)
 
-        if idx is not None and 0 <= idx < len(df):
-            last_t = df["Relative_time"].iloc[-1]   # pure scalar
-            fill_t = df["Relative_time"].iloc[idx]  # pure scalar
-            delta_norm = last_t - fill_t
-        else:
-            delta_norm = 0.0
-        delta_norm = float(np.clip(delta_norm, 0.0, 1.0))
-        feats["time_since_detected_fill"] = [delta_norm]
-        feats = pd.concat([feats, PFDataProcessor._curve_stats(df)], axis=1)
-        feats = pd.concat([feats, PFDataProcessor._peak_features(df)], axis=1)
-        feats = pd.concat([feats, PFDataProcessor._curve_dynamics(df)], axis=1)
+        n_baseline = max(1, int(len(dataframe) * 0.05))
+        baseline_diss = diss[:n_baseline].mean()
+        baseline_rf = rf[:n_baseline].mean()
+        diss_re = diss - baseline_diss
+        rf_re = rf - baseline_rf
+        rf_flipped = -rf_re
+        num_points = PFDataProcessor.SAMPLE_FACTOR
+        idxs = np.linspace(0, n-1, num=num_points, dtype=int)
+        diss_sel = diss_re[idxs]
+        rf_sel = rf_flipped[idxs]
+        d_min, d_max = diss_sel.min(),    diss_sel.max()
+        r_min, r_max = rf_sel.min(),      rf_sel.max()
+
+        diss_scaled = (diss_sel - d_min) / (d_max - d_min)
+        rf_scaled = (rf_sel - r_min) / (r_max - r_min)
+
+        sampled_df = pd.DataFrame({
+            "Dissipation":         diss_scaled,
+            "Resonance_Frequency": rf_scaled
+        })
+
+        # plt.figure(figsize=(8, 4))
+        # plt.plot(diss_scaled,
+        #          linestyle='-', label="Diss [200 pts]")
+        # plt.plot(rf_scaled,
+        #          linestyle='-', label="RF   [200 pts]")
+        # plt.legend(loc="upper right")
+        # plt.xlabel("Sample # (evenly spaced)")
+        # plt.ylabel("Scaled & rebaselined value")
+        # plt.title("200-Point Representation of Each Curve")
+        # plt.tight_layout()
+        # plt.show()
         feats = pd.concat(
-            [feats, PFDataProcessor._fft_features(df, sampling_rate)], axis=1)
+            [feats, PFDataProcessor._curve_stats(sampled_df)], axis=1)
         feats = pd.concat(
-            [feats, PFDataProcessor._cross_corr_features(df)], axis=1)
-        feats = pd.concat([feats,
-                           PFDataProcessor._sample_interval_features(df)],
-                          axis=1)
+            [feats, PFDataProcessor._peak_features(sampled_df)], axis=1)
+        feats = pd.concat(
+            [feats, PFDataProcessor._curve_dynamics(sampled_df)], axis=1)
+        feats = pd.concat([feats, PFDataProcessor._fft_features(
+            sampled_df, sampling_rate)], axis=1)
+        feats = pd.concat(
+            [feats, PFDataProcessor._cross_corr_features(sampled_df)], axis=1)
 
         return feats
 

@@ -23,6 +23,7 @@ BASE_DIR = os.path.join("QModel", "SavedModels", "pf")
 
 
 class PFTrainer:
+
     def __init__(
         self,
         training_directory: str,
@@ -42,77 +43,81 @@ class PFTrainer:
         self._dtrain = None
         self._dvalid = None
 
-    def train(self, eval_metric: str = 'mlogloss', plotting: bool = False) -> None:
+    def train(self, eval_metric: str = 'auc', plotting: bool = False) -> None:
+        # load or reuse DMatrix objects
         if self._dtrain is None or self._dvalid is None:
             dtrain, dval = self._load_ddata()
         else:
-            dtrain = self._dtrain
-            dval = self._dvalid
+            dtrain, dval = self._dtrain, self._dvalid
+
         total_rounds = 50
         early_stopping_rounds = 5
-        best_val_loss = float("inf")
-        no_improvement = 0
+        best_val = float("inf")
+        no_improve = 0
         best_round = 0
         best_booster = None
         losses = []
+
         if plotting:
             plt.ion()
             fig, ax = plt.subplots(figsize=(8, 6))
+        for i in range(total_rounds):
+            seed = random.randint(0, 2**31 - 1)
 
-        booster = self._booster
-        for round in range(total_rounds):
+            params = self._params.copy()
+            params['seed'] = SEED
             evals_result = {}
             booster = xgb.train(
-                self._params,
+                params,
                 dtrain,
-                num_boost_round=self._params.get('n_boost_round', 10),
+                num_boost_round=params.get('n_boost_round', 10),
                 evals=[(dtrain, "train"), (dval, "val")],
-                evals_result=evals_result
+                evals_result=evals_result,
             )
 
-            # Use the dynamic evaluation metric to get losses
-            train_loss = evals_result["train"][eval_metric][0]
-            val_loss = evals_result["val"][eval_metric][0]
-            losses.append((train_loss, val_loss))
+            # 4) record metrics & print
+            train_score = evals_result["train"][eval_metric][-1]
+            val_score = evals_result["val"][eval_metric][-1]
+            losses.append((train_score, val_score))
             print(
-                f"Round {round+1}: train {eval_metric}={train_loss}, val {eval_metric}={val_loss}")
+                f"Round {i+1} (seed={seed}): train {eval_metric}={train_score:.5f}, val {eval_metric}={val_score:.5f}")
 
-            # Early stopping logic based on validation loss improvement
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                best_round = round
+            # 5) early‐stopping logic
+            if val_score < best_val:
+                best_val = val_score
+                best_round = i
                 best_booster = booster
-                no_improvement = 0
+                no_improve = 0
             else:
-                no_improvement += 1
+                no_improve += 1
 
-            if no_improvement >= early_stopping_rounds:
+            if no_improve >= early_stopping_rounds:
                 print(
-                    f"Early stopping triggered after {early_stopping_rounds} rounds without improvement.")
+                    f"Early stopping after {i+1} rounds without improvement.")
                 break
 
-            # Update plot if live plotting is enabled
+            # 6) optional live plotting
             if plotting:
                 ax.clear()
-                rounds_range = list(range(1, round + 2))
-                train_losses, val_losses = zip(*losses)
-                ax.plot(rounds_range, train_losses, label="Train Loss")
-                ax.plot(rounds_range, val_losses, label="Val Loss")
-                ax.legend()
-                ax.set_xlabel("Boosting Round")
+                rounds = list(range(1, i+2))
+                tr, va = zip(*losses)
+                ax.plot(rounds, tr, label="Train")
+                ax.plot(rounds, va, label="Validation")
+                ax.set_xlabel("Round")
                 ax.set_ylabel(eval_metric)
-                ax.set_title("Training vs. Validation Loss")
+                ax.set_title("Train vs. Validation")
+                ax.legend()
                 fig.canvas.draw()
-                fig.canvas.flush_events()
                 plt.pause(0.1)
 
+        # pick best
         if best_booster is not None:
             self._booster = best_booster
             print(
-                f"Training completed. Best round: {best_round+1} with val {eval_metric}={best_val_loss}")
+                f"Done. Best round: {best_round+1}  val {eval_metric}={best_val:.5f}")
         else:
-            self.booster = booster
-            print("Training completed without improvement tracking.")
+            self._booster = booster
+            print("Done. No improvement detected.")
 
         if plotting:
             plt.ioff()
@@ -129,9 +134,9 @@ class PFTrainer:
                 'min_child_weight': trial.suggest_int('min_child_weight', 1, 10),
                 'gamma': trial.suggest_float('gamma', 0.0, 5.0),
                 'objective': self._params.get('objective', 'multi:softprob'),
-                'eval_metric': self._params.get('eval_metric', 'mlogloss'),
+                'eval_metric': self._params.get('eval_metric', 'auc'),
                 'n_jobs': self._params.get('n_jobs', -1),
-                'num_class':        7,
+                'num_class': 7,
             }
             self._params.update(trial_params)
             if self._dtrain is None or self._dvalid is None:
@@ -156,7 +161,7 @@ class PFTrainer:
             trial.set_user_attr('best_iteration', best_iter)
 
             return best_val
-        study = optuna.create_study(direction='minimize')
+        study = optuna.create_study(direction='maximize')
         study.optimize(objective, n_trials=n_trials, timeout=timeout)
         self._params.update(study.best_params)
         best_it = study.best_trial.user_attrs.get('best_iteration')
@@ -164,7 +169,7 @@ class PFTrainer:
             self._params['n_boost_round'] = best_it
 
         print(
-            f"Optuna tuning done 🎉 best {self._params['eval_metric']}="
+            f"Optuna tuning done best {self._params['eval_metric']}="
             f"{study.best_value:.5f} (trial #{study.best_trial.number+1}),"
             f" n_boost_round={self._params['n_boost_round']}"
         )
@@ -189,15 +194,17 @@ class PFTrainer:
                 simulated_poi_1 = random.randint(pois[0], pois[0] + 10)
 
             # generate + scale features
-            features = PFDataProcessor.generate_features(
-                sliced_df, detected_poi1=simulated_poi_1)
-            scaled_features = self._scaler.transform(features)
-            ddata = xgb.DMatrix(scaled_features)
+            if len(sliced_df) > PFDataProcessor.SAMPLE_FACTOR:
+                features = PFDataProcessor.generate_features(
+                    sliced_df, detected_poi1=simulated_poi_1)
+                scaled_features = self._scaler.transform(features)
+                ddata = xgb.DMatrix(scaled_features)
 
-            # predict
-            probs = self._booster.predict(ddata)
-            pred = np.argmax(probs, axis=1)[0]
-
+                # predict
+                probs = self._booster.predict(ddata)
+                pred = np.argmax(probs, axis=1)[0]
+            else:
+                pred = 0
             # record for overall stats
             y_true.append(num_pois)
             y_pred.append(pred)
@@ -302,7 +309,7 @@ class PFTrainer:
         params = {
             "objective": "multi:softprob",
             "learning_rate": 0.1,
-            "eval_metric": 'mlogloss',
+            "eval_metric": 'auc',
             "tree_method": "hist",
             "device": "cuda",
             "num_class": len(self._classes) - 1,
@@ -316,7 +323,8 @@ class PFTrainer:
         for data_file, poi_file in content:
             data_df = pd.read_csv(data_file)
             pois = pd.read_csv(poi_file, header=None).values
-            for i in range(len(pois)):
+            n_pois = len(pois)
+            for i in range(n_pois + 1):
                 start = 0
                 if i >= 1:
                     prev_poi = pois[i - 1]
@@ -324,7 +332,10 @@ class PFTrainer:
                 else:
                     prev_poi = start
                     detected_poi1 = None
-                end = random.randint(prev_poi, pois[i])
+                if i < 6:
+                    end = random.randint(prev_poi, pois[i])
+                else:
+                    end = len(data_df)
                 slice_df = data_df[start:end + 1]
                 features = PFDataProcessor.generate_features(
                     dataframe=slice_df, sampling_rate=1.0, detected_poi1=detected_poi1)
@@ -339,8 +350,8 @@ class PFTrainer:
                                      top_n: int = 5):
             """
             For each class in y:
-            – Compute |Pearson r| against a one‐vs‐all indicator → “linear” importance
-            – Compute mutual_info_classif          → “nonlinear” importance
+            - Compute |Pearson r| against a one-v-all indicator → “linear” importance
+            - Compute mutual_info_classif          → “nonlinear” importance
             Then plot the top_n of each side by side.
             """
             classes = sorted(y.unique())
@@ -376,7 +387,8 @@ class PFTrainer:
 
                 plt.tight_layout()
                 plt.show()
-        plot_feature_importances(X=X, y=y, top_n=20)
+        if plotting:
+            plot_feature_importances(X=X, y=y, top_n=20)
         return X, y
 
     def _load_ddata(self) -> Tuple[xgb.DMatrix, xgb.DMatrix]:
@@ -404,7 +416,6 @@ class PFTrainer:
         X_train_scaled = np.array(X_train_scaled)
         X_valid_scaled = np.array(X_valid_scaled)
 
-        # Ensure labels are numeric (in case they aren't)
         y_train = np.array(y_train, dtype=np.float32)
         y_valid = np.array(y_valid, dtype=np.float32)
 
@@ -445,7 +456,7 @@ if __name__ == "__main__":
                         test_directory=TEST_DIRECTORY,
                         validation_directory=VALIDATION_DIRECTORY,
                         classes=[0, 1, 2, 3, 4, 5, 6])
-    # trainer.tune()
-    # trainer.train(plotting=True)
-    # trainer.save_model(save_dir=BASE_DIR)
+    trainer.tune()
+    trainer.train(plotting=True)
+    trainer.save_model(save_dir=BASE_DIR)
     trainer.test(num_datasets=np.inf, plotting=True)
