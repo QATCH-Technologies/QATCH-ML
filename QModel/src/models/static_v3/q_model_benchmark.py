@@ -84,6 +84,7 @@ def _(predictor: 'ModelData', file_buffer, actual_poi_indices):
 def _(predictor: 'QModelPredictor', file_buffer, actual_poi_indices):
     qmodel_v2_predictions = predictor.predict(file_buffer=file_buffer)
     qmodel_v2_points = []
+
     for poi in ["POI1", "POI2", "POI3", "POI4", "POI5", "POI6"]:
         qmodel_v2_points.append(qmodel_v2_predictions.get(
             poi, {}).get('indices', [None])[0])
@@ -160,6 +161,8 @@ def compute_metrics(actual: List[int], predicted: List[int]) -> dict:
 
 
 class Benchmarker:
+    BAD_PLOTS_DIR = "bad_plots"
+
     def __init__(self, predictors: List, bad_cases_dir: str = "bad_case_plots"):
         self._predictors = predictors
         self.bad_cases_dir = bad_cases_dir
@@ -356,63 +359,68 @@ class Benchmarker:
         return aggregated
 
     def _plot_bad_cases(self):
-        """Plot each bad run, highlighting only the POIs outside tolerance and showing
-        tolerance values and time-off annotations; predicted POIs are vertical lines."""
+        """Plot each bad run and save into POI-specific subfolders under bad_cases_dir."""
+        # 1) wipe & recreate base bad_cases_dir
+        if os.path.exists(self.bad_cases_dir):
+            shutil.rmtree(self.bad_cases_dir)
+        os.makedirs(self.bad_cases_dir, exist_ok=True)
+
         for case in self.bad_cases:
+            # --- data & plot setup ---
             df = pd.read_csv(case["data_file"])
             times = df["Relative_time"].values
             diss = df["Dissipation"].values
             tol_list = case["tolerances"]
+            bad_flags = case["bad_flags"]
+            actual_idxs = case["actual"]
+            pred_idxs = case["predicted"]
+            base = os.path.splitext(os.path.basename(case["data_file"]))[0]
 
             fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
             ax.plot(times, diss, label="Dissipation", linewidth=1.5)
-
             y_max = ax.get_ylim()[1]
 
-            for i, is_bad in enumerate(case["bad_flags"]):
+            # --- annotate each failing POI ---
+            for i, is_bad in enumerate(bad_flags):
                 if not is_bad:
                     continue
 
-                actual_idx = case["actual"][i]
-                pred_idx = case["predicted"][i]
+                actual_idx = actual_idxs[i]
+                pred_idx = pred_idxs[i]
                 tol_secs = tol_list[i]
                 act_t = times[actual_idx]
                 pred_t = times[pred_idx]
                 act_d = diss[actual_idx]
                 time_off = abs(pred_t - act_t)
 
-                # shade tolerance window
+                # shade tolerance window (seconds)
                 t_min = max(act_t - tol_secs, times[0])
                 t_max = min(act_t + tol_secs, times[-1])
                 ax.axvspan(t_min, t_max, color='red', alpha=0.2)
 
-                # plot actual POI
+                # actual POI marker
                 ax.scatter(act_t, act_d,
                            marker='o', s=100,
                            edgecolors='black', facecolors='none',
                            label='_nolegend_')
-
-                # plot predicted POI as vertical dashed line
+                # predicted POI line
                 ax.axvline(pred_t,
                            color='red',
                            linestyle='--',
                            linewidth=2,
                            label='_nolegend_')
 
-                # annotate tolerance and time-off
+                # annotations
                 ax.text(act_t, y_max * 0.95,
                         f"tol={tol_secs:.1f}s",
                         fontsize=10, fontweight='bold',
                         color="red",
                         ha='center', va='top')
-
                 ax.text(pred_t, y_max * 0.90,
                         f"off={time_off:.2f}s",
                         fontsize=10, fontweight='bold',
                         color="red",
                         ha='center', va='top')
-
-                # label actual vs predicted
                 ax.text(act_t, act_d,
                         f"A{i+1}",
                         fontsize=10, fontweight='bold',
@@ -424,8 +432,7 @@ class Benchmarker:
                         color="red",
                         ha='right', va='bottom')
 
-            # styling & legend in bottom-left
-            base = os.path.splitext(os.path.basename(case["data_file"]))[0]
+            # --- styling & legend ---
             ax.set_title(f"Bad run: {base}", fontsize=16, fontweight='bold')
             ax.set_xlabel("Relative_time (s)", fontsize=14)
             ax.set_ylabel("Dissipation", fontsize=14)
@@ -442,8 +449,16 @@ class Benchmarker:
                       fontsize=12, loc="lower left")
 
             plt.tight_layout()
-            out_path = os.path.join(self.bad_cases_dir, f"{base}_bad.png")
-            fig.savefig(out_path)
+
+            # 2) save into each POI# subdir
+            for i, is_bad in enumerate(bad_flags):
+                if not is_bad:
+                    continue
+                poi_dir = os.path.join(self.bad_cases_dir, f"POI{i+1}")
+                os.makedirs(poi_dir, exist_ok=True)
+                fname = f"{base}_POI{i+1}_bad.png"
+                fig.savefig(os.path.join(poi_dir, fname), bbox_inches="tight")
+
             plt.close(fig)
 
 

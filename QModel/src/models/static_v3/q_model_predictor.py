@@ -8,8 +8,8 @@ file validation, feature extraction, probability formatting, and bias correction
 POI selection.
 
 Author: Paul MacNichol (paul.macnichol@qatchtech.com)
-Date: 05-02-2025
-Version: QModel.Ver3.15
+Date: 06-18-2025
+Version: QModel.Ver3.16
 """
 import math
 import xgboost as xgb
@@ -59,19 +59,13 @@ except ImportError:
 
         @staticmethod
         def _dispatch(level: str, *args):
-            """
-            Dispatch a log call. Signature:
-              i(msg, *fmt_args)
-              i(tags, msg, *fmt_args)
-            """
             if not args:
-                return  # nothing to log
-            # if first arg is a list/tuple of tags, consume it
+                return
             first, *rest = args
             if isinstance(first, (list, tuple)):
                 tags = first
                 if not rest:
-                    return  # no message
+                    return
                 msg, *fmt = rest
             else:
                 tags = []
@@ -998,161 +992,7 @@ class QModelPredictor:
             knee_rel = int(np.argmax(np.abs(d2)))
 
         knee_idx = start_of_segment + knee_rel
-
-        # # 8) Plot raw, component, smoothed, and slope with threshold/knee markers
-        # fig, ax1 = plt.subplots(figsize=(10, 6))
-
-        # # Plot raw Detrend_Difference (light gray)
-        # ax1.plot(seg_t, seg_raw,
-        #          color='lightgray', linewidth=1.5,
-        #          label='Raw Detrend_Difference')
-
-        # # Plot unsmoothed component (blue, dotted)
-        # ax1.plot(seg_t, seg_comp,
-        #          color='blue', linestyle=':', linewidth=1.5,
-        #          label='Component Signal (non‐increasing)')
-
-        # # Plot smoothed component (dark blue, solid)
-        # ax1.plot(seg_t, seg_sm,
-        #          color='darkblue', linewidth=1.5,
-        #          label='Smoothed Component')
-
-        # # Mark the knee point on the smoothed component
-        # ax1.scatter(
-        #     seg_t[knee_rel],
-        #     seg_sm[knee_rel],
-        #     color='green', s=80, marker='*',
-        #     label='Knee Point'
-        # )
-        # ax1.axvline(seg_t[knee_rel],
-        #             color='green', linestyle='--', linewidth=1)
-
-        # ax1.set_xlabel('Relative Time')
-        # ax1.set_ylabel('Detrend Difference')
-        # ax1.legend(loc='upper left')
-
-        # # Create a second y-axis for the slope
-        # ax2 = ax1.twinx()
-        # ax2.plot(seg_t, slope,
-        #          color='gray', linestyle='--', linewidth=1.5,
-        #          label='Slope (1st Derivative)')
-        # # Plot horizontal lines for baseline mean ± std
-        # ax2.axhline(baseline_mean, color='gray', linestyle=':', linewidth=1)
-        # ax2.axhline(threshold,   color='gray', linestyle='-.', linewidth=1,
-        #             label='Threshold (mean - std)')
-        # # Mark knee on slope plot
-        # ax2.scatter(
-        #     seg_t[knee_rel],
-        #     slope[knee_rel],
-        #     color='green', s=60, marker='x',
-        #     label='Knee on Slope'
-        # )
-
-        # ax2.set_ylabel('Slope')
-        # ax2.legend(loc='upper right')
-
-        # plt.title('Monotonic Component + Smoothed + Slope & Knee Detection')
-        # plt.tight_layout()
-        # plt.show()
-
         return knee_idx
-    # def _poi_6_knee_point(self,
-    #                       start_of_segment: int,
-    #                       end_of_segment: int,
-    #                       feature_vector: pd.DataFrame,
-    #                       relative_time: np.ndarray) -> int:
-
-    #     n = abs(start_of_segment - end_of_segment)
-    #     if n < 3:
-    #         diff = feature_vector['Detrend_Difference'].values
-    #     else:
-    #         w = max(3, int(n * 0.1))
-    #         if w % 2 == 0:
-    #             w += 1
-    #         w = min(w, n if n % 2 == 1 else n - 1)
-    #         polyorder = 1
-    #         po = min(polyorder, w - 1)
-    #         diff = savgol_filter(
-    #             feature_vector['Detrend_Difference'].values,
-    #             window_length=w,
-    #             polyorder=po
-    #         )
-
-    #     # Extract the segment of interest
-    #     seg_d = diff[start_of_segment:end_of_segment + 1]
-    #     seg_t = relative_time[start_of_segment:end_of_segment + 1]
-
-    #     # Compute slope (derivative) of the filtered signal
-    #     slope = np.gradient(seg_d, seg_t)
-
-    #     # Find the “valley” in slope (minimum slope)
-    #     valley_rel = int(np.argmin(slope))
-
-    #     # Find all peaks in the filtered signal within the segment
-    #     peaks, _ = find_peaks(seg_d)
-    #     # Restrict to peaks before the valley (i.e. pre-peaks)
-    #     pre_peaks = peaks[peaks < valley_rel]
-
-    #     # Determine knee location: either last pre-peak or max before valley if no pre-peak
-    #     if pre_peaks.size > 0:
-    #         knee_rel = int(pre_peaks[-1])
-    #     else:
-    #         knee_rel = int(np.argmax(seg_d[:valley_rel + 1]))
-
-    #     knee_idx = start_of_segment + knee_rel
-
-    #     # -------------------
-    #     # Plotting for debugging
-    #     # -------------------
-    #     plt.figure(figsize=(10, 6))
-
-    #     # Plot the filtered Detrend_Difference curve
-    #     plt.plot(seg_t, seg_d, linewidth=1.5,
-    #              label='Filtered Detrend_Difference')
-
-    #     # Mark all detected peaks
-    #     if peaks.size > 0:
-    #         plt.scatter(seg_t[peaks], seg_d[peaks],
-    #                     color='orange', s=50, marker='o', label='Peaks')
-
-    #     # Mark the valley (minimum slope point)
-    #     plt.scatter(seg_t[valley_rel], seg_d[valley_rel],
-    #                 color='red', s=60, marker='v', label='Valley (min slope)')
-
-    #     # Mark the knee point
-    #     plt.scatter(seg_t[knee_rel], seg_d[knee_rel],
-    #                 color='green', s=80, marker='*', label='Knee Point')
-
-    #     # Draw vertical lines for valley and knee
-    #     plt.axvline(seg_t[valley_rel], color='red',
-    #                 linestyle='--', linewidth=1)
-    #     plt.axvline(seg_t[knee_rel], color='green',
-    #                 linestyle='--', linewidth=1)
-
-    #     # Annotate points
-    #     plt.text(
-    #         seg_t[valley_rel],
-    #         seg_d[valley_rel],
-    #         '  Valley',
-    #         color='red',
-    #         verticalalignment='bottom',
-    #     )
-    #     plt.text(
-    #         seg_t[knee_rel],
-    #         seg_d[knee_rel],
-    #         '  Knee',
-    #         color='green',
-    #         verticalalignment='bottom',
-    #     )
-
-    #     plt.xlabel('Relative Time')
-    #     plt.ylabel('Filtered Detrend Difference')
-    #     plt.title('POI6 Knee Point Detection')
-    #     plt.legend(loc='upper left')
-    #     plt.tight_layout()
-    #     plt.show()
-
-    #     return knee_idx
 
     def _choose_and_insert(
         self,
@@ -1806,41 +1646,59 @@ class QModelPredictor:
                         f"Invalid 'indices' or 'confidences' for '{key}'.")
                 data['confidences'] = confs[:len(inds)]
 
-    def _filter_poi1_three_phase(self,
-                                 indices: List[int],
-                                 confidences: List[float],
-                                 feature_vector: pd.DataFrame,
-                                 relative_time: np.ndarray
-                                 ) -> Tuple[List[int], List[float]]:
+    def _filter_poi1(self,
+                     indices: List[int],
+                     confidences: List[float],
+                     feature_vector: pd.DataFrame,
+                     relative_time: np.ndarray
+                     ) -> Tuple[List[int], List[float]]:
         """
-        Three-phase POI1 filtering over a full feature_vector:
-        1. bias to first positive gradient shift in 'Dissipation'
-        2. bias to first negative shift in 'Resonance_Frequency'
-            and alignment with 'Difference_smooth'
-        3. fallback on any '*_DoG_SVM_Score' shifts
-        Returns filtered (indices, confidences) of equal length.
+        Filters candidate POI1 indices through a three-phase gradient and SVM-score approach.
+
+        This method applies three successive filtering phases on the input candidate indices:
+
+        1. Dissipation Phase: Detects the first significant positive gradient shift in the
+        'Dissipation' curve and retains only candidates occurring after that time.
+        2. Resonance Phase: Detects the first significant negative gradient shift in the
+        'Resonance_Frequency' curve and further refines the candidates.
+        3. Difference Phase: Detects the first significant positive gradient shift in the
+        'Difference_smooth' curve, aligns candidates within half of the average interval
+        tolerance, and retains aligned candidates.
+
+        If no candidates remain after these phases, the method inspects the '*_DoG_SVM_Score'
+        columns for large score jumps and selects candidates occurring after the first large
+        jump as a fallback. The original indices are used if no filtering yields results.
+
+        Finally, the confidences are re-synchronized to match the filtered indices order.
+
+        Args:
+            indices (List[int]): Original list of POI1 candidate indices.
+            confidences (List[float]): Original confidence scores for each candidate index.
+            feature_vector (pd.DataFrame): DataFrame containing the following feature columns:
+                - 'Dissipation'
+                - 'Resonance_Frequency'
+                - 'Difference_smooth'
+                - any columns ending with '_DoG_SVM_Score' for SVM scores.
+            relative_time (np.ndarray): 1D array of time values corresponding to rows in feature_vector.
+
+        Returns:
+            Tuple[List[int], List[float]]:
+                filtered_indices (List[int]): List of indices that passed the three-phase filter.
+                filtered_confidences (List[float]): Confidence values aligned with filtered_indices.
         """
-        # pull out the series we need
         dissipation = feature_vector['Dissipation'].values
         resonance = feature_vector['Resonance_Frequency'].values
         diff_smooth = feature_vector['Difference_smooth'].values
-
-        # collect all SVM‐score columns
         svm_scores = {
             col: feature_vector[col].values
             for col in feature_vector.columns
             if col.endswith('_DoG_SVM_Score')
         }
-
-        # keep originals for fallback and re-mapping confidences
         orig_inds = list(indices)
         orig_confs = list(confidences)
 
-        # helper to pick candidates after a given timestamp
         def pick_after(cands, times, t):
             return [i for i in cands if times[i] > t]
-
-        # --- Phase 1: dissipation positive gradient shift ---
         grad_d = np.gradient(dissipation, relative_time)
         thr_d = grad_d.mean() + grad_d.std()
         sh_d = np.where(grad_d > thr_d)[0]
@@ -1849,16 +1707,12 @@ class QModelPredictor:
             inds = pick_after(orig_inds, relative_time, t1)
         else:
             inds = orig_inds
-
-        # --- Phase 2: resonance negative shift + diff_smooth alignment ---
         grad_r = np.gradient(resonance, relative_time)
         thr_r = grad_r.mean() - grad_r.std()
         sh_r = np.where(grad_r < thr_r)[0]
         if len(sh_r):
             t2 = relative_time[sh_r[0]]
             inds = pick_after(inds, relative_time, t2)
-
-        # align to first diff_smooth shift near same time
         grad_diff = np.gradient(diff_smooth, relative_time)
         thr_diff = grad_diff.mean() + grad_diff.std()
         sh_diff = np.where(grad_diff > thr_diff)[0]
@@ -1866,12 +1720,9 @@ class QModelPredictor:
             t_diff = relative_time[sh_diff[0]]
             avg_interval = np.mean(np.diff(sorted(relative_time[orig_inds])))
             tol = avg_interval / 2
-            # keep if within ±tol of that shift
             aligned = [i for i in inds if abs(
                 relative_time[i] - t_diff) <= tol]
             inds = aligned or inds
-
-        # --- Phase 3: fallback on any *_DoG_SVM_Score shifts ---
         if not inds:
             for scores in svm_scores.values():
                 jumps = np.abs(np.diff(scores))
@@ -1888,6 +1739,186 @@ class QModelPredictor:
         confs = [orig_confs[orig_inds.index(i)] for i in inds]
 
         return inds, confs
+
+    def _filter_poi2(
+        self,
+        indices: List[int],
+        confidences: List[float],
+        feature_vector: pd.DataFrame,
+        relative_time: np.ndarray,
+        poi1_idx: int,
+    ) -> Tuple[List[int], List[float]]:
+        if not indices or not confidences:
+            return indices, confidences
+
+        try:
+            diff = feature_vector["Difference"].values
+            res = feature_vector["Resonance_Frequency"].values
+            diss = feature_vector["Dissipation"].values
+            dog = feature_vector["Difference_DoG_SVM_Score"].values
+            poi1 = getattr(self, "poi1_idx", None)
+            if poi1 is None or poi1 < 0 or poi1 >= len(relative_time):
+                return indices, confidences
+            grad_diff = np.gradient(diff, relative_time)
+            half_max = grad_diff.max() * 0.5 if grad_diff.size else 0
+            plateau = np.where(grad_diff < half_max)[0]
+            later = plateau[plateau > poi1] if plateau.size else np.array([])
+            cut1 = int(later[0]) if later.size else min(
+                poi1 + int(0.1 * len(relative_time)), len(relative_time)-1)
+            pre1 = [c for c in indices if c < cut1]
+            cand1 = max(pre1) if pre1 else indices[0]
+            grad_res = np.gradient(res, relative_time)
+            win = max(int(0.1 * len(relative_time)), 1)
+            lo, hi = max(cand1 - win, 0), min(cand1 +
+                                              win, len(relative_time)-1)
+            window = grad_res[lo:hi] if hi > lo else np.array([])
+            neg_peak = lo + int(np.argmin(window)) if window.size else cand1
+            cand2 = min(indices, key=lambda c: abs(c - neg_peak))
+
+            grad_diss = np.gradient(diss, relative_time)
+            sec_deriv = np.gradient(grad_diss, relative_time)
+            thresh = sec_deriv.mean() + sec_deriv.std() if sec_deriv.size else 0
+            zone = np.where((sec_deriv > thresh) & (
+                np.arange(len(sec_deriv)) > poi1))[0]
+            cut3 = int(zone[0]) if zone.size else min(
+                poi1 + win, len(relative_time)-1)
+            pre3 = [c for c in indices if c < cut3]
+            selected = max(pre3, key=lambda c: abs(
+                dog[c])) if pre3 else indices[0]
+
+            idx_in_list = indices.index(selected)
+            sel_conf = confidences[idx_in_list]
+
+            return [selected], [sel_conf]
+
+        except (IndexError, KeyError, ValueError, Exception):
+            return indices, confidences
+
+    def _filter_poi4(
+        self,
+        indices: List[int],
+        confidences: List[float],
+        feature_vector: pd.DataFrame,
+        relative_time: np.ndarray,
+        poi3_idx: int,
+    ) -> Tuple[List[int], List[float]]:
+        """
+        Filter POI4 candidates by:
+        - Dissipation: left base of a positive change in rate-of-increase (2nd derivative peak)
+        - RF: base of trough (minimum RF)
+        - Difference: left side of a sudden downslope (negative 1st derivative peak)
+        Uses the *_DoG_SVM_Score series to help locate shifts, and enforces POI4 > POI3.
+        """
+        # 1. Keep only candidates after POI3
+        cand = [(i, c) for i, c in zip(indices, confidences) if i > poi3_idx]
+        if not cand:
+            return indices, confidences  # fallback to original if no valid candidates
+
+        cand_idxs, cand_confs = zip(*cand)
+        diss = feature_vector["Dissipation"].values
+        rf = feature_vector["Resonance_Frequency"].values
+        diff = feature_vector["Difference"].values
+        diss_slope = np.gradient(diss, relative_time)
+        diss_accel = np.gradient(diss_slope, relative_time)
+        diff_slope = np.gradient(diff, relative_time)
+        diss_score = feature_vector["Dissipation_DoG_SVM_Score"].values
+        rf_score = feature_vector["Resonance_Frequency_DoG_SVM_Score"].values
+        diff_score = feature_vector["Difference_DoG_SVM_Score"].values
+
+        scores = []
+        diss_norm = np.abs(diss_accel[cand_idxs]).max() or 1.0
+        rf_norm = (-rf[cand_idxs]).max() or 1.0
+        diff_norm = (-diff_slope[cand_idxs]).max() or 1.0
+        dog_norm = (diss_score[cand_idxs] + rf_score[cand_idxs] +
+                    diff_score[cand_idxs]).max() or 1.0
+
+        for idx in cand_idxs:
+            m1 = max(0.0, diss_accel[idx]) / diss_norm
+            m2 = max(0.0, -rf[idx]) / rf_norm
+            m3 = max(0.0, -diff_slope[idx]) / diff_norm
+            m4 = (diss_score[idx] + rf_score[idx] + diff_score[idx]) / dog_norm
+            scores.append(m1 + m2 + m3 + m4)
+        best_pos = int(np.argmax(scores))
+        best_idx = cand_idxs[best_pos]
+        best_conf = cand_confs[best_pos]
+        best_score = scores[best_pos]
+        out_indices = [best_score, best_idx]
+        out_confidences = [best_score, best_conf]
+
+        return out_indices, out_confidences
+
+    def _filter_poi6(
+        self,
+        indices: List[int],
+        confidences: List[float],
+        feature_vector: pd.DataFrame,
+        relative_time: np.ndarray,
+        poi5_idx: int,
+    ) -> Tuple[List[int], List[float]]:
+        """
+        POI6: choose the best candidate after poi5_idx by equally weighting
+        rough envelopes of all three raw curves plus the three DoG_SVM scores,
+        with a debug plot of normalized envelopes and candidates.
+        """
+        filtered = [(i, c)
+                    for i, c in zip(indices, confidences) if i > poi5_idx]
+        if not filtered:
+            return indices, confidences
+        cand_idxs, cand_confs = zip(*filtered)
+
+        diss_vals = feature_vector['Dissipation'].values
+        rf_vals = feature_vector['Resonance_Frequency'].values
+        diff_vals = feature_vector['Difference'].values
+
+        diss_dog = feature_vector['Dissipation_DoG_SVM_Score'].values
+        rf_dog = feature_vector['Resonance_Frequency_DoG_SVM_Score'].values
+        diff_dog = feature_vector['Difference_DoG_SVM_Score'].values
+
+        d_diss = np.gradient(diss_vals, relative_time)
+        d_rf = np.gradient(rf_vals,   relative_time)
+        d_diff = np.gradient(diff_vals, relative_time)
+
+        thresh_diss = np.std(d_diss)
+        diss_env = np.where(np.abs(d_diss) >= thresh_diss, d_diss, 0)
+
+        thresh_rf = np.std(d_rf)
+        rf_env = np.where(np.abs(d_rf) >= thresh_rf, d_rf, 0)
+
+        thresh_diff = np.std(d_diff)
+        diff_env = np.where(np.abs(d_diff) >= thresh_diff, d_diff, 0)
+
+        def _min_max(x: np.ndarray) -> np.ndarray:
+            xmin, xmax = x.min(), x.max()
+            return (x - xmin) / (xmax - xmin) if xmax != xmin else x
+
+        norm_diss = _min_max(diss_env)
+        norm_rf = _min_max(rf_env)
+        norm_diff = _min_max(diff_env)
+        norm_dog_diss = _min_max(diss_dog)
+        norm_dog_diff = _min_max(diff_dog)
+        norm_dog_rf = _min_max(rf_dog)
+
+        scores = []
+        for idx in cand_idxs:
+            score = (
+                norm_diss[idx]        # positive for large dissipation slope
+                + (-norm_rf[idx])     # positive for large negative RF slope
+                + (-norm_diff[idx])   # positive for large downward diff slope
+                + norm_dog_diss[idx]
+                + norm_dog_rf[idx]
+                + norm_dog_diff[idx]
+            )
+            scores.append(score)
+
+        best_pos = int(np.argmax(scores))
+        best_idx = cand_idxs[best_pos]
+        best_conf = cand_confs[best_pos]
+        best_score = scores[best_pos]
+
+        out_indices = [best_score, best_idx]
+        out_confidences = [best_score, best_conf]
+
+        return out_indices, out_confidences
 
     @staticmethod
     def _valid_index(idx: Any, arr: np.ndarray) -> bool:
@@ -1912,33 +1943,38 @@ class QModelPredictor:
         min_samples: int = 1,
     ) -> tuple[np.ndarray, int]:
         """
-        Cluster candidate points by their sample index,
-        but choose eps_samples based on the total run length.
+        Clusters candidate indices with DBSCAN using an adaptive epsilon based on run duration.
+
+        This method determines epsilon (in sample units) by:
+        1. Computing total_time = r_time.max() - r_time.min().
+        2. Calculating median positive delta (dt) from r_time differences.
+        3. Setting eps_time = total_time * eps_fraction.
+        4. Converting eps_time to samples: eps_time / dt, clipped to [min_eps, max_eps].
+
+        It then applies sklearn.cluster.DBSCAN on reshaped cand_indices and identifies:
+        - labels: cluster labels for each candidate.
+        - densest: label of the cluster with the most members.
 
         Args:
-          - cand_indices: array of integer sample‐indices for candidates
-          - r_time: array of same length as the original signal, giving time (s)
-          - eps_fraction: fraction of total run‐time to use as DBSCAN radius
-          - min_eps: lower bound on eps in samples
-          - max_eps: upper bound on eps in samples
-          - min_samples: DBSCAN min_samples
+            cand_indices (np.ndarray): Array of candidate sample indices to cluster.
+            r_time (np.ndarray): Array of time values corresponding to dataset samples.
+            eps_fraction (float): Fraction of total run duration to derive epsilon. Defaults to 0.01.
+            min_eps (int): Minimum epsilon (in samples). Defaults to 3.
+            max_eps (int): Maximum epsilon (in samples). Defaults to 20.
+            min_samples (int): Minimum number of samples to form a cluster. Defaults to 1.
+
         Returns:
-          - labels: cluster label per candidate
-          - densest: the label with the most members
+            tuple[np.ndarray, int]:
+                labels: Cluster label for each input index.
+                densest: Label for the cluster with highest count.
         """
-        # total duration (if r_time starts at 0, same as r_time.max())
         total_time = float(r_time.max() - r_time.min()
                            if r_time.max() > r_time.min() else r_time.max())
-
-        # estimate median time between samples
         diffs = np.diff(r_time)
         dt = float(np.median(diffs[diffs > 0])) if np.any(diffs > 0) else 1.0
-
-        # decide eps in seconds, then convert to # of samples
         eps_time = total_time * eps_fraction
         eps_samples = int(np.clip(eps_time / dt, min_eps, max_eps))
 
-        # do the clustering
         X = cand_indices.reshape(-1, 1)
         labels = DBSCAN(eps=eps_samples,
                         min_samples=min_samples).fit_predict(X)
@@ -1960,8 +1996,30 @@ class QModelPredictor:
         plotting: bool = PLOTTING
     ) -> dict[str, dict[str, list]]:
         """
-        Post-process POI4–6 via DBSCAN on sample indices,
-        with eps scaled to run length.
+        Post-processes POI4-POI6 predictions by clustering sample indices via DBSCAN.
+
+        This method:
+        1. Iterates over extracted_predictions for POI4, POI5, and POI6.
+        2. For each, it clusters candidate indices using `_dbscan_cluster_indices` with
+            an epsilon scaled to run duration.
+        3. Retains only the densest cluster's indices and corresponding confidences.
+        4. Optionally plots the dissipation scores and scatter of clusters, highlighting
+            the densest cluster and its center point.
+
+        Args:
+            df (pd.DataFrame): DataFrame containing at least 'Difference_DoG_SVM_Score'.
+            r_time (np.ndarray): Array of time values for dataset samples.
+            extracted_predictions (dict[str, dict[str, list]]):
+                Mapping POI names to dicts with keys 'indices' and optional 'confidences'.
+            eps_fraction (float): Fraction of run length to set DBSCAN epsilon (default 0.01).
+            min_eps (int): Minimum epsilon in samples (default 3).
+            max_eps (int): Maximum epsilon in samples (default 20).
+            min_samples (int): Minimum samples per cluster (default 1).
+            plotting (bool): Whether to produce a matplotlib plot (default PLOTTING).
+
+        Returns:
+            dict[str, dict[str, list]]: Filtered predictions mapping each POI to its
+            retained 'indices' and optional 'confidences'.
         """
         times = r_time
         diss = df["Difference_DoG_SVM_Score"].values
@@ -1977,7 +2035,6 @@ class QModelPredictor:
         trimmed: dict[str, dict[str, list]] = {}
 
         for i, (poi, preds) in enumerate(extracted_predictions.items()):
-            # POI1–3: unchanged
             if poi not in ("POI4", "POI5", "POI6"):
                 entry = {"indices": list(preds.get("indices", []))}
                 if "confidences" in preds:
@@ -2004,8 +2061,6 @@ class QModelPredictor:
                 min_samples=min_samples
             )
             keep = labels == densest
-
-            # build trimmed lists
             keep_inds = [int(idx) for idx, flag in zip(inds, keep) if flag]
             entry = {"indices": keep_inds}
             if confs is not None:
@@ -2015,7 +2070,6 @@ class QModelPredictor:
             trimmed[poi] = entry
 
             if plotting:
-                # plot all clusters, highlight densest
                 for lbl in np.unique(labels):
                     mask = labels == lbl
                     face = cmap(i) if lbl == densest else "none"
@@ -2030,7 +2084,6 @@ class QModelPredictor:
                             i == 3 and lbl == densest) else None,
                         zorder=4
                     )
-                # star at cluster center
                 center_idx = int(np.mean(inds[labels == densest]))
                 center_time = times[center_idx]
                 ax.plot(
@@ -2113,21 +2166,32 @@ class QModelPredictor:
         """
         Refine POI predictions by applying baseline filtering, timing windows, and bias correction.
         """
-        poi1_inds, poi1_confs = self._filter_poi1_three_phase(
-            predictions['POI1']['indices'],
-            predictions['POI1']['confidences'],
+        best_positions = self._copy_predictions(predictions)
+        poi1_inds, poi1_confs = self._filter_poi1(
+            best_positions['POI1']['indices'],
+            best_positions['POI1']['confidences'],
             feature_vector,
             relative_time
         )
 
-        predictions['POI1'] = {
+        best_positions['POI1'] = {
             'indices': poi1_inds,
             'confidences': poi1_confs
         }
-        # copy inputs to avoid side-effects
-        best_positions = self._copy_predictions(predictions)
 
-        #
+        poi2_inds, poi2_confs = self._filter_poi2(
+            best_positions['POI2']['indices'],
+            best_positions['POI2']['confidences'],
+            feature_vector,
+            relative_time,
+            best_positions["POI1"]["indices"][0]
+        )
+
+        best_positions['POI2'] = {
+            'indices': poi2_inds,
+            'confidences': poi2_confs
+        }
+
         #  Boost POI6 confidences toward ground truth without overriding original confidences
         if len(ground_truth) >= 6 and len(model_data_labels) >= 6:
             ground_truth[5] = max(ground_truth[5], model_data_labels[5])
@@ -2147,22 +2211,45 @@ class QModelPredictor:
             best_positions, ground_truth, relative_time, cut1, cut2)
 
         # apply bias correction and ranking
-        for poi in ("POI4", "POI5", "POI6"):
+        for poi in ("POI4", "POI5"):
             windows[poi] = self._choose_and_insert(
                 windows[poi], dissipation, relative_time, feature_vector, poi=poi, ground_truth=ground_truth)
-
+        best_positions["POI6"]
         # update positions with new windows
         best_positions = self._update_positions(best_positions, windows)
+        poi4_inds, poi4_confs = self._filter_poi4(
+            best_positions['POI4']['indices'],
+            best_positions['POI4']['confidences'],
+            feature_vector,
+            relative_time,
+            predictions["POI3"]["indices"][0]
+        )
 
+        best_positions['POI4'] = {
+            'indices': poi4_inds,
+            'confidences': poi4_confs
+        }
+        poi6_inds, poi6_confs = self._filter_poi6(
+            best_positions['POI6']['indices'],
+            best_positions['POI6']['confidences'],
+            feature_vector,
+            relative_time,
+            predictions["POI5"]["indices"][0]
+        )
+
+        best_positions['POI6'] = {
+            'indices': poi6_inds,
+            'confidences': poi6_confs
+        }
         # handle special -1 cases
         self._handle_negatives(best_positions, ground_truth, relative_time)
         if len(model_data_labels) >= 2:
             best_positions["POI2"]["indices"].insert(0, ground_truth[1])
 
         # enforce strict ordering across POIs
-        best_poi2 = self._poi_2_offset(
-            positions=best_positions, feature_vector=feature_vector, relative_time=relative_time)
-        best_positions["POI2"]['indices'].insert(0, best_poi2)
+        # best_poi2 = self._poi_2_offset(
+        #     positions=best_positions, feature_vector=feature_vector, relative_time=relative_time)
+        # best_positions["POI2"]['indices'].insert(0, best_poi2)
         self._enforce_strict_ordering(best_positions, ground_truth)
         self._truncate_confidences(best_positions)
 
@@ -2211,6 +2298,78 @@ class QModelPredictor:
         new_groupings["POI4"] = merged_1
         new_groupings["POI5"] = merged_2
         return new_groupings
+
+    def long_tail_detect(
+        self,
+        feature_vector: pd.DataFrame,
+        time: np.ndarray,
+        cols: list[str] = None,
+        slope_thresh: float = 0.025,
+        window: int = 10
+    ) -> pd.DataFrame:
+        """
+        Trims off the flat/repeated tail region of multiple normalized curves in a DataFrame,
+        and plots the original Dissipation curve with the detected trim location.
+
+        Parameters
+        ----------
+        feature_vector : pd.DataFrame
+            Must contain each signal column named in `cols`.
+        time : np.ndarray
+            1D array of time values (same length as each column in feature_vector).
+        cols : list[str], optional
+            Signal columns to check for a long tail
+            (default ['Difference','Dissipation','Resonance_Frequency']).
+        slope_thresh : float
+            Threshold for the moving‐average absolute slope below which
+            we consider the curve “flat” (on the normalized scale).
+        window : int
+            Moving‐average window (in samples) for smoothing the instantaneous slope.
+
+        Returns
+        -------
+        pd.DataFrame
+            feature_vector trimmed to remove the long tail.
+        """
+        if cols is None:
+            cols = ['Difference', 'Dissipation', 'Resonance_Frequency']
+
+        tail_starts = []
+        for c in cols:
+            y = feature_vector[c].values.astype(float)
+            # min–max normalize to [0,1]
+            if y.max() > y.min():
+                y_norm = (y - y.min()) / (y.max() - y.min())
+            else:
+                y_norm = y - y.min()
+            dy = np.gradient(y_norm) / np.gradient(time)
+
+            # smooth the |slope|
+            ma = np.convolve(np.abs(dy), np.ones(window)/window, mode='same')
+            significant = np.where(ma > slope_thresh)[0]
+            last_sig = significant[-1] if significant.size else 0
+            tail_starts.append(last_sig)
+
+        # cut just after the last significant change across all curves
+        cut_idx = min(max(tail_starts) + 1, len(feature_vector))
+        cut_time = time[cut_idx] if cut_idx < len(time) else time[-1]
+
+        # ---- PLOT DISSIPATION + TRIM ----
+        plt.figure(figsize=(8, 4))
+        plt.plot(time, feature_vector['Dissipation'],
+                 label='Dissipation (orig)')
+        plt.axvline(cut_time, linestyle='--', label='Trim Point')
+        plt.axvspan(cut_time, time[-1], alpha=0.2,
+                    color='grey', label='Trimmed Region')
+        plt.xlabel('Time')
+        plt.ylabel('Dissipation')
+        plt.title('Dissipation Curve with Trim Location')
+        plt.legend(loc='best')
+        plt.tight_layout()
+        plt.show()
+        # -------------------------------
+
+        return feature_vector.iloc[:cut_idx].reset_index(drop=True)
 
     def predict(self,
                 file_buffer: str,
@@ -2269,32 +2428,36 @@ class QModelPredictor:
         file_buffer = self._reset_file_buffer(file_buffer=file_buffer)
         feature_vector = QDataProcessor.process_data(
             file_buffer=file_buffer, live=True)
+        feature_vector = self.long_tail_detect(
+            feature_vector=feature_vector, time=df['Relative_time'].values)
         transformed_feature_vector = self._scaler.transform(
             feature_vector.values)
         ddata = xgb.DMatrix(transformed_feature_vector)
         predicted_probabilites = self._booster.predict(ddata)
         extracted_predictions = self._extract_predictions(
             predicted_probabilites, model_data_labels)
+        relative_time = df["Relative_time"].values
+        relative_time = relative_time[:len(feature_vector)]
         init_correct = self._select_best_predictions(
             predictions=extracted_predictions,
             ground_truth=qmodel_v2_labels,
             model_data_labels=model_data_labels,
-            relative_time=df["Relative_time"].values,
+            relative_time=relative_time,
             feature_vector=feature_vector,
             raw_vector=df)
         new_grouping = self.regroup(raw_predictions=extracted_predictions, updated_predictions=init_correct,
-                                    relative_time=df["Relative_time"].values, feature_vector=feature_vector)
+                                    relative_time=relative_time, feature_vector=feature_vector)
 
         final_predictions = self._select_best_predictions(
             predictions=new_grouping,
             ground_truth=qmodel_v2_labels,
             model_data_labels=model_data_labels,
-            relative_time=df["Relative_time"].values,
+            relative_time=relative_time,
             feature_vector=feature_vector,
             raw_vector=df)
         if plotting:
             # Common data we'll reuse
-            times_all = df["Relative_time"]
+            times_all = relative_time
             diff_all = feature_vector["Difference"]
             cmap = plt.get_cmap("tab10")
 
