@@ -1825,18 +1825,23 @@ class QModelPredictor:
         rf_score = feature_vector["Resonance_Frequency_DoG_SVM_Score"].values
         diff_score = feature_vector["Difference_DoG_SVM_Score"].values
 
+        def _min_max(x: np.ndarray) -> np.ndarray:
+            xmin, xmax = x.min(), x.max()
+            return (x - xmin) / (xmax - xmin) if xmax != xmin else x
+
         scores = []
-        diss_norm = np.abs(diss_accel[cand_idxs]).max() or 1.0
-        rf_norm = (-rf[cand_idxs]).max() or 1.0
-        diff_norm = (-diff_slope[cand_idxs]).max() or 1.0
-        dog_norm = (diss_score[cand_idxs] + rf_score[cand_idxs] +
-                    diff_score[cand_idxs]).max() or 1.0
+        diss_norm = _min_max(diss)
+        rf_norm = _min_max(rf)
+        diff_norm = _min_max(rf)
+        # dog_norm = (diss_score[cand_idxs] + rf_score[cand_idxs] +
+        #             diff_score[cand_idxs]).max() or 1.0
 
         for idx in cand_idxs:
             m1 = max(0.0, diss_accel[idx]) / diss_norm
             m2 = max(0.0, -rf[idx]) / rf_norm
             m3 = max(0.0, -diff_slope[idx]) / diff_norm
-            m4 = (diss_score[idx] + rf_score[idx] + diff_score[idx]) / dog_norm
+            m4 = (abs(diss_score[idx]) +
+                  abs(rf_score[idx]) + abs(diff_score[idx]))
             scores.append(m1 + m2 + m3 + m4)
         best_pos = int(np.argmax(scores))
         best_idx = cand_idxs[best_pos]
@@ -2217,18 +2222,18 @@ class QModelPredictor:
         best_positions["POI6"]
         # update positions with new windows
         best_positions = self._update_positions(best_positions, windows)
-        poi4_inds, poi4_confs = self._filter_poi4(
-            best_positions['POI4']['indices'],
-            best_positions['POI4']['confidences'],
-            feature_vector,
-            relative_time,
-            predictions["POI3"]["indices"][0]
-        )
+        # poi4_inds, poi4_confs = self._filter_poi4(
+        #     best_positions['POI4']['indices'],
+        #     best_positions['POI4']['confidences'],
+        #     feature_vector,
+        #     relative_time,
+        #     predictions["POI3"]["indices"][0]
+        # )
 
-        best_positions['POI4'] = {
-            'indices': poi4_inds,
-            'confidences': poi4_confs
-        }
+        # best_positions['POI4'] = {
+        #     'indices': poi4_inds,
+        #     'confidences': poi4_confs
+        # }
         poi6_inds, poi6_confs = self._filter_poi6(
             best_positions['POI6']['indices'],
             best_positions['POI6']['confidences'],
@@ -2352,21 +2357,22 @@ class QModelPredictor:
 
         # cut just after the last significant change across all curves
         cut_idx = min(max(tail_starts) + 1, len(feature_vector))
+        print(cut_idx, len(feature_vector))
         cut_time = time[cut_idx] if cut_idx < len(time) else time[-1]
 
         # ---- PLOT DISSIPATION + TRIM ----
-        plt.figure(figsize=(8, 4))
-        plt.plot(time, feature_vector['Dissipation'],
-                 label='Dissipation (orig)')
-        plt.axvline(cut_time, linestyle='--', label='Trim Point')
-        plt.axvspan(cut_time, time[-1], alpha=0.2,
-                    color='grey', label='Trimmed Region')
-        plt.xlabel('Time')
-        plt.ylabel('Dissipation')
-        plt.title('Dissipation Curve with Trim Location')
-        plt.legend(loc='best')
-        plt.tight_layout()
-        plt.show()
+        # plt.figure(figsize=(8, 4))
+        # plt.plot(time, feature_vector['Dissipation'],
+        #          label='Dissipation (orig)')
+        # plt.axvline(cut_time, linestyle='--', label='Trim Point')
+        # plt.axvspan(cut_time, time[-1], alpha=0.2,
+        #             color='grey', label='Trimmed Region')
+        # plt.xlabel('Time')
+        # plt.ylabel('Dissipation')
+        # plt.title('Dissipation Curve with Trim Location')
+        # plt.legend(loc='best')
+        # plt.tight_layout()
+        # plt.show()
         # -------------------------------
 
         return feature_vector.iloc[:cut_idx].reset_index(drop=True)
