@@ -21,7 +21,14 @@ logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-
+ERROR_CASE = {
+    "POI1": {"indices": [-1], "confidences": [-1]},
+    "POI2": {"indices": [-1], "confidences": [-1]},
+    "POI3": {"indices": [-1], "confidences": [-1]},
+    "POI4": {"indices": [-1], "confidences": [-1]},
+    "POI5": {"indices": [-1], "confidences": [-1]},
+    "POI6": {"indices": [-1], "confidences": [-1]},
+}
 QMODEL_V2_BOOSTER_PATH = os.path.join(
     "QModel", "SavedModels", "qmodel_v3", "qmodel_v3_booster.json")
 QMODEL_V2_SCALER_PATH = os.path.join(
@@ -86,6 +93,8 @@ def _(predictor: 'QModelPredictor', file_buffer, actual_poi_indices):
     qmodel_v2_points = []
 
     for poi in ["POI1", "POI2", "POI3", "POI4", "POI5", "POI6"]:
+        if qmodel_v2_predictions is None:
+            return ERROR_CASE
         qmodel_v2_points.append(qmodel_v2_predictions.get(
             poi, {}).get('indices', [None])[0])
     return qmodel_v2_points
@@ -216,7 +225,7 @@ class Benchmarker:
 
                 if model_name == "QModelPredictor":
                     diffs_time = [
-                        abs(times[a] - times[p])
+                        abs(times[int(a)] - times[int(p)])
                         for a, p in zip(actual_indices, predicted)
                     ]
                     bad_flags = [
@@ -369,7 +378,17 @@ class Benchmarker:
             # --- data & plot setup ---
             df = pd.read_csv(case["data_file"])
             times = df["Relative_time"].values
-            diss = df["Dissipation"].values
+            diss_raw = df['Dissipation'].values
+            # diff_raw = df['Difference'].values
+            rf_raw = df['Resonance_Frequency'].values
+
+            # Min–max normalize each series
+            def minmax(arr):
+                return (arr - arr.min()) / (arr.max() - arr.min())
+
+            diss = minmax(diss_raw)
+            # diff = minmax(diff_raw)
+            rf = minmax(rf_raw)
             tol_list = case["tolerances"]
             bad_flags = case["bad_flags"]
             actual_idxs = case["actual"]
@@ -377,7 +396,12 @@ class Benchmarker:
             base = os.path.splitext(os.path.basename(case["data_file"]))[0]
 
             fig, ax = plt.subplots(figsize=(12, 6), dpi=100)
-            ax.plot(times, diss, label="Dissipation", linewidth=1.5)
+            ax.plot(times, diss, label="Dissipation",
+                    linewidth=1.5, color='red')
+            # ax.plot(times, diff, label='Difference',
+            #         linewidth=1.5, color='blue')
+            ax.plot(times, rf,   label='Resonance_Frequency',
+                    linewidth=1.5, color='green')
             y_max = ax.get_ylim()[1]
 
             # --- annotate each failing POI ---
@@ -414,12 +438,12 @@ class Benchmarker:
                 ax.text(act_t, y_max * 0.95,
                         f"tol={tol_secs:.1f}s",
                         fontsize=10, fontweight='bold',
-                        color="red",
+                        color="grey",
                         ha='center', va='top')
                 ax.text(pred_t, y_max * 0.90,
                         f"off={time_off:.2f}s",
                         fontsize=10, fontweight='bold',
-                        color="red",
+                        color="grey",
                         ha='center', va='top')
                 ax.text(act_t, act_d,
                         f"A{i+1}",
@@ -429,7 +453,7 @@ class Benchmarker:
                 ax.text(pred_t, y_max * 0.85,
                         f"P{i+1}",
                         fontsize=10, fontweight='bold',
-                        color="red",
+                        color="grey",
                         ha='right', va='bottom')
 
             # --- styling & legend ---
@@ -474,4 +498,4 @@ if __name__ == "__main__":
     ]
     benchmarker = Benchmarker(predictors=predictors)
     aggregated_metrics = benchmarker.run(
-        test_directory=test_directory, test_size=100)
+        test_directory=test_directory, test_size=500)
