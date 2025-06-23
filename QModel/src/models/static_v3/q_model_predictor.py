@@ -1846,9 +1846,10 @@ class QModelPredictor:
             m1 = max(0.0, diss_accel[idx])
             m2 = max(0.0, -rf[idx])                  # trough in RF
             m3 = max(0.0, -diff_slope[idx])          # downslope in Difference
-            m4 = abs(diss_score[idx]) + \
-                abs(rf_score[idx]) + abs(diff_score[idx])
-            scores.append(m1 + m2 + m3 + m4)
+            # m4 = abs(diss_score[idx]) + \
+            #     abs(rf_score[idx]) + abs(diff_score[idx])
+            m4 = abs(diss_score[idx]) + abs(diff_score[idx])
+            scores.append(m1 + m3 + m4)
 
         # pick best
         best_pos = int(np.argmax(scores))

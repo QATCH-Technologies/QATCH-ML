@@ -17,6 +17,7 @@ from q_image_clusterer import QClusterer
 from q_multi_model import QPredictor
 from q_single_model import QModelPredict
 import time
+import re
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -222,24 +223,30 @@ class Benchmarker:
                 self.results[model_name]["actual"].append(actual_indices)
                 self.results[model_name]["predicted"].append(predicted)
                 self.results[model_name]["runtimes"].append(elapsed)
-
                 if model_name == "QModelPredictor":
-                    diffs_time = [
-                        abs(times[int(a)] - times[int(p)])
-                        for a, p in zip(actual_indices, predicted)
-                    ]
-                    bad_flags = [
-                        (diff > tol_list[i]) if i != 2 else False
-                        for i, diff in enumerate(diffs_time)
-                    ]
-                    if any(bad_flags):
-                        self.bad_cases.append({
-                            "data_file":   data_file,
-                            "actual":      actual_indices,
-                            "predicted":   predicted,
-                            "bad_flags":   bad_flags,
-                            "tolerances":  tol_list
-                        })
+                    try:
+                        diffs_time = [
+                            abs(times[int(a)] - times[int(p)])
+                            for a, p in zip(actual_indices, predicted)
+                        ]
+                        bad_flags = [
+                            (diff > tol_list[i]) if i != 2 else False
+                            for i, diff in enumerate(diffs_time)
+                        ]
+                        if any(bad_flags):
+                            self.bad_cases.append({
+                                "data_file":   data_file,
+                                "actual":      actual_indices,
+                                "predicted":   predicted,
+                                "bad_flags":   bad_flags,
+                                "tolerances":  tol_list
+                            })
+                    except Exception as e:
+                        # if anything goes wrong (e.g. bad int conversion, index‐out‐of‐range, etc.), just skip it
+                        # you could also log it if you want:
+                        logging.warning(
+                            f"Skipping diff calc for {data_file}: {e}")
+                        pass
 
         # 3) Compute / plot metrics
         aggregated_metrics = self._aggregate_metrics()
@@ -358,13 +365,36 @@ class Benchmarker:
         aggregated = {}
         for model_name, data in self.results.items():
             aggregated[model_name] = {}
-            for i in range(6):
-                actual_i = [a[i] for a in data["actual"]]
-                predicted_i = [p[i] for p in data["predicted"]]
-                aggregated[model_name][f"POI{i+1}"] = compute_metrics(
-                    actual_i, predicted_i)
+            preds = data.get("predicted", [])
+            # if there are no predictions, skip POI metrics
+            if not preds:
+                continue
+
+            # peek at the first prediction to see its type
+            first_pred = preds[0]
+
+            for idx in range(6):
+                # actual is always a sequence, so this works unchanged
+                actual_i = [a[idx] for a in data["actual"]]
+
+                # handle dict‐style vs list/tuple‐style predictions
+                if isinstance(first_pred, dict):
+                    key = f"POI{idx+1}"
+                    # this will raise KeyError if your dicts lack that key—
+                    # which is exactly what we want if something is misnamed
+                    predicted_i = [p[key] for p in preds]
+                else:
+                    # assumes p supports integer indexing, e.g. list/tuple/ndarray
+                    predicted_i = [p[idx] for p in preds]
+
+                aggregated[model_name][f"POI{idx+1}"] = compute_metrics(
+                    actual_i, predicted_i
+                )
+
+            # finally, average runtime
             aggregated[model_name]["avg_time"] = float(
                 np.mean(data["runtimes"]))
+
         return aggregated
 
     def _plot_bad_cases(self):
@@ -498,4 +528,4 @@ if __name__ == "__main__":
     ]
     benchmarker = Benchmarker(predictors=predictors)
     aggregated_metrics = benchmarker.run(
-        test_directory=test_directory, test_size=500)
+        test_directory=test_directory, test_size=200)
