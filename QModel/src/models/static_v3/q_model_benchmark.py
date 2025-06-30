@@ -366,32 +366,29 @@ class Benchmarker:
         for model_name, data in self.results.items():
             aggregated[model_name] = {}
             preds = data.get("predicted", [])
-            # if there are no predictions, skip POI metrics
             if not preds:
+                # no predictions → skip POI metrics
                 continue
 
-            # peek at the first prediction to see its type
-            first_pred = preds[0]
-
             for idx in range(6):
-                # actual is always a sequence, so this works unchanged
+                # build the “actual” list exactly as before
                 actual_i = [a[idx] for a in data["actual"]]
+                key = f"POI{idx+1}"
 
-                # handle dict‐style vs list/tuple‐style predictions
-                if isinstance(first_pred, dict):
-                    key = f"POI{idx+1}"
-                    # this will raise KeyError if your dicts lack that key—
-                    # which is exactly what we want if something is misnamed
-                    predicted_i = [p[key] for p in preds]
-                else:
-                    # assumes p supports integer indexing, e.g. list/tuple/ndarray
-                    predicted_i = [p[idx] for p in preds]
+                # robust per-element extraction
+                predicted_i = []
+                for p in preds:
+                    if isinstance(p, dict):
+                        # dict-style: must have key "POI1", …, "POI6"
+                        predicted_i.append(p[key])
+                    else:
+                        # sequence-style: list, tuple or ndarray
+                        predicted_i.append(p[idx])
 
-                aggregated[model_name][f"POI{idx+1}"] = compute_metrics(
-                    actual_i, predicted_i
-                )
+                aggregated[model_name][key] = compute_metrics(
+                    actual_i, predicted_i)
 
-            # finally, average runtime
+            # finally average runtime
             aggregated[model_name]["avg_time"] = float(
                 np.mean(data["runtimes"]))
 
