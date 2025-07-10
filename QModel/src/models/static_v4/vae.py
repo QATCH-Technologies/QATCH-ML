@@ -1,3 +1,7 @@
+from sklearn.ensemble import GradientBoostingRegressor
+import matplotlib.cm as cm
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.ensemble import RandomForestRegressor
 import ruptures as rpt
 from scipy.signal import find_peaks
 from keras.layers import GlobalAveragePooling1D, Dense, Conv1D, Activation
@@ -164,255 +168,143 @@ first_poi = [
     for y, ℓ in zip(y_test, lens_test)
 ]
 first_poi = np.array(first_poi)
-
-
-# ── 5) PCA & t-SNE (as before) ───────────────────────────────────────────────
-z_pca = PCA(n_components=2).fit_transform(z_vec)
-perplex = min(30, z_vec.shape[0]-1)
-z_tsne = TSNE(n_components=2, perplexity=perplex, random_state=42)\
-    .fit_transform(z_vec)
-
-# plot PCA colored by first-POI
-plt.figure(figsize=(6, 5))
-sc = plt.scatter(z_pca[:, 0], z_pca[:, 1], c=first_poi, cmap='viridis', s=30)
-plt.colorbar(sc, label='first POI index')
-plt.title('PCA: colored by true first POI')
-plt.tight_layout()
-plt.show()
-
-# plot t-SNE colored by first-POI
-plt.figure(figsize=(6, 5))
-sc2 = plt.scatter(z_tsne[:, 0], z_tsne[:, 1],
-                  c=first_poi, cmap='viridis', s=30)
-plt.colorbar(sc2, label='first POI index')
-plt.title(f't-SNE (perplex={perplex})')
-plt.tight_layout()
-plt.show()
-
-
-# ── 6) Automatic event detection & remapping to original time ────────────────
-# pick the top-k most responsive channels (average amplitude across all test samples)
-amp = np.max(z_seq, axis=1) - np.min(z_seq, axis=1)  # shape (N, L)
-mean_amp = np.mean(amp, axis=0)                     # shape (L,)
-top_k = 3
-top_ch = np.argsort(mean_amp)[-top_k:][::-1]
-print("Top channels by avg amplitude:", top_ch)
-
-# detect on the single strongest channel:
-ch = top_ch[0]
-event_times = []
-for seq, orig_len, red_len in zip(z_seq, lens_test, red_test):
-    # only real region
-    s = seq[:red_len, ch]
-    # early 20% as “baseline”
-    baseline = s[: int(red_len*0.2)].mean()
-    peak = s.max()
-    thresh = baseline + 0.5*(peak - baseline)        # halfway
-    crossings = np.where(s > thresh)[0]
-    if crossings.size:
-        # reduced index → orig index
-        evt_red = crossings[0]
-        evt_orig = int(evt_red / red_len * orig_len)
-    else:
-        evt_orig = np.nan
-    event_times.append(evt_orig)
-event_times = np.array(event_times)
-
-# plot PCA colored by detected time
-plt.figure(figsize=(6, 5))
-sc3 = plt.scatter(z_pca[:, 0], z_pca[:, 1], c=event_times, cmap='plasma', s=30)
-plt.colorbar(sc3, label='detected event time')
-plt.title('PCA: colored by auto-detected POI')
-plt.tight_layout()
-plt.show()
-
-
-# ── 7) Visualize heatmap & 1D trace (masked) for sample 0 ──────────────────
-sample_idx = 0
-Treal = red_test[sample_idx]
-sample_z = z_seq[sample_idx, :Treal, :]
-
-plt.figure(figsize=(10, 4))
-plt.imshow(sample_z.T, aspect='auto', origin='lower')
-plt.colorbar(label='μ activation')
-plt.xlabel('Reduced time step')
-plt.ylabel('Latent channel')
-plt.title(f'Latent activations (sample {sample_idx})')
-plt.tight_layout()
-plt.show()
-
-plt.figure(figsize=(6, 3))
-plt.plot(np.arange(Treal), sample_z[:, ch])
-plt.xlabel('Reduced time step')
-plt.ylabel(f'μ (channel {ch})')
-plt.title(f'Channel {ch} over time (sample {sample_idx})')
-plt.grid(True)
-plt.tight_layout()
-plt.show()
-
-# ─── 1) Define all four detection routines ───────────────────────────────────
-
-
-def detect_peak_amp(seq, top_k=3, rel_height=0.5, min_distance=5):
-    """Unsupervised amplitude‐peak detection in reduced space."""
-    amp = seq.max(axis=0) - seq.min(axis=0)
-    top_ch = np.argsort(amp)[-top_k:]
-    # <-- use np.abs(...) here
-    agg = np.abs(seq[:, top_ch]).sum(axis=1)
-    peaks, _ = find_peaks(
-        agg,
-        height=agg.min() + rel_height*(agg.max() - agg.min()),
-        distance=min_distance
-    )
-    return peaks[0] if peaks.size else np.nan
-
-
-def detect_slope(seq, top_k=3, slope_factor=3):
-    """First‐derivative (slope)‐based detection."""
-    amp = seq.max(axis=0) - seq.min(axis=0)
-    top_ch = np.argsort(amp)[-top_k:]
-    agg = np.abs(seq[:, top_ch]).sum(axis=1)
-    deriv = np.diff(agg, prepend=agg[0])
-    base_std = deriv[: int(0.2 * len(deriv))].std()
-    thresh = slope_factor * base_std
-    idx = np.where(deriv > thresh)[0]
-    return idx[0] if idx.size else np.nan
-
-
-def detect_recon_error(vae, x_pad, seq_red_len):
-    """
-    Reconstruction‐error peak detection on the single output channel.
-    - x_pad: 1D array of length T' (the reduced length), i.e. X_test[sample_idx,:,0]
-    - seq_red_len: the true reduced length for this sample
-    """
-    # 1) reshape to (1, T', 1)
-    inp = x_pad[np.newaxis, :seq_red_len, None]
-    # 2) get reconstruction: shape (1, T', 1)
-    recon = vae.predict(inp)[0, :seq_red_len, 0]
-    # 3) per‐step MSE
-    err = (x_pad[:seq_red_len] - recon)**2
-    # 4) find the first big error‐peak
-    peaks, _ = find_peaks(err, height=err.mean() + err.std())
-    return peaks[0] if peaks.size else np.nan
-
-
-def detect_changepoint(seq, top_k=3, pen=3):
-    """Change‐point detection on aggregated channels via PELT."""
-    amp = seq.max(axis=0) - seq.min(axis=0)
-    top_ch = np.argsort(amp)[-top_k:]
-    agg = np.abs(seq[:, top_ch]).sum(axis=1)
-    algo = rpt.Pelt(model="rbf").fit(agg)
-    bkpts = algo.predict(pen=pen)
-    return bkpts[0] if bkpts else np.nan
-
-
-# ── Supervised heads ────────────────────────────────────────────────────────
-head_epochs = 20
-batch_size = 32
-
-
-def build_seq_head(encoder_model, max_red_len):
-    mu = encoder_model.output
-    x = layers.Conv1D(32, 3, padding='same', activation='relu')(mu)
-    logits = layers.Conv1D(1, 1, padding='same')(x)
-    probs = layers.Activation('sigmoid', name='poi_prob')(logits)
-    model = Model(encoder_model.input, probs, name='seq_head')
-    model.compile(optimizer='adam', loss='binary_crossentropy',
-                  metrics=['Precision', 'Recall'])
-    return model
-
-
-def build_reg_head(encoder_model):
-    mu = encoder_model.output
-    gap = layers.GlobalAveragePooling1D()(mu)
-    rel = layers.Dense(1, activation='sigmoid', name='poi_rel')(gap)
-    model = Model(encoder_model.input, rel, name='reg_head')
-    model.compile(optimizer='adam', loss='mse')
-    return model
-
-# prepare seq labels
-
-
-def make_fixed_seq_labels(y, orig_lens, red_lens, red_pad):
-    N = len(y)
-    out = np.zeros((N, red_pad, 1), dtype=float)
-    for i, (yi, L, RL) in enumerate(zip(y, orig_lens, red_lens)):
-        true_idxs = np.where(yi[:L] == 1)[0]
-        if true_idxs.size:
-            t_red = int(true_idxs[0] / L * RL)
-            out[i, t_red, 0] = 1
-    return out
-
-
-y_train_seq = make_fixed_seq_labels(y_train, lens_train, red_train, red_pad)
-y_val_seq = make_fixed_seq_labels(y_val,   lens_val,   red_val,   red_pad)
-
-
-y_train_rel = np.array([np.where(y[:L] == 1)[
-                       0][0]/L if y[:L].any() else 0 for y, L in zip(y_train, lens_train)])
-y_val_rel = np.array([np.where(y[:L] == 1)[0][0] /
-                     L if y[:L].any() else 0 for y, L in zip(y_val, lens_val)])
-
-seq_model = build_seq_head(encoder, red_train.max())
-reg_model = build_reg_head(encoder)
-
-print("y_train_seq shape:", y_train_seq.shape)  # (n_train, red_pad, 1)
-print("y_val_seq   shape:", y_val_seq.shape)    # (n_val,   red_pad, 1)
-
-seq_model.fit(
-    X_train, y_train_seq,
-    validation_data=(X_val, y_val_seq),
-    epochs=head_epochs, batch_size=batch_size
+# ── 4) Build encoder & get latents ───────────────────────────────────────────
+encoder = Model(
+    inputs=vae.get_layer('enc_in').input,
+    outputs=vae.get_layer('mu').output,
+    name='encoder'
 )
 
-reg_model.fit(X_train, y_train_rel, validation_data=(
-    X_val, y_val_rel), epochs=head_epochs, batch_size=batch_size)
+# Predict all latents at once
+z_train_seq = encoder.predict(X_train, batch_size=32)  # (N_train, T', L)
+z_test_seq = encoder.predict(X_test,  batch_size=32)  # (N_test,  T', L)
 
-# ── Prediction + Plotting ──────────────────────────────────────────────────
+# Helper: build rich features from z_seq
 
 
-def predict_and_plot(sample_idx=0):
-    Xs = X_test[sample_idx]
+def build_features(z_seq):
+    # z_seq: (N, T', L)
+    mean_feat = np.mean(z_seq, axis=1)          # (N, L)
+    max_feat = np.max(z_seq,  axis=1)          # (N, L)
+    var_feat = np.var(z_seq,  axis=1)          # (N, L)
+    # time-of-max index for each channel, normalized to [0,1]
+    idx_max = np.argmax(z_seq, axis=1)        # (N, L)
+    tmax_frac = idx_max / z_seq.shape[1]        # (N, L)
+    # concatenate into one feature vector per sample
+    return np.concatenate([mean_feat, max_feat, var_feat, tmax_frac], axis=1)
+
+
+# Build feature matrices
+Xf_train = build_features(z_train_seq)
+Xf_test = build_features(z_test_seq)
+
+# Compute fractional-POI targets in [0,1]
+poi_train = np.array([
+    np.where(y[:L] == 1)[0][0] if np.any(y[:L] == 1) else np.nan
+    for y, L in zip(y_train, lens_train)
+], dtype=float)
+frac_train = poi_train / lens_train
+
+# Fit regressor
+reg = GradientBoostingRegressor(
+    n_estimators=200,
+    max_depth=4,
+    random_state=0
+)
+reg.fit(Xf_train[~np.isnan(frac_train)], frac_train[~np.isnan(frac_train)])
+
+# Predict fractional POI → convert back to time-step
+frac_pred = reg.predict(Xf_test)
+rf_preds = (frac_pred * lens_test).astype(int)
+
+# ── 5) (Optional) Plot one example trace ─────────────────────────────────────
+
+
+def plot_poi_trace(sample_idx):
     L = lens_test[sample_idx]
-    RL = red_test[sample_idx]
-    y = y_test[sample_idx, :L]
-    z = z_seq[sample_idx, :RL, :]
-    t = np.arange(RL)
-    ch0 = np.argmax(z.ptp(axis=0))
+    series = X_test[sample_idx, :L, 0]
+    actual = first_poi[sample_idx]
+    pred = rf_preds[sample_idx]
 
-    uns = [
-        detect_peak_amp(z),
-        detect_slope(z),
-        detect_recon_error(vae, Xs.squeeze(), RL),
-        detect_changepoint(z)
-    ]
-    ens = np.nanmedian(uns)
-
-    p_seq = seq_model.predict(Xs[None])[0, :RL, 0]
-    p_reg = reg_model.predict(Xs[None])[0, 0]*RL
-    pred_seq = np.where(p_seq > 0.5)[0]
-    pred_seq = pred_seq[0] if pred_seq.size else np.nan
-
-    true_time = np.where(y == 1)[0][0] if np.any(y == 1) else np.nan
-    true = true_time / L * RL if not np.isnan(true_time) else np.nan
-
-    plt.figure(figsize=(10, 4))
-    plt.plot(t, z[:, ch0], label=f"latent ch{ch0}")
-    plt.axvline(true, color='k', ls='--', label='True POI')
-    labels = ['Amp', 'Slope', 'Recon', 'CP']
-    for i, u in enumerate(uns):
-        plt.axvline(u, color=f'C{i+1}', ls=':', label=labels[i])
-    plt.axvline(ens, color='m', ls='--', label='Ensemble')
-    plt.axvline(pred_seq, color='c', ls='-.', label='Seq-head')
-    plt.axvline(p_reg, color='y', ls='-.', label='Reg-head')
-
-    plt.title(f"Sample {sample_idx}")
-    plt.xlabel('Reduced time-step')
-    plt.ylabel('μ activation')
-    plt.legend(loc='upper left', fontsize='small')
-    plt.tight_layout()
+    plt.figure()
+    plt.plot(series)
+    plt.axvline(actual, label='Actual POI', linestyle='-')
+    plt.axvline(pred,   label='Predicted POI', linestyle='--')
+    plt.title(f"Sample {sample_idx}: Actual vs Predicted POI")
+    plt.xlabel("Time step")
+    plt.ylabel("Normalized Dissipation")
+    plt.legend()
     plt.show()
 
+# ── 6) Scatter & Error‐dist plots ────────────────────────────────────────────
+# (reuse the plotting code we already wrote)
 
-for idx in [0, 5, 10]:
-    predict_and_plot(idx)
+
+# e.g. inspect the first 3 samples
+for i in range(3):
+    plot_poi_trace(i)
+
+
+# 2) Scatter plot of actual vs. predicted across all samples
+plt.figure()
+plt.scatter(first_poi, rf_preds)
+# add y=x line for reference
+min_v = np.nanmin(np.concatenate([first_poi, rf_preds]))
+max_v = np.nanmax(np.concatenate([first_poi, rf_preds]))
+plt.plot([min_v, max_v], [min_v, max_v], linestyle='--', label='Ideal')
+plt.title("Actual vs. Predicted POI (all samples)")
+plt.xlabel("Actual POI (time step)")
+plt.ylabel("Predicted POI (time step)")
+plt.legend()
+plt.show()
+# drop any nan pairs
+mask = ~np.isnan(first_poi) & ~np.isnan(rf_preds)
+y_true = first_poi[mask]
+y_pred = rf_preds[mask]
+
+print("MAE: ", mean_absolute_error(y_true, y_pred))
+print("RMSE:", np.sqrt(mean_squared_error(y_true, y_pred)))
+print("R^2:  ", r2_score(y_true, y_pred))
+errors = y_pred - y_true
+
+plt.figure()
+plt.hist(errors, bins=30, edgecolor='k')
+plt.axvline(0, color='k', linestyle='--')
+plt.title("Prediction Error Distribution")
+plt.xlabel("Predicted POI − Actual POI (time steps)")
+plt.ylabel("Count")
+plt.show()
+
+lengths = lens_test[mask]
+norm = plt.Normalize(lengths.min(), lengths.max())
+cmap = cm.viridis
+
+plt.figure()
+sc = plt.scatter(y_true, y_pred, c=lengths, cmap=cmap, norm=norm)
+plt.plot([min_v, max_v], [min_v, max_v], '--', color='gray')
+plt.colorbar(sc, label="Original seq length")
+plt.title("Actual vs Predicted POI (colored by length)")
+plt.xlabel("Actual POI")
+plt.ylabel("Predicted POI")
+plt.show()
+# compute abs errors and sort
+abs_err = np.abs(errors)
+idx_sort = np.argsort(abs_err)
+
+# 3 best
+for i in idx_sort[:3]:
+    plot_poi_trace(i)
+
+# 3 worst
+for i in idx_sort[-3:]:
+    plot_poi_trace(i)
+means = 0.5 * (y_true + y_pred)
+diffs = y_pred - y_true
+
+plt.figure()
+plt.scatter(means, diffs, alpha=0.6)
+plt.axhline(0, linestyle='--', color='k')
+plt.title("Bland–Altman: Prediction Error vs Mean POI")
+plt.xlabel("Mean of Actual & Predicted POI")
+plt.ylabel("Predicted − Actual POI")
+plt.show()
