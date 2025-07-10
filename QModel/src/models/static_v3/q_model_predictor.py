@@ -618,7 +618,7 @@ class QModelPredictor:
         # Compute slope
         slope = np.gradient(diss, relative_time)
 
-        # Try lowering threshold percentiles from 100 → min_iter in 0.5 steps
+        # Try lowering threshold percentiles from 100 -> min_iter in 0.5 steps
         for perc in np.arange(100.0, min_iter, -0.5):
             thresh = np.percentile(slope, perc)
             peaks, _ = find_peaks(slope, height=thresh)
@@ -1598,21 +1598,16 @@ class QModelPredictor:
         height_thresh = base_vals.mean() + 2 * base_vals.std()
         height_filtered = [i for i in inds if dissipation[i] > height_thresh]
         inds_after_height = height_filtered or inds.copy()
-        # ——————————————————————————————————————————————
 
-        # ——————————————————————————————————————————————
-        # 2) PEAK-JUMP FILTER
+        # PEAK-JUMP FILTER
         delta_d = dissipation[1:] - dissipation[:-1]
         injection_idx = np.argmax(delta_d) + 1
         jump_filtered = [i for i in inds_after_height if i >= injection_idx]
         inds_after_jump = jump_filtered or inds_after_height.copy()
-        # ——————————————————————————————————————————————
 
-        # ——————————————————————————————————————————————
-        # 3) NO-INCLINE (SLOPE) FILTER
+        # NO-INCLINE FILTER
         flat_filtered = [i for i in inds_after_jump if grad_d[i] <= thr_d]
         final_inds = flat_filtered or inds_after_jump.copy()
-        # ——————————————————————————————————————————————
 
         if PLOTTING:
             plt.figure(figsize=(12, 6))
@@ -1641,7 +1636,6 @@ class QModelPredictor:
             plt.tight_layout()
             plt.show()
 
-        # rebuild confidences for the finals
         final_confs = [orig_confs[orig_inds.index(i)] for i in final_inds]
 
         return final_inds, final_confs
@@ -1775,43 +1769,31 @@ class QModelPredictor:
             left_base = max(start, trough_idx - 1)
             best_idx = left_base
 
-        # --- DEBUG PLOTTING (enhanced) ---
-        # fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+        remaining = [(i, c)
+                     for i, c in zip(cand_idxs, cand_confs) if i != best_idx]
+        out_indices = [best_idx] + [i for i, _ in remaining]
+        out_confidences = [best_conf] + [c for _, c in remaining]
 
-        # ax1.plot(relative_time, diss_norm, label='Dissipation (norm)')
-        # ax1.plot(relative_time, rf_norm,   label='RF (norm)')
-        # ax1.plot(relative_time, diff_norm, label='Difference (norm)')
+        fw = 50
+        s2 = max(poi3_idx + 1, best_idx - fw)
+        e2 = min(len(diff_norm) - 1, best_idx + fw)
 
-        # # original candidates
-        # ax1.scatter(relative_time[cand_idxs], diss_norm[cand_idxs],
-        #             c='red', marker='x', s=80, label='candidates')
+        # 1) Difference: local maximum
+        diff_win = diff_norm[s2:e2+1]
+        if diff_win.size:
+            diff_peak = s2 + np.argmax(diff_win)
+            if best_idx >= diff_peak:
+                best_idx = max(s2, diff_peak - 1)
 
-        # # show the detected trough and its left‐base
-        # ax1.scatter(relative_time[trough_idx], diss_norm[trough_idx],
-        #             c='blue', s=100, label='neg spike (trough)')
-        # ax1.scatter(relative_time[best_idx], diss_norm[best_idx],
-        #             c='orange', s=100, label='snapped POI4')
+        # 2) RF: local minimum (valley)
+        rf_win = rf_norm[s2:e2+1]
+        if rf_win.size:
+            rf_trough = s2 + np.argmin(rf_win)
+            if best_idx >= rf_trough:
+                best_idx = max(s2, rf_trough - 1)
+        # ── end new check ─────────────────────────────────────────────────────
 
-        # ax1.set_ylabel('Normalized value')
-        # ax1.legend(loc='upper right')
-        # ax1.grid(True, alpha=0.3)
-        # times_cand = [relative_time[i] for i in cand_idxs]
-        # ax2.plot(times_cand, scores, marker='o',
-        #          linestyle='-', label='composite score')
-        # # mark whichever best_idx survived
-        # ax2.scatter(relative_time[best_idx], best_score,
-        #             c='green', s=100, label='final POI4')
-        # ax2.set_xlabel('Relative time (s)')
-        # ax2.set_ylabel('Score')
-        # ax2.legend(loc='upper right')
-        # ax2.grid(True, alpha=0.3)
-
-        # plt.tight_layout()
-        # plt.show()
-        # — end plotting —
-
-        # rebuild output lists, putting our (possibly snapped) best_idx first
-        # remove original occurrence of best_idx if it was in cand_idxs
+        # now rebuild your output list
         remaining = [(i, c)
                      for i, c in zip(cand_idxs, cand_confs) if i != best_idx]
         out_indices = [best_idx] + [i for i, _ in remaining]
@@ -2123,7 +2105,7 @@ class QModelPredictor:
                 ax.text(
                     center_time,
                     diss.max() * 0.9,
-                    f"{poi}→C{densest}",
+                    f"{poi}->C{densest}",
                     rotation=90, va="top", ha="right",
                     fontsize=8, color=cmap(i)
                 )
@@ -2131,7 +2113,7 @@ class QModelPredictor:
         if plotting:
             ax.legend(loc="upper left", fontsize=8, ncol=2, framealpha=0.9)
             plt.title(f"DBSCAN on Indices (eps_fraction={eps_fraction}, "
-                      f"min_eps={min_eps}→max_eps={max_eps})")
+                      f"min_eps={min_eps}->max_eps={max_eps})")
             plt.tight_layout()
             plt.show()
 

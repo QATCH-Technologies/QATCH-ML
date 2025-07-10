@@ -525,4 +525,4 @@ if __name__ == "__main__":
     ]
     benchmarker = Benchmarker(predictors=predictors)
     aggregated_metrics = benchmarker.run(
-        test_directory=test_directory, test_size=300)
+        test_directory=test_directory, test_size=100)
