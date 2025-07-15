@@ -24,10 +24,6 @@ class DissipationFeaturePipeline:
     @staticmethod
     def load_content(data_dir: str,
                      num_datasets: int = np.inf) -> List[Tuple[str, str]]:
-        """
-        Walk `data_dir` and return up to `num_datasets` tuples of
-        (data_csv_path, poi_csv_path), skipping any CSVs without a matching *_poi.csv.
-        """
         if not os.path.exists(data_dir):
             logging.error("Data directory does not exist: %s", data_dir)
             return []
@@ -38,9 +34,11 @@ class DissipationFeaturePipeline:
                 if not f.endswith(".csv") or f.endswith(("_poi.csv", "_lower.csv")):
                     continue
                 data_path = os.path.join(root, f)
-                poi_path = data_path.replace(".csv", "_poi.csv")
-                if os.path.exists(poi_path):
-                    loaded.append((data_path, poi_path))
+                df = pd.read_csv(data_path)
+                if df['Relative_time'].max() > 0:
+                    poi_path = data_path.replace(".csv", "_poi.csv")
+                    if os.path.exists(poi_path):
+                        loaded.append((data_path, poi_path))
 
         random.shuffle(loaded)
         if num_datasets == np.inf:
@@ -181,7 +179,7 @@ class DissipationFeaturePipeline:
 if __name__ == "__main__":
     pipeline = DissipationFeaturePipeline(exact_n=10)
     df_feats = pipeline.build_feature_df(
-        "content/dropbox_dump", num_datasets=50)
+        "content/dropbox_dump", num_datasets=5)
     print(df_feats.head())
     df_feats.to_csv("dissipation_features.csv")
 
