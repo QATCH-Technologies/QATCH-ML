@@ -330,5 +330,5 @@ def simulate_regression_live(
 # content/static/valid/02503/MM240625Y4_IGG200_2_3rd.csv
 # demo on a held‑out run
 simulate_regression_live(
-    'content/static/valid/02487/MM240625Y3_IGG50_2_3rd.csv', model
+    'content/dropbox_dump/02480/MM240625Y4_PBS_1_3rd.csv', model
 )

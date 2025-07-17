@@ -7,6 +7,7 @@ import tensorflow as tf
 from tensorflow.keras import layers, models, losses, callbacks, regularizers
 import matplotlib.pyplot as plt
 from typing import Tuple
+import keras_tuner as kt
 
 # ——— Robust preprocessing (no scaling here) ———
 
@@ -198,13 +199,88 @@ def build_regressor(window_size=WINDOW_SIZE, n_features=None):
         loss=losses.Huber(),
         metrics=['mae']
     )
+#     return model
+
+
+# # Instantiate & train
+n_features = train_runs[0][0].shape[1]
+reg_model = build_regressor(window_size=WINDOW_SIZE, n_features=n_features)
+
+
+def build_regressor_hyper(hp):
+    inp = layers.Input((WINDOW_SIZE, n_features), name="window")
+    x = inp
+
+    # Tune number of TCN blocks and filter size
+    for i, rate in enumerate((1, 2, 4)):
+        filters = hp.Int(f"tcn_filters_{i}",
+                         min_value=32, max_value=128, step=32)
+        kernel_size = hp.Choice(f"kernel_size_{i}", values=[2, 3, 5])
+        x = tcn_block(
+            x,
+            filters=filters,
+            kernel_size=kernel_size,
+            dilation_rate=rate
+        )
+        dropout_rate = hp.Float(f"dropout_rate_{i}", 0.1, 0.5, step=0.1)
+        x = layers.SpatialDropout1D(dropout_rate)(x)
+
+    x = layers.GlobalAveragePooling1D()(x)
+
+    # Tune dense layer size and L2 regularization
+    dense_units = hp.Int("dense_units", 32, 128, step=32)
+    l2_reg = hp.Float("l2_reg", 1e-5, 1e-3, sampling="log")
+    x = layers.Dense(
+        dense_units,
+        activation='relu',
+        kernel_regularizer=regularizers.l2(l2_reg)
+    )(x)
+    x = layers.LayerNormalization()(x)
+
+    out = layers.Dense(1, activation='linear', name='log_steps')(x)
+
+    # Tune learning rate
+    lr = hp.Float("learning_rate", 1e-4, 1e-2, sampling="log")
+    optim = tf.keras.optimizers.Adam(learning_rate=lr, clipnorm=1.0)
+
+    model = models.Model(inp, out)
+    model.compile(
+        optimizer=optim,
+        loss=losses.Huber(),
+        metrics=['mae']
+    )
     return model
 
 
-# Instantiate & train
-n_features = train_runs[0][0].shape[1]
-reg_model = build_regressor(window_size=WINDOW_SIZE, n_features=n_features)
-reg_model.fit(
+# 2) Instantiate tuner
+tuner = kt.RandomSearch(
+    hypermodel=build_regressor_hyper,
+    objective="val_mae",
+    max_trials=20,               # try 20 different hyperparameter combos
+    executions_per_trial=1,      # train each configuration once
+    directory="kt_tuner_dir",
+    project_name="tcn_regression"
+)
+
+# 3) Run the search
+tuner.search(
+    ds_train,
+    validation_data=ds_val,
+    epochs=30,
+    callbacks=[
+        callbacks.EarlyStopping(monitor='val_mae', patience=5),
+        callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=3)
+    ]
+)
+
+# 4) Retrieve the best model & hyperparameters
+best_hp = tuner.get_best_hyperparameters(num_trials=1)[0]
+print("Best hyperparameters:")
+for param in best_hp.values:
+    print(f"  {param}: {best_hp.get(param)}")
+
+best_model = tuner.hypermodel.build(best_hp)
+best_model.fit(
     ds_train,
     validation_data=ds_val,
     epochs=50,
@@ -296,5 +372,5 @@ def simulate_regression_live(
 
 # demo on a held‑out run
 simulate_regression_live(
-    'content/static/valid/02503/MM240625Y4_IGG200_2_3rd.csv', reg_model
+    'content/dropbox_dump/02480/MM240625Y4_PBS_1_3rd.csv', reg_model
 )
