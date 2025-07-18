@@ -1,1 +1,0 @@
-{"input_shape": [100, 30], "config": {"window_size": 100, "hidden_size": 64, "num_layers": 2, "dropout": 0.2}}
