@@ -41,6 +41,24 @@ class HazardToTime(tf.keras.layers.Layer):
         return exp_time  # (B,1)
 
 
+class LearnableScale(layers.Layer):
+    def __init__(self, init=1.0, **kwargs):
+        super().__init__(**kwargs)
+        self.init = init
+
+    def build(self, input_shape):
+        self.tau = self.add_weight(
+            name="tau",
+            shape=(),
+            initializer=tf.keras.initializers.Constant(self.init),
+            dtype=self.compute_dtype,   # honors mixed precision policy
+            trainable=True,
+        )
+
+    def call(self, x):
+        return x * self.tau
+
+
 # Set mixed precision
 try:
     policy = tf.keras.mixed_precision.Policy('mixed_float16')
@@ -233,28 +251,61 @@ def parse_file_conservative(
     return X_ds, stop_time
 
 
-def balanced_dataset(runs, batch_size=32, window_size=WINDOW_SIZE, is_training=True):
+def balanced_dataset(runs,
+                     batch_size=32,
+                     window_size=WINDOW_SIZE,
+                     is_training=True):
+    """
+    runs: list of (X_ds, stop_time) where col0 is absolute seconds.
+    We:
+      • never expose absolute time: col0 is shifted so last row == 0.
+      • compute per-step dt from the window itself (no future info).
+      • build alive_seq from true remaining seconds, not DS_FACTOR guesses.
+    """
     n_features = runs[0][0].shape[1]
 
     def gen():
         for X_ds, stop_time in runs:
-            T = X_ds.shape[0]
-            for t in range(window_size, T):
-                win = X_ds[t-window_size:t].copy()
-                current_time = win[-1, 0]
-                # time column -> seconds from now (negative inside window)
-                win[:, 0] -= current_time
+            times_abs = X_ds[:, 0].astype(np.float32)
+            T = len(times_abs)
 
-                time_to_stop = max(stop_time - current_time, 0.0)
+            for t in range(window_size, T):
+                # Slice window [t-window_size, t)
+                win = X_ds[t-window_size:t].copy()
+
+                # Current (last) absolute time in this window
+                cur_t = times_abs[t-1]
+
+                # --- Feature time column: make it strictly relative to cur_t
+                # so model can't key on absolute progress in the run.
+                rel_times = times_abs[t-window_size:t] - \
+                    cur_t  # <=0, last is 0
+                win[:, 0] = rel_times
+
+                # --- dt per step (needed by hazard integrator); use diffs inside window
+                # length window_size, align with hazards (same length)
+                dt = np.diff(times_abs[t-window_size:t+1]).astype(np.float32)
+                # last value repeat to keep shape W (or pad head); simplest:
+                dt = np.concatenate([dt, [dt[-1]]])  # (W,)
+
+                # Targets
+                time_to_stop = max(stop_time - cur_t, 0.0)
                 near_stop = float(time_to_stop <= NEAR_THRESHOLD)
 
+                # Alive sequence: for each position k in window (0=oldest),
+                # are we still "alive" at that step relative to cur_t?
+                # Offsets from each row to cur_t are -rel_times (positive back in time).
+                # If time_to_stop > offset, we're alive.
+                offsets_back = -rel_times  # >=0
+                alive_seq = (offsets_back < time_to_stop).astype(np.float32)
+
                 yield (
-                    {"window": win,
-                     "dt": np.full((window_size,), DS_FACTOR, np.float32)},
+                    {"window": win.astype(np.float32), "dt": dt},
                     {
                         "near_stop": near_stop,
                         "log_time": np.log1p(time_to_stop),
                         "time_left": time_to_stop,
+                        "alive_seq": alive_seq
                     }
                 )
 
@@ -263,74 +314,123 @@ def balanced_dataset(runs, batch_size=32, window_size=WINDOW_SIZE, is_training=T
         output_signature=(
             {
                 "window": tf.TensorSpec((window_size, n_features), tf.float32),
-                "dt": tf.TensorSpec((window_size,), tf.float32)
+                "dt": tf.TensorSpec((window_size,), tf.float32),
             },
             {
                 "near_stop": tf.TensorSpec((), tf.float32),
                 "log_time": tf.TensorSpec((), tf.float32),
                 "time_left": tf.TensorSpec((), tf.float32),
+                "alive_seq": tf.TensorSpec((window_size,), tf.float32),
             }
         )
     )
     if is_training:
-        ds = ds.shuffle(10_000)
+        ds = ds.shuffle(10_000, reshuffle_each_iteration=True)
     return ds.batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
 
-def build_time_to_event_model(window_size=WINDOW_SIZE, n_features=None):
+def build_stopnet(window_size=WINDOW_SIZE, n_features=None,
+                  dropout=DROPOUT_RATE, l2=L2_REG):
     inp = layers.Input((window_size, n_features), name="window")
     dt = layers.Input((window_size,), name="dt")
 
-    x = layers.Conv1D(64, 3, padding='causal', activation='relu',
-                      kernel_regularizer=regularizers.l2(L2_REG))(inp)
-    x = layers.BatchNormalization()(x)
+    # --- Feature stem (depthwise-separable causal convs) ---
+    x = inp
+    for i, dil in enumerate([1, 2, 4, 8, 16]):
+        res = x
+        x = layers.SeparableConv1D(
+            filters=96 if i < 3 else 128,
+            kernel_size=5,
+            dilation_rate=dil,
+            padding="causal",
+            depthwise_regularizer=regularizers.l2(l2),
+            pointwise_regularizer=regularizers.l2(l2),
+            name=f"dws_conv_{i}"
+        )(x)
+        x = layers.BatchNormalization()(x)
+        # Gated linear unit
+        a, b = tf.split(x, 2, axis=-1)
+        x = tf.nn.swish(a) * tf.sigmoid(b)
+        x = layers.SpatialDropout1D(dropout)(x)
+        # match channels for residual
+        if res.shape[-1] != x.shape[-1]:
+            res = layers.Conv1D(x.shape[-1], 1, padding="same")(res)
+        x = layers.Add()([x, res])
 
-    for i, (rate, f) in enumerate(zip([1, 2, 4, 8], [64, 96, 96, 64])):
-        x = simple_tcn_block(x, f, dilation_rate=rate, name_prefix=f"tcn_{i}")
+    # Global summary for scalar heads
+    g = layers.GlobalAveragePooling1D()(x)
+    g = layers.Dense(128, activation="relu")(g)
+    g = layers.Dropout(dropout)(g)
 
-    # Per-timestep hazard head
-    h = layers.Conv1D(1, 1, activation='sigmoid', name='hazard_raw')(x)
-    h = layers.Reshape((window_size,), name='hazard')(h)
+    # --------- Main scalar head: time_left (seconds) ----------
+    # Positive output via softplus; learnable scale τ for stability
+    tau = tf.Variable(1.0, dtype=tf.float32, name="time_scale")
+    time_left_raw = layers.Dense(
+        1, activation="softplus", name="time_left_raw")(g)
+    time_left = LearnableScale(name="time_left")(time_left_raw)
 
-    # Expected time left from hazards
-    time_left = HazardToTime(name='hazard_to_time')([h, dt])
-
-    # Scalar heads
+    # log_time (just log1p of above to keep metrics readable)
     log_time = layers.Lambda(lambda z: tf.math.log1p(z),
-                             name='log_time')(time_left)
+                             name="log_time")(time_left)
 
-    near_stop = layers.Dense(1, activation='sigmoid', name='near_stop')(
-        layers.Dense(32, activation='relu')(layers.GlobalAveragePooling1D()(x))
+    # --------- Auxiliary near_stop classifier ----------
+    near_stop = layers.Dense(1, activation="sigmoid", name="near_stop")(g)
+
+    # --------- Hazard / alive sequence head ----------
+    # Per-timestep logits -> sigmoids -> cumulative hazard monotonic
+    h_logits = layers.Conv1D(1, 1, padding="same", name="hazard_logits")(x)
+    hazards = layers.Activation("sigmoid", name="hazard_prob")(h_logits)
+    hazards = layers.Reshape((window_size,), name="hazards")(hazards)
+
+    # Survival from hazards
+    hazards_clip = layers.Lambda(
+        lambda z: tf.clip_by_value(z, 1e-6, 1-1e-6))(hazards)
+    log_surv = layers.Lambda(lambda z: tf.math.cumsum(
+        tf.math.log1p(-z), axis=1, exclusive=True))(hazards_clip)
+    surv = layers.Lambda(lambda z: tf.exp(z), name="survival")(log_surv)
+
+    # Alive sequence label expects 1 while alive; our survival ≈ P(alive)
+    alive_pred = layers.Lambda(lambda z: z, name="alive_seq")(surv)
+
+    # Expected time from hazards as check (not backprop main loss)
+    exp_time = layers.Lambda(lambda z: tf.reduce_sum(z[0]*z[1], axis=1, keepdims=True),
+                             name="hazard_to_time")([surv, dt])
+
+    model = models.Model(
+        inputs={"window": inp, "dt": dt},
+        outputs={
+            "near_stop": near_stop,
+            "log_time": log_time,
+            "time_left": time_left,
+            "alive_seq": alive_pred,
+            "hazard_to_time": exp_time
+        }
     )
 
-    model = models.Model(inputs={"window": inp, "dt": dt},
-                         outputs={"near_stop": near_stop,
-                                  "log_time": log_time,
-                                  "time_left": time_left})
-
-    # Custom monotonic penalty
-    def monotonic_penalty(y_true, y_pred):
-        # y_pred shape (B,1) here -> penalty 0. (We’ll add it on hazard_to_time output.)
-        return 0.0
-
-    opt = tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE, clipnorm=0.5)
+    opt = tf.keras.optimizers.Adam(
+        learning_rate=LEARNING_RATE)
 
     model.compile(
         optimizer=opt,
         loss={
-            "near_stop": "binary_crossentropy",
-            "log_time": "mae",
-            "time_left": "huber"
+            "near_stop": tf.keras.losses.BinaryCrossentropy(label_smoothing=0.02),
+            "log_time": tf.keras.losses.MeanAbsoluteError(),
+            "time_left": tf.keras.losses.Huber(delta=5.0),
+            "alive_seq": tf.keras.losses.BinaryCrossentropy(),
+            "hazard_to_time": tf.keras.losses.MeanAbsoluteError()
         },
         loss_weights={
-            "near_stop": 0.2,
-            "log_time": 1.0,
-            "time_left": 0.2
+            "near_stop": 0.1,
+            "log_time": 1.0,       # main target
+            "time_left": 0.1,      # raw-seconds reg (stabilizer)
+            "alive_seq": 0.05,     # weak aux
+            "hazard_to_time": 0.0  # monitor only
         },
         metrics={
             "near_stop": ["accuracy"],
             "log_time": [tf.keras.metrics.MeanAbsoluteError(name="mae")],
-            "time_left": [tf.keras.metrics.MeanAbsoluteError(name="mae")]
+            "time_left": [tf.keras.metrics.MeanAbsoluteError(name="mae")],
+            "alive_seq": [tf.keras.metrics.BinaryAccuracy(name="acc")],
         }
     )
     return model
@@ -378,25 +478,15 @@ def train_improved_model():
         val_runs, batch_size=BATCH_SIZE, is_training=False)
 
     # Build model
-    model = build_time_to_event_model(WINDOW_SIZE, n_features)
+    model = build_stopnet(WINDOW_SIZE, n_features)
     print(f"Model parameters: {model.count_params():,}")
 
     # Improved callbacks
     callbacks_list = [
-        callbacks.EarlyStopping(
-            monitor='val_loss',
-            patience=5,
-            restore_best_weights=True,
-            verbose=1,
-            min_delta=0.01
-        ),
-        callbacks.ReduceLROnPlateau(
-            monitor='val_normalized_time_mae',
-            factor=0.5,
-            patience=3,
-            min_lr=1e-6,
-            verbose=1
-        ),
+        callbacks.EarlyStopping(monitor="val_log_time_mae", patience=6,
+                                restore_best_weights=True, min_delta=0.01),
+        callbacks.ReduceLROnPlateau(monitor="val_log_time_mae", factor=0.5,
+                                    patience=3, min_lr=1e-6),
         callbacks.ModelCheckpoint(
             'improved_model.h5',
             monitor='val_loss',
@@ -434,119 +524,147 @@ def simulate_improved_live(
     window_size: int = WINDOW_SIZE,
     ds_factor: int = DS_FACTOR
 ):
-    """Improved live simulation with better visualization"""
+    """
+    Live simulation that mirrors your current pipeline:
+      • log_time head = log1p(seconds)
+      • time_left head = raw seconds
+      • No external TIME_SCALE
+      • Window time column re-zeroed, dt from inside the window
+    """
+    # ---- Load & scale like training ----
     X_ds_raw, stop_time = parse_file_conservative(
-        data_path, data_path.replace('.csv', '_poi.csv'), ds_factor)
-    X_ds = scaler.transform(X_ds_raw)
+        data_path, data_path.replace('.csv', '_poi.csv'), ds_factor
+    )
 
-    buf, times, dissipation_values = [], [], []
-    predictions, prediction_times = [], []
-    errors = []
+    # scale only feature cols (exclude absolute time)
+    feats_scaled = scaler.transform(X_ds_raw[:, 1:])
+    X_ds = np.concatenate([X_ds_raw[:, :1], feats_scaled],
+                          axis=1).astype(np.float32)
 
+    raw_times = X_ds_raw[:, 0].astype(np.float32)
+    diss_vals = X_ds_raw[:, 1].astype(np.float32)
+
+    buf_scaled, buf_times = [], []
+    times = []
+    preds_sec, pred_times, errors = [], [], []
+    near_probs = []
+
+    # ---- Plot setup ----
     plt.ion()
     fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
 
-    for raw_row, scaled_row in zip(X_ds_raw, X_ds):
-        current_time = float(raw_row[0])
-        times.append(current_time)
-        # Use raw dissipation for plotting
-        dissipation_values.append(float(raw_row[1]))
+    for i in range(len(X_ds)):
+        cur_t = raw_times[i]
+        times.append(cur_t)
 
-        buf.append(scaled_row)
-        if len(buf) > window_size:
-            buf.pop(0)
+        buf_scaled.append(X_ds[i])
+        buf_times.append(cur_t)
+        if len(buf_scaled) > window_size:
+            buf_scaled.pop(0)
+            buf_times.pop(0)
 
-        if len(buf) == window_size:
-            win = np.array(buf, dtype=np.float32)[None, ...]
-            raw_out = model.predict(win, verbose=0)
+        if len(buf_scaled) == window_size:
+            win = np.array(buf_scaled, dtype=np.float32)
+            # re-zero time col
+            rel_times = np.array(buf_times, dtype=np.float32) - buf_times[-1]
+            win[:, 0] = rel_times
 
-            # Extract predictions
-            if isinstance(raw_out, dict):
-                near_prob = float(raw_out['near_stop'][0, 0])
-                norm_time = float(raw_out['normalized_time'][0, 0])
-                raw_time = float(raw_out['time_delta'][0, 0])
+            # dt from within window (length = window_size)
+            dt = np.diff(
+                np.array(buf_times + [buf_times[-1]], dtype=np.float32))
+            dt = np.concatenate([dt, [dt[-1]]]).astype(np.float32)
+
+            outs = model.predict(
+                {"window": win[None, ...], "dt": dt[None, ...]}, verbose=0)
+
+            # ---- Extract predictions ----
+            if isinstance(outs, dict):
+                # Prefer raw seconds if present
+                if "time_left" in outs:
+                    pred_sec = float(outs["time_left"][0, 0])
+                elif "log_time" in outs:
+                    pred_sec = float(np.expm1(outs["log_time"][0, 0]))
+                else:
+                    raise KeyError("Model outputs lack time_left/log_time")
+                near_prob = float(outs.get("near_stop", [[np.nan]])[0, 0])
             else:
-                # Handle list output
-                name_to_idx = {n: i for i, n in enumerate(model.output_names)}
-                near_prob = float(raw_out[name_to_idx['near_stop']][0, 0])
-                norm_time = float(
-                    raw_out[name_to_idx['normalized_time']][0, 0])
-                raw_time = float(raw_out[name_to_idx['time_delta']][0, 0])
+                idx = {n: j for j, n in enumerate(model.output_names)}
+                if "time_left" in idx:
+                    pred_sec = float(outs[idx["time_left"]][0, 0])
+                elif "log_time" in idx:
+                    pred_sec = float(np.expm1(outs[idx["log_time"]][0, 0]))
+                else:
+                    raise KeyError("Model outputs lack time_left/log_time")
+                near_prob = float(outs[idx.get("near_stop", 0)][0, 0])
 
-            # Use the normalized prediction scaled back
-            pred_time_to_stop = max(norm_time * 100.0, 0.0)  # Scale back
-            predicted_stop_time = current_time + pred_time_to_stop
+            pred_sec = max(pred_sec, 0.0)
+            pred_stop_time = cur_t + pred_sec
 
-            predictions.append(pred_time_to_stop)
-            prediction_times.append(current_time)
+            preds_sec.append(pred_sec)
+            pred_times.append(cur_t)
+            near_probs.append(near_prob)
+            errors.append(abs(pred_stop_time - stop_time))
 
-            # Calculate current error
-            current_error = abs(predicted_stop_time - stop_time)
-            errors.append(current_error)
-
-        # Update plots
+        # ---- Plots ----
         ax1.clear()
-        ax1.plot(times, dissipation_values, 'b-',
+        ax1.plot(times, diss_vals[:len(times)], 'b-',
                  alpha=0.7, label='Dissipation')
-        ax1.axvline(stop_time, color='red', linestyle='--',
-                    linewidth=2, label='True Stop')
-        if len(predictions) > 0:
-            pred_stop = prediction_times[-1] + predictions[-1]
-            ax1.axvline(pred_stop, color='green', linestyle='--',
-                        linewidth=2, label='Predicted Stop')
+        ax1.axvline(stop_time, color='red', ls='--', lw=2, label='True Stop')
+        if preds_sec:
+            ax1.axvline(pred_times[-1] + preds_sec[-1],
+                        color='green', ls='--', lw=2, label='Pred Stop')
         ax1.set_xlabel('Time (s)')
         ax1.set_ylabel('Dissipation')
         ax1.set_title('Signal vs Predictions')
-        ax1.legend()
+        ax1.legend(loc='upper left')
         ax1.grid(True, alpha=0.3)
 
         ax2.clear()
-        if len(predictions) > 1:
-            ax2.plot(prediction_times, predictions, 'g-',
-                     linewidth=2, label='Time to Stop')
+        if len(preds_sec) > 1:
+            ax2.plot(pred_times, preds_sec, lw=2, label='Pred TTS (s)')
             ax2.set_xlabel('Current Time (s)')
-            ax2.set_ylabel('Predicted Time to Stop (s)')
+            ax2.set_ylabel('Seconds to Stop')
             ax2.set_title('Time-to-Stop Predictions')
-            ax2.legend()
             ax2.grid(True, alpha=0.3)
+            if near_probs and not np.isnan(near_probs[-1]):
+                ax2b = ax2.twinx()
+                ax2b.plot(pred_times, near_probs, ls='--',
+                          alpha=0.4, label='Near Prob')
+                ax2b.set_ylabel('Near-Stop Prob')
+                ax2b.set_ylim(0, 1)
 
         ax3.clear()
         if len(errors) > 1:
-            ax3.plot(prediction_times, errors, 'r-', linewidth=2, alpha=0.7)
+            ax3.plot(pred_times, errors, 'r-', lw=2, alpha=0.7)
             ax3.set_xlabel('Time (s)')
-            ax3.set_ylabel('Prediction Error (s)')
+            ax3.set_ylabel('Abs Error (s)')
             ax3.set_title('Prediction Error Over Time')
             ax3.grid(True, alpha=0.3)
-
-            # Show running average
             if len(errors) > 10:
-                running_avg = np.convolve(errors, np.ones(10)/10, mode='valid')
-                ax3.plot(prediction_times[9:], running_avg, 'k--', linewidth=2,
-                         label=f'10-pt avg: {running_avg[-1]:.1f}s')
+                ra = np.convolve(errors, np.ones(10)/10, mode='valid')
+                ax3.plot(pred_times[9:], ra, 'k--', lw=2,
+                         label=f'10-pt avg: {ra[-1]:.1f}s')
                 ax3.legend()
 
         ax4.clear()
-        if len(errors) > 0:
-            ax4.hist(errors, bins=20, alpha=0.7, color='orange')
-            ax4.set_xlabel('Prediction Error (s)')
-            ax4.set_ylabel('Frequency')
+        if errors:
+            ax4.hist(errors, bins=20, alpha=0.7)
+            ax4.set_xlabel('Abs Error (s)')
+            ax4.set_ylabel('Freq')
             ax4.set_title(
-                f'Error Distribution\nMean: {np.mean(errors):.1f}s, Std: {np.std(errors):.1f}s')
+                f'Error Dist  μ={np.mean(errors):.1f}s  σ={np.std(errors):.1f}s  med={np.median(errors):.1f}s')
             ax4.grid(True, alpha=0.3)
 
         plt.tight_layout()
         plt.pause(0.01)
 
     plt.ioff()
-
-    # Final statistics
     if errors:
-        print(f"\nFinal Performance:")
-        print(f"Mean Error: {np.mean(errors):.2f}s")
-        print(f"Std Error: {np.std(errors):.2f}s")
+        print("\nFinal Performance:")
+        print(f"Mean Error:   {np.mean(errors):.2f}s")
+        print(f"Std Error:    {np.std(errors):.2f}s")
         print(f"Median Error: {np.median(errors):.2f}s")
-        print(f"Max Error: {np.max(errors):.2f}s")
-
+        print(f"Max Error:    {np.max(errors):.2f}s")
     plt.show()
 
 
