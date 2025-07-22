@@ -13,7 +13,7 @@ import keras_tuner as kt
 from sklearn.model_selection import KFold
 
 # ——— Improved Hyperparameters ———
-EPOCHS = 15  # More epochs with better regularization
+EPOCHS = 1  # More epochs with better regularization
 DS_FACTOR = 5
 WINDOW_SIZE = 64  # Reduced for better generalization
 NEAR_THRESHOLD = 2.0  # Increased threshold for more balanced classification
@@ -26,6 +26,20 @@ print("Py:", sys.version)
 print("TF:", tf.__version__)
 print("Built w/ CUDA:", tf.test.is_built_with_cuda())
 print("Physical GPUs:", tf.config.list_physical_devices('GPU'))
+
+
+class HazardToTime(tf.keras.layers.Layer):
+    def call(self, inputs):
+        # inputs: (B, W) hazards; dt: (B, W)
+        hazards, dt = inputs
+        hazards = tf.clip_by_value(hazards, 1e-6, 1-1e-6)
+        # survival S_{k-1}
+        log_surv = tf.math.cumsum(
+            tf.math.log1p(-hazards), axis=1, exclusive=True)
+        surv = tf.exp(log_surv)  # (B, W)
+        exp_time = tf.reduce_sum(surv * dt, axis=1, keepdims=True)
+        return exp_time  # (B,1)
+
 
 # Set mixed precision
 try:
@@ -219,13 +233,7 @@ def parse_file_conservative(
     return X_ds, stop_time
 
 
-def balanced_dataset(
-    runs: list[tuple[np.ndarray, float]],
-    batch_size: int = 32,
-    window_size: int = WINDOW_SIZE,
-    is_training: bool = True
-) -> tf.data.Dataset:
-    """Create more balanced dataset with proper target engineering"""
+def balanced_dataset(runs, batch_size=32, window_size=WINDOW_SIZE, is_training=True):
     n_features = runs[0][0].shape[1]
 
     def gen():
@@ -234,118 +242,95 @@ def balanced_dataset(
             for t in range(window_size, T):
                 win = X_ds[t-window_size:t].copy()
                 current_time = win[-1, 0]
-
-                # Normalize time within window
+                # time column -> seconds from now (negative inside window)
                 win[:, 0] -= current_time
 
                 time_to_stop = max(stop_time - current_time, 0.0)
                 near_stop = float(time_to_stop <= NEAR_THRESHOLD)
 
-                # Better target scaling - log transform but keep original too
-                log_time_to_stop = np.log1p(time_to_stop)
+                yield (
+                    {"window": win,
+                     "dt": np.full((window_size,), DS_FACTOR, np.float32)},
+                    {
+                        "near_stop": near_stop,
+                        "log_time": np.log1p(time_to_stop),
+                        "time_left": time_to_stop,
+                    }
+                )
 
-                # Normalized time target for better learning
-                # Cap at reasonable range
-                normalized_time = min(time_to_stop / 100.0, 10.0)
-
-                yield win, {
-                    'near_stop': near_stop,
-                    'time_delta': time_to_stop,
-                    'normalized_time': normalized_time
-                }
-
-    dataset = tf.data.Dataset.from_generator(
+    ds = tf.data.Dataset.from_generator(
         gen,
         output_signature=(
-            tf.TensorSpec((window_size, n_features), tf.float32),
             {
-                'near_stop': tf.TensorSpec((), tf.float32),
-                'time_delta': tf.TensorSpec((), tf.float32),
-                'normalized_time': tf.TensorSpec((), tf.float32)
+                "window": tf.TensorSpec((window_size, n_features), tf.float32),
+                "dt": tf.TensorSpec((window_size,), tf.float32)
+            },
+            {
+                "near_stop": tf.TensorSpec((), tf.float32),
+                "log_time": tf.TensorSpec((), tf.float32),
+                "time_left": tf.TensorSpec((), tf.float32),
             }
         )
     )
-
     if is_training:
-        dataset = dataset.shuffle(10_000)
+        ds = ds.shuffle(10_000)
+    return ds.batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
-    return dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
-
-def build_improved_model(window_size=WINDOW_SIZE, n_features=None):
-    """Simplified model architecture focused on generalization"""
+def build_time_to_event_model(window_size=WINDOW_SIZE, n_features=None):
     inp = layers.Input((window_size, n_features), name="window")
+    dt = layers.Input((window_size,), name="dt")
 
-    # Simple initial embedding
-    x = layers.Conv1D(64, 3, activation='relu',
+    x = layers.Conv1D(64, 3, padding='causal', activation='relu',
                       kernel_regularizer=regularizers.l2(L2_REG))(inp)
     x = layers.BatchNormalization()(x)
 
-    # Simplified TCN stack
-    dilation_rates = [1, 2, 4, 8]
-    filters = [64, 96, 96, 64]
-
-    for i, (rate, f) in enumerate(zip(dilation_rates, filters)):
+    for i, (rate, f) in enumerate(zip([1, 2, 4, 8], [64, 96, 96, 64])):
         x = simple_tcn_block(x, f, dilation_rate=rate, name_prefix=f"tcn_{i}")
 
-    # Simple global pooling
-    x = layers.GlobalAveragePooling1D()(x)
+    # Per-timestep hazard head
+    h = layers.Conv1D(1, 1, activation='sigmoid', name='hazard_raw')(x)
+    h = layers.Reshape((window_size,), name='hazard')(h)
 
-    # Shared representation with strong regularization
-    shared = layers.Dense(128, activation='relu',
-                          kernel_regularizer=regularizers.l2(L2_REG))(x)
-    shared = layers.BatchNormalization()(shared)
-    shared = layers.Dropout(DROPOUT_RATE)(shared)
+    # Expected time left from hazards
+    time_left = HazardToTime(name='hazard_to_time')([h, dt])
 
-    shared = layers.Dense(64, activation='relu',
-                          kernel_regularizer=regularizers.l2(L2_REG))(shared)
-    shared = layers.BatchNormalization()(shared)
-    shared = layers.Dropout(DROPOUT_RATE)(shared)
+    # Scalar heads
+    log_time = layers.Lambda(lambda z: tf.math.log1p(z),
+                             name='log_time')(time_left)
 
-    # Classification head
-    c = layers.Dense(32, activation='relu')(shared)
-    c = layers.Dropout(DROPOUT_RATE * 0.5)(c)
-    c = layers.Dense(1, activation='sigmoid', name='near_stop')(c)
-
-    # Primary regression head - use normalized target
-    r1 = layers.Dense(32, activation='relu')(shared)
-    r1 = layers.Dropout(DROPOUT_RATE * 0.5)(r1)
-    r1 = layers.Dense(1, activation='linear', name='normalized_time')(r1)
-
-    # Secondary regression head for original scale
-    r2 = layers.Dense(32, activation='relu')(shared)
-    r2 = layers.Dropout(DROPOUT_RATE * 0.5)(r2)
-    r2 = layers.Dense(1, activation='linear', name='time_delta')(r2)
-
-    model = models.Model(inp, {
-        'near_stop': c,
-        'normalized_time': r1,
-        'time_delta': r2
-    })
-
-    # Conservative optimizer
-    optimizer = tf.keras.optimizers.Adam(
-        learning_rate=LEARNING_RATE,
-        clipnorm=0.5  # Gradient clipping
+    near_stop = layers.Dense(1, activation='sigmoid', name='near_stop')(
+        layers.Dense(32, activation='relu')(layers.GlobalAveragePooling1D()(x))
     )
 
-    # Balanced loss weights
+    model = models.Model(inputs={"window": inp, "dt": dt},
+                         outputs={"near_stop": near_stop,
+                                  "log_time": log_time,
+                                  "time_left": time_left})
+
+    # Custom monotonic penalty
+    def monotonic_penalty(y_true, y_pred):
+        # y_pred shape (B,1) here -> penalty 0. (We’ll add it on hazard_to_time output.)
+        return 0.0
+
+    opt = tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE, clipnorm=0.5)
+
     model.compile(
-        optimizer=optimizer,
+        optimizer=opt,
         loss={
-            'near_stop': 'binary_crossentropy',
-            'normalized_time': 'mse',
-            'time_delta': 'huber'  # More robust to outliers
-        },
-        metrics={
-            'near_stop': ['accuracy'],
-            'normalized_time': ['mae'],
-            'time_delta': ['mae']
+            "near_stop": "binary_crossentropy",
+            "log_time": "mae",
+            "time_left": "huber"
         },
         loss_weights={
-            'near_stop': 0.5,      # Reduced weight
-            'normalized_time': 1.0,  # Primary target
-            'time_delta': 0.3       # Secondary target
+            "near_stop": 0.2,
+            "log_time": 1.0,
+            "time_left": 0.2
+        },
+        metrics={
+            "near_stop": ["accuracy"],
+            "log_time": [tf.keras.metrics.MeanAbsoluteError(name="mae")],
+            "time_left": [tf.keras.metrics.MeanAbsoluteError(name="mae")]
         }
     )
     return model
@@ -393,7 +378,7 @@ def train_improved_model():
         val_runs, batch_size=BATCH_SIZE, is_training=False)
 
     # Build model
-    model = build_improved_model(WINDOW_SIZE, n_features)
+    model = build_time_to_event_model(WINDOW_SIZE, n_features)
     print(f"Model parameters: {model.count_params():,}")
 
     # Improved callbacks
