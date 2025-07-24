@@ -50,6 +50,20 @@ Q_SINGLE_PREDICTOR_5 = os.path.join("QModel", "SavedModels", "QModel_5.json")
 Q_SINGLE_PREDICTOR_6 = os.path.join("QModel", "SavedModels", "QModel_6.json")
 
 
+def _extract_idx(x, default=-1):
+    if isinstance(x, dict):
+        if "indices" in x:
+            return _extract_idx(x["indices"], default)
+        if "idx" in x:
+            return _extract_idx(x["idx"], default)
+        return default
+    if isinstance(x, (list, tuple, np.ndarray)):
+        return _extract_idx(x[0], default) if len(x) else default
+    if x is None or (isinstance(x, float) and np.isnan(x)):
+        return default
+    return int(x)
+
+
 @singledispatch
 def predict_dispatch(predictor, file_buffer, actual_poi_indices):
     raise NotImplementedError(
@@ -134,6 +148,9 @@ def _(predictor: 'QModelPredict', file_buffer, actual_poi_indices):
 
 
 def compute_metrics(actual: List[int], predicted: List[int]) -> dict:
+    actual_np = np.asarray([_extract_idx(a) for a in actual], dtype=float)
+    predicted_np = np.asarray([_extract_idx(p)
+                              for p in predicted], dtype=float)
     if len(actual) != len(predicted):
         raise ValueError(
             "The number of predicted indices does not match the number of actual indices.")
@@ -367,31 +384,25 @@ class Benchmarker:
             aggregated[model_name] = {}
             preds = data.get("predicted", [])
             if not preds:
-                # no predictions → skip POI metrics
                 continue
 
             for idx in range(6):
-                # build the “actual” list exactly as before
                 actual_i = [a[idx] for a in data["actual"]]
                 key = f"POI{idx+1}"
 
-                # robust per-element extraction
                 predicted_i = []
                 for p in preds:
                     if isinstance(p, dict):
-                        # dict-style: must have key "POI1", …, "POI6"
-                        predicted_i.append(p[key])
+                        # p[key] might still be a dict
+                        predicted_i.append(_extract_idx(p.get(key)))
                     else:
-                        # sequence-style: list, tuple or ndarray
-                        predicted_i.append(p[idx])
+                        predicted_i.append(_extract_idx(p[idx]))
 
                 aggregated[model_name][key] = compute_metrics(
                     actual_i, predicted_i)
 
-            # finally average runtime
             aggregated[model_name]["avg_time"] = float(
                 np.mean(data["runtimes"]))
-
         return aggregated
 
     def _plot_bad_cases(self):
@@ -525,4 +536,4 @@ if __name__ == "__main__":
     ]
     benchmarker = Benchmarker(predictors=predictors)
     aggregated_metrics = benchmarker.run(
-        test_directory=test_directory, test_size=100)
+        test_directory=test_directory, test_size=np.inf)
