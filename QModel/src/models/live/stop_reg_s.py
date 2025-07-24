@@ -34,7 +34,43 @@ print("TF:", tf.__version__)
 print("Built w/ CUDA:", tf.test.is_built_with_cuda())
 print("Physical GPUs:", tf.config.list_physical_devices('GPU'))
 
+<<<<<<< HEAD
 # Enable mixed precision for better performance
+=======
+
+class HazardToTime(tf.keras.layers.Layer):
+    def call(self, inputs):
+        # inputs: (B, W) hazards; dt: (B, W)
+        hazards, dt = inputs
+        hazards = tf.clip_by_value(hazards, 1e-6, 1-1e-6)
+        # survival S_{k-1}
+        log_surv = tf.math.cumsum(
+            tf.math.log1p(-hazards), axis=1, exclusive=True)
+        surv = tf.exp(log_surv)  # (B, W)
+        exp_time = tf.reduce_sum(surv * dt, axis=1, keepdims=True)
+        return exp_time  # (B,1)
+
+
+class LearnableScale(layers.Layer):
+    def __init__(self, init=1.0, **kwargs):
+        super().__init__(**kwargs)
+        self.init = init
+
+    def build(self, input_shape):
+        self.tau = self.add_weight(
+            name="tau",
+            shape=(),
+            initializer=tf.keras.initializers.Constant(self.init),
+            dtype=self.compute_dtype,   # honors mixed precision policy
+            trainable=True,
+        )
+
+    def call(self, x):
+        return x * self.tau
+
+
+# Set mixed precision
+>>>>>>> 785bd82ffda98e0583fc47b70d1d5766b62b9f2e
 try:
     policy = tf.keras.mixed_precision.Policy('mixed_float16')
     tf.keras.mixed_precision.set_global_policy(policy)
@@ -352,8 +388,22 @@ def parse_file_enhanced(
     return X_ds, stop_time
 
 
+<<<<<<< HEAD
 def create_advanced_dataset(runs, batch_size=64, window_size=WINDOW_SIZE, is_training=True):
     """Advanced dataset with better target engineering"""
+=======
+def balanced_dataset(runs,
+                     batch_size=32,
+                     window_size=WINDOW_SIZE,
+                     is_training=True):
+    """
+    runs: list of (X_ds, stop_time) where col0 is absolute seconds.
+    We:
+      • never expose absolute time: col0 is shifted so last row == 0.
+      • compute per-step dt from the window itself (no future info).
+      • build alive_seq from true remaining seconds, not DS_FACTOR guesses.
+    """
+>>>>>>> 785bd82ffda98e0583fc47b70d1d5766b62b9f2e
     n_features = runs[0][0].shape[1]
 
     def gen():
@@ -362,6 +412,7 @@ def create_advanced_dataset(runs, batch_size=64, window_size=WINDOW_SIZE, is_tra
             T = len(times_abs)
 
             for t in range(window_size, T):
+<<<<<<< HEAD
                 # ----- window -----
                 win = X_ds[t-window_size:t].copy()
                 cur_t = times_abs[t-1]
@@ -407,6 +458,45 @@ def create_advanced_dataset(runs, batch_size=64, window_size=WINDOW_SIZE, is_tra
                         "progress": np.float32(progress),
                         "alive_seq": alive_seq.astype(np.float32),
                     },
+=======
+                # Slice window [t-window_size, t)
+                win = X_ds[t-window_size:t].copy()
+
+                # Current (last) absolute time in this window
+                cur_t = times_abs[t-1]
+
+                # --- Feature time column: make it strictly relative to cur_t
+                # so model can't key on absolute progress in the run.
+                rel_times = times_abs[t-window_size:t] - \
+                    cur_t  # <=0, last is 0
+                win[:, 0] = rel_times
+
+                # --- dt per step (needed by hazard integrator); use diffs inside window
+                # length window_size, align with hazards (same length)
+                dt = np.diff(times_abs[t-window_size:t+1]).astype(np.float32)
+                # last value repeat to keep shape W (or pad head); simplest:
+                dt = np.concatenate([dt, [dt[-1]]])  # (W,)
+
+                # Targets
+                time_to_stop = max(stop_time - cur_t, 0.0)
+                near_stop = float(time_to_stop <= NEAR_THRESHOLD)
+
+                # Alive sequence: for each position k in window (0=oldest),
+                # are we still "alive" at that step relative to cur_t?
+                # Offsets from each row to cur_t are -rel_times (positive back in time).
+                # If time_to_stop > offset, we're alive.
+                offsets_back = -rel_times  # >=0
+                alive_seq = (offsets_back < time_to_stop).astype(np.float32)
+
+                yield (
+                    {"window": win.astype(np.float32), "dt": dt},
+                    {
+                        "near_stop": near_stop,
+                        "log_time": np.log1p(time_to_stop),
+                        "time_left": time_to_stop,
+                        "alive_seq": alive_seq
+                    }
+>>>>>>> 785bd82ffda98e0583fc47b70d1d5766b62b9f2e
                 )
 
     ds = tf.data.Dataset.from_generator(
@@ -418,6 +508,7 @@ def create_advanced_dataset(runs, batch_size=64, window_size=WINDOW_SIZE, is_tra
             },
             {
                 "time_left": tf.TensorSpec((), tf.float32),
+<<<<<<< HEAD
                 "log_time": tf.TensorSpec((), tf.float32),
                 "sqrt_time": tf.TensorSpec((), tf.float32),
                 "near_stop": tf.TensorSpec((), tf.float32),
@@ -425,9 +516,15 @@ def create_advanced_dataset(runs, batch_size=64, window_size=WINDOW_SIZE, is_tra
                 "alive_seq": tf.TensorSpec((window_size,), tf.float32),
             },
         ),
+=======
+                "alive_seq": tf.TensorSpec((window_size,), tf.float32),
+            }
+        )
+>>>>>>> 785bd82ffda98e0583fc47b70d1d5766b62b9f2e
     )
 
     if is_training:
+<<<<<<< HEAD
         ds = ds.shuffle(20_000, reshuffle_each_iteration=True)
 
     # drop_remainder helps if batch size doesn't divide evenly
@@ -542,10 +639,83 @@ def build_advanced_model(window_size=WINDOW_SIZE, n_features=None, dropout=DROPO
         1, 1, padding="same", name="survival_logits")(x)
     alive_seq = layers.Activation("sigmoid", name="alive_seq")(survival_logits)
     alive_seq = layers.Reshape((window_size,))(alive_seq)
+=======
+        ds = ds.shuffle(10_000, reshuffle_each_iteration=True)
+    return ds.batch(batch_size).prefetch(tf.data.AUTOTUNE)
+
+
+def build_stopnet(window_size=WINDOW_SIZE, n_features=None,
+                  dropout=DROPOUT_RATE, l2=L2_REG):
+    inp = layers.Input((window_size, n_features), name="window")
+    dt = layers.Input((window_size,), name="dt")
+
+    # --- Feature stem (depthwise-separable causal convs) ---
+    x = inp
+    for i, dil in enumerate([1, 2, 4, 8, 16]):
+        res = x
+        x = layers.SeparableConv1D(
+            filters=96 if i < 3 else 128,
+            kernel_size=5,
+            dilation_rate=dil,
+            padding="causal",
+            depthwise_regularizer=regularizers.l2(l2),
+            pointwise_regularizer=regularizers.l2(l2),
+            name=f"dws_conv_{i}"
+        )(x)
+        x = layers.BatchNormalization()(x)
+        # Gated linear unit
+        a, b = tf.split(x, 2, axis=-1)
+        x = tf.nn.swish(a) * tf.sigmoid(b)
+        x = layers.SpatialDropout1D(dropout)(x)
+        # match channels for residual
+        if res.shape[-1] != x.shape[-1]:
+            res = layers.Conv1D(x.shape[-1], 1, padding="same")(res)
+        x = layers.Add()([x, res])
+
+    # Global summary for scalar heads
+    g = layers.GlobalAveragePooling1D()(x)
+    g = layers.Dense(128, activation="relu")(g)
+    g = layers.Dropout(dropout)(g)
+
+    # --------- Main scalar head: time_left (seconds) ----------
+    # Positive output via softplus; learnable scale τ for stability
+    tau = tf.Variable(1.0, dtype=tf.float32, name="time_scale")
+    time_left_raw = layers.Dense(
+        1, activation="softplus", name="time_left_raw")(g)
+    time_left = LearnableScale(name="time_left")(time_left_raw)
+
+    # log_time (just log1p of above to keep metrics readable)
+    log_time = layers.Lambda(lambda z: tf.math.log1p(z),
+                             name="log_time")(time_left)
+
+    # --------- Auxiliary near_stop classifier ----------
+    near_stop = layers.Dense(1, activation="sigmoid", name="near_stop")(g)
+
+    # --------- Hazard / alive sequence head ----------
+    # Per-timestep logits -> sigmoids -> cumulative hazard monotonic
+    h_logits = layers.Conv1D(1, 1, padding="same", name="hazard_logits")(x)
+    hazards = layers.Activation("sigmoid", name="hazard_prob")(h_logits)
+    hazards = layers.Reshape((window_size,), name="hazards")(hazards)
+
+    # Survival from hazards
+    hazards_clip = layers.Lambda(
+        lambda z: tf.clip_by_value(z, 1e-6, 1-1e-6))(hazards)
+    log_surv = layers.Lambda(lambda z: tf.math.cumsum(
+        tf.math.log1p(-z), axis=1, exclusive=True))(hazards_clip)
+    surv = layers.Lambda(lambda z: tf.exp(z), name="survival")(log_surv)
+
+    # Alive sequence label expects 1 while alive; our survival ≈ P(alive)
+    alive_pred = layers.Lambda(lambda z: z, name="alive_seq")(surv)
+
+    # Expected time from hazards as check (not backprop main loss)
+    exp_time = layers.Lambda(lambda z: tf.reduce_sum(z[0]*z[1], axis=1, keepdims=True),
+                             name="hazard_to_time")([surv, dt])
+>>>>>>> 785bd82ffda98e0583fc47b70d1d5766b62b9f2e
 
     model = models.Model(
         inputs={"window": inp, "dt": dt},
         outputs={
+<<<<<<< HEAD
             "time_left": time_left,
             "log_time": log_time,
             "sqrt_time": sqrt_time,
@@ -558,10 +728,23 @@ def build_advanced_model(window_size=WINDOW_SIZE, n_features=None, dropout=DROPO
     # Advanced optimizer with learning rate scheduling
     opt = opt = tfa.optimizers.AdamW(
         learning_rate=LEARNING_RATE, weight_decay=1e-5)
+=======
+            "near_stop": near_stop,
+            "log_time": log_time,
+            "time_left": time_left,
+            "alive_seq": alive_pred,
+            "hazard_to_time": exp_time
+        }
+    )
+
+    opt = tf.keras.optimizers.Adam(
+        learning_rate=LEARNING_RATE)
+>>>>>>> 785bd82ffda98e0583fc47b70d1d5766b62b9f2e
 
     model.compile(
         optimizer=opt,
         loss={
+<<<<<<< HEAD
             # Robust to outliers
             "time_left": tf.keras.losses.Huber(delta=2.0),
             "log_time": tf.keras.losses.MeanSquaredError(),
@@ -577,6 +760,20 @@ def build_advanced_model(window_size=WINDOW_SIZE, n_features=None, dropout=DROPO
             "near_stop": 0.2,      # Classification aid
             "progress": 0.1,       # Auxiliary
             "alive_seq": 0.1       # Sequence learning
+=======
+            "near_stop": tf.keras.losses.BinaryCrossentropy(label_smoothing=0.02),
+            "log_time": tf.keras.losses.MeanAbsoluteError(),
+            "time_left": tf.keras.losses.Huber(delta=5.0),
+            "alive_seq": tf.keras.losses.BinaryCrossentropy(),
+            "hazard_to_time": tf.keras.losses.MeanAbsoluteError()
+        },
+        loss_weights={
+            "near_stop": 0.1,
+            "log_time": 1.0,       # main target
+            "time_left": 0.1,      # raw-seconds reg (stabilizer)
+            "alive_seq": 0.05,     # weak aux
+            "hazard_to_time": 0.0  # monitor only
+>>>>>>> 785bd82ffda98e0583fc47b70d1d5766b62b9f2e
         },
         metrics={
             "time_left": [
@@ -584,11 +781,17 @@ def build_advanced_model(window_size=WINDOW_SIZE, n_features=None, dropout=DROPO
                 tf.keras.metrics.RootMeanSquaredError(name="rmse")
             ],
             "log_time": [tf.keras.metrics.MeanAbsoluteError(name="mae")],
+<<<<<<< HEAD
             "near_stop": [tf.keras.metrics.BinaryAccuracy(name="acc")],
             "progress": [tf.keras.metrics.MeanAbsoluteError(name="mae")],
             "alive_seq": [tf.keras.metrics.BinaryAccuracy(name="acc")]
         },
         jit_compile=False,
+=======
+            "time_left": [tf.keras.metrics.MeanAbsoluteError(name="mae")],
+            "alive_seq": [tf.keras.metrics.BinaryAccuracy(name="acc")],
+        }
+>>>>>>> 785bd82ffda98e0583fc47b70d1d5766b62b9f2e
     )
 
     return model
@@ -649,11 +852,16 @@ def train_advanced_model():
         val_runs, batch_size=BATCH_SIZE, is_training=False)
 
     # Build model
+<<<<<<< HEAD
     model = build_advanced_model(WINDOW_SIZE, n_features)
+=======
+    model = build_stopnet(WINDOW_SIZE, n_features)
+>>>>>>> 785bd82ffda98e0583fc47b70d1d5766b62b9f2e
     print(f"Model parameters: {model.count_params():,}")
 
     # Advanced callbacks
     callbacks_list = [
+<<<<<<< HEAD
         callbacks.EarlyStopping(
             monitor="val_time_left_mae",
             patience=PATIENCE,
@@ -668,6 +876,12 @@ def train_advanced_model():
             min_lr=1e-7,
             verbose=1
         ),
+=======
+        callbacks.EarlyStopping(monitor="val_log_time_mae", patience=6,
+                                restore_best_weights=True, min_delta=0.01),
+        callbacks.ReduceLROnPlateau(monitor="val_log_time_mae", factor=0.5,
+                                    patience=3, min_lr=1e-6),
+>>>>>>> 785bd82ffda98e0583fc47b70d1d5766b62b9f2e
         callbacks.ModelCheckpoint(
             'best_advanced_model.keras',
             monitor='val_loss',
@@ -730,6 +944,7 @@ def simulate_advanced_live(
     pause: float = 0.001,
     update_every: int = 10
 ):
+<<<<<<< HEAD
     """Enhanced live simulation with better visualization"""
     print(f"Running simulation on: {data_path}")
 
@@ -755,10 +970,39 @@ def simulate_advanced_live(
     near_probs, progress_vals = [], []
 
     # Live plotting
+=======
+    """
+    Live simulation that mirrors your current pipeline:
+      • log_time head = log1p(seconds)
+      • time_left head = raw seconds
+      • No external TIME_SCALE
+      • Window time column re-zeroed, dt from inside the window
+    """
+    # ---- Load & scale like training ----
+    X_ds_raw, stop_time = parse_file_conservative(
+        data_path, data_path.replace('.csv', '_poi.csv'), ds_factor
+    )
+
+    # scale only feature cols (exclude absolute time)
+    feats_scaled = scaler.transform(X_ds_raw[:, 1:])
+    X_ds = np.concatenate([X_ds_raw[:, :1], feats_scaled],
+                          axis=1).astype(np.float32)
+
+    raw_times = X_ds_raw[:, 0].astype(np.float32)
+    diss_vals = X_ds_raw[:, 1].astype(np.float32)
+
+    buf_scaled, buf_times = [], []
+    times = []
+    preds_sec, pred_times, errors = [], [], []
+    near_probs = []
+
+    # ---- Plot setup ----
+>>>>>>> 785bd82ffda98e0583fc47b70d1d5766b62b9f2e
     plt.ion()
     fig = plt.figure(figsize=(20, 12))
     gs = fig.add_gridspec(3, 3, height_ratios=[2, 1, 1])
 
+<<<<<<< HEAD
     ax_main = fig.add_subplot(gs[0, :])
     ax_pred = fig.add_subplot(gs[1, 0])
     ax_error = fig.add_subplot(gs[1, 1])
@@ -859,6 +1103,109 @@ def simulate_advanced_live(
             ax_prob.set_ylabel('P(Near Stop)')
             ax_prob.set_title('Near-Stop Probability')
             ax_prob.grid(True, alpha=0.3)
+=======
+    for i in range(len(X_ds)):
+        cur_t = raw_times[i]
+        times.append(cur_t)
+
+        buf_scaled.append(X_ds[i])
+        buf_times.append(cur_t)
+        if len(buf_scaled) > window_size:
+            buf_scaled.pop(0)
+            buf_times.pop(0)
+
+        if len(buf_scaled) == window_size:
+            win = np.array(buf_scaled, dtype=np.float32)
+            # re-zero time col
+            rel_times = np.array(buf_times, dtype=np.float32) - buf_times[-1]
+            win[:, 0] = rel_times
+
+            # dt from within window (length = window_size)
+            dt = np.diff(
+                np.array(buf_times + [buf_times[-1]], dtype=np.float32))
+            dt = np.concatenate([dt, [dt[-1]]]).astype(np.float32)
+
+            outs = model.predict(
+                {"window": win[None, ...], "dt": dt[None, ...]}, verbose=0)
+
+            # ---- Extract predictions ----
+            if isinstance(outs, dict):
+                # Prefer raw seconds if present
+                if "time_left" in outs:
+                    pred_sec = float(outs["time_left"][0, 0])
+                elif "log_time" in outs:
+                    pred_sec = float(np.expm1(outs["log_time"][0, 0]))
+                else:
+                    raise KeyError("Model outputs lack time_left/log_time")
+                near_prob = float(outs.get("near_stop", [[np.nan]])[0, 0])
+            else:
+                idx = {n: j for j, n in enumerate(model.output_names)}
+                if "time_left" in idx:
+                    pred_sec = float(outs[idx["time_left"]][0, 0])
+                elif "log_time" in idx:
+                    pred_sec = float(np.expm1(outs[idx["log_time"]][0, 0]))
+                else:
+                    raise KeyError("Model outputs lack time_left/log_time")
+                near_prob = float(outs[idx.get("near_stop", 0)][0, 0])
+
+            pred_sec = max(pred_sec, 0.0)
+            pred_stop_time = cur_t + pred_sec
+
+            preds_sec.append(pred_sec)
+            pred_times.append(cur_t)
+            near_probs.append(near_prob)
+            errors.append(abs(pred_stop_time - stop_time))
+
+        # ---- Plots ----
+        ax1.clear()
+        ax1.plot(times, diss_vals[:len(times)], 'b-',
+                 alpha=0.7, label='Dissipation')
+        ax1.axvline(stop_time, color='red', ls='--', lw=2, label='True Stop')
+        if preds_sec:
+            ax1.axvline(pred_times[-1] + preds_sec[-1],
+                        color='green', ls='--', lw=2, label='Pred Stop')
+        ax1.set_xlabel('Time (s)')
+        ax1.set_ylabel('Dissipation')
+        ax1.set_title('Signal vs Predictions')
+        ax1.legend(loc='upper left')
+        ax1.grid(True, alpha=0.3)
+
+        ax2.clear()
+        if len(preds_sec) > 1:
+            ax2.plot(pred_times, preds_sec, lw=2, label='Pred TTS (s)')
+            ax2.set_xlabel('Current Time (s)')
+            ax2.set_ylabel('Seconds to Stop')
+            ax2.set_title('Time-to-Stop Predictions')
+            ax2.grid(True, alpha=0.3)
+            if near_probs and not np.isnan(near_probs[-1]):
+                ax2b = ax2.twinx()
+                ax2b.plot(pred_times, near_probs, ls='--',
+                          alpha=0.4, label='Near Prob')
+                ax2b.set_ylabel('Near-Stop Prob')
+                ax2b.set_ylim(0, 1)
+
+        ax3.clear()
+        if len(errors) > 1:
+            ax3.plot(pred_times, errors, 'r-', lw=2, alpha=0.7)
+            ax3.set_xlabel('Time (s)')
+            ax3.set_ylabel('Abs Error (s)')
+            ax3.set_title('Prediction Error Over Time')
+            ax3.grid(True, alpha=0.3)
+            if len(errors) > 10:
+                ra = np.convolve(errors, np.ones(10)/10, mode='valid')
+                ax3.plot(pred_times[9:], ra, 'k--', lw=2,
+                         label=f'10-pt avg: {ra[-1]:.1f}s')
+                ax3.legend()
+
+        ax4.clear()
+        if errors:
+            ax4.hist(errors, bins=20, alpha=0.7)
+            ax4.set_xlabel('Abs Error (s)')
+            ax4.set_ylabel('Freq')
+            ax4.set_title(
+                f'Error Dist  μ={np.mean(errors):.1f}s  σ={np.std(errors):.1f}s  med={np.median(errors):.1f}s')
+            ax4.grid(True, alpha=0.3)
+>>>>>>> 785bd82ffda98e0583fc47b70d1d5766b62b9f2e
 
             # Progress value (0→1)
             ax_progress.clear()
@@ -889,6 +1236,7 @@ def simulate_advanced_live(
 
     print("Simulation finished. Close the plot window to end.")
     plt.ioff()
+<<<<<<< HEAD
     plt.show(block=True)
 
     return {
@@ -967,6 +1315,15 @@ def main():
         pause=args.pause,
         update_every=args.update_every
     )
+=======
+    if errors:
+        print("\nFinal Performance:")
+        print(f"Mean Error:   {np.mean(errors):.2f}s")
+        print(f"Std Error:    {np.std(errors):.2f}s")
+        print(f"Median Error: {np.median(errors):.2f}s")
+        print(f"Max Error:    {np.max(errors):.2f}s")
+    plt.show()
+>>>>>>> 785bd82ffda98e0583fc47b70d1d5766b62b9f2e
 
 
 if __name__ == "__main__":
