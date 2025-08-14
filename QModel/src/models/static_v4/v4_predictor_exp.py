@@ -88,7 +88,7 @@ class EnhancedLocalizer:
         Predict the offset within the window for precise POI location.
 
         Args:
-            window_data: Normalized window data (128 x n_features) already preprocessed
+            window_data: Normalized window data (256 x n_features) already preprocessed
 
         Returns:
             Tuple of (offset_from_window_start, confidence)
@@ -117,7 +117,7 @@ class POIPredictor:
                  model_path: str,
                  scaler_path: str,
                  localizer_path: Optional[str] = None,
-                 window_size: int = 128,
+                 window_size: int = 256,
                  stride: int = 16,
                  tolerance: int = 64):
         """
@@ -215,7 +215,7 @@ class POIPredictor:
         Fine-tune the POI position within a window using the localizer.
 
         Args:
-            window_data: Normalized window data (128 x n_features)
+            window_data: Normalized window data (256 x n_features)
             window_start_position: Start position of window in original data
 
         Returns:
@@ -592,7 +592,7 @@ if __name__ == "__main__":
         model_path=r"QModel\src\models\static_v4\v4_model.h5",
         scaler_path=r"QModel\src\models\static_v4\v4_scaler.joblib",
         localizer_path=r"QModel\src\models\static_v4\v4_localizer",  # Add localizer
-        window_size=128,
+        window_size=256,
         stride=16,
         tolerance=64
     )
