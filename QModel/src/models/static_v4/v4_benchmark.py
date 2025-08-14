@@ -6,7 +6,7 @@ from collections import defaultdict
 from tqdm import tqdm
 
 # ← adjust these imports to match your project
-from v4_predictor import POIPredictor
+from v4_predictor_exp import POIPredictor
 from v4_dp import DP
 
 
@@ -88,6 +88,7 @@ if __name__ == "__main__":
     predictor = POIPredictor(
         model_path="QModel/src/models/static_v4/v4_model.h5",
         scaler_path="QModel/src/models/static_v4/v4_scaler.joblib",
+        localizer_path="QModel/src/models/static_v4/v4_localizer",
         window_size=128,
         stride=16,
         tolerance=64

@@ -1,735 +1,625 @@
-from concurrent.futures import ProcessPoolExecutor, as_completed
-import os
-from typing import Tuple, List
-import json
+import matplotlib.pyplot as plt
 import joblib
-from pathlib import Path  # you already import Path above, ok to keep
-from datetime import datetime
-import shutil
-from tqdm import tqdm
-import tensorflow as tf
-import tensorflow_addons as tfa
 import numpy as np
 import pandas as pd
-from scipy import signal
-from typing import Tuple
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import RobustScaler
-from v4_dp import DP
+from sklearn.preprocessing import StandardScaler, RobustScaler
+from sklearn.model_selection import KFold
+import os
 import warnings
+from v4_datagen import DataGen
+from scipy.ndimage import gaussian_filter1d
+from scipy.signal import find_peaks, savgol_filter
+from tqdm import tqdm
+import xgboost as xgb
+from typing import Dict, List, Tuple, Optional
+import logging
+from sklearn.model_selection import train_test_split
 warnings.filterwarnings('ignore')
-# --- top-level helper (NOT inside the class) ---------------------------------
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
-def _prepare_one_dataset(
-    data_path: str,
-    poi_path: str,
-    window_size: int,
-    augmentations_per_poi: int,
-    is_validation: bool,
-    poi_indices: List[int],
-    child_seed: int,
-) -> Tuple[np.ndarray, np.ndarray]:
+class V4PrecisionLocalizer:
     """
-    Process a single (data_path, poi_path) pair:
-    - compute features
-    - robust-normalize per-file
-    - extract/augment windows around POIs
-    Returns (X_windows_file, y_positions_file)
+    Enhanced V4 Precision Localizer with:
+    1. Hybrid regression-classification approach
+    2. Advanced feature engineering with domain-specific features
+    3. Multi-stage prediction with confidence scoring
+    4. Ensemble methods and cross-validation
+    5. Peak refinement and post-processing
     """
-    rng = np.random.default_rng(child_seed)
-
-    df = pd.read_csv(data_path)
-    # Heavy step — parallelizing this is the main win:
-    features_df = DP.gen_features(df)
-    n = len(features_df)
-    if n == 0:
-        return np.empty((0, window_size, 0), dtype=np.float32), np.empty((0,), dtype=np.int32)
-
-    features_array = features_df.values.astype(np.float32)
-
-    # Per-file robust scaling (median + IQR)
-    q1 = np.percentile(features_array, 25, axis=0)
-    q3 = np.percentile(features_array, 75, axis=0)
-    iqr = q3 - q1 + 1e-8
-    med = np.median(features_array, axis=0)
-    features_normalized = (features_array - med) / iqr
-    features_normalized = np.clip(features_normalized, -5, 5)
-
-    poi_positions_all = pd.read_csv(poi_path, header=None).values.flatten()
-    poi_positions = poi_positions_all[poi_indices]
-
-    X_windows_file = []
-    y_positions_file = []
-
-    # Validation uses a single centered sample per-POI
-    local_augs = 1 if is_validation else augmentations_per_poi
-
-    for poi_pos in poi_positions:
-        if not np.isfinite(poi_pos):
-            continue
-        poi_pos = int(poi_pos)
-        if poi_pos < 0 or poi_pos >= n:
-            continue
-
-        for aug_i in range(local_augs):
-            # Choose window start so the POI is inside the window
-            if n <= window_size:
-                start_idx = 0
-            else:
-                if is_validation:
-                    start_idx = max(
-                        0, min(poi_pos - window_size // 2, n - window_size))
-                else:
-                    max_start = min(poi_pos, n - window_size)
-                    min_start = max(0, poi_pos - window_size + 1)
-                    if aug_i == 0:
-                        start_idx = max(
-                            0, min(poi_pos - window_size // 2, n - window_size))
-                    else:
-                        start_idx = int(rng.integers(min_start, max_start + 1))
-
-            end_idx = min(n, start_idx + window_size)
-            window = features_normalized[start_idx:end_idx].copy()
-
-            # Mirror padding (fall back to edge if degenerate length)
-            if len(window) < window_size:
-                pad = window_size - len(window)
-                mode = 'reflect' if len(window) > 1 else 'edge'
-                window = np.pad(window, ((0, pad), (0, 0)), mode=mode)
-
-            rel_pos = poi_pos - start_idx
-            rel_pos = int(np.clip(rel_pos, 0, window_size - 1))
-
-            # Light training-time augmentation
-            if not is_validation and aug_i > 0:
-                if rng.random() < 0.5:
-                    window *= rng.uniform(0.95, 1.05)
-                if rng.random() < 0.3:
-                    window += rng.normal(0, 0.02,
-                                         window.shape).astype(window.dtype)
-
-            X_windows_file.append(window)
-            y_positions_file.append(rel_pos)
-
-    if len(X_windows_file) == 0:
-        return np.empty((0, window_size, features_normalized.shape[1]), dtype=np.float32), np.empty((0,), dtype=np.int32)
-
-    return np.asarray(X_windows_file, dtype=np.float32), np.asarray(y_positions_file, dtype=np.int32)
-
-
-class Localizer:
-    """Refined POI detector with outlier handling and confidence estimation."""
-
-    def __init__(self, window_size=128, feature_dim=None):
-        """Initialize the refined detector."""
-        self.window_size = window_size
-        self.feature_dim = feature_dim
-        self.model = None
-        self.scaler = RobustScaler()
-        self.history = None
-        self.confidence_threshold = 0.7  # For filtering uncertain predictions
-
-    def create_advanced_features(self, X):
-        """Create advanced signal processing features."""
-        batch_size, window_size, n_features = X.shape
-        advanced_features = []
-
-        for i in range(batch_size):
-            window_features = []
-
-            # Process each feature channel
-            for j in range(n_features):
-                signal_1d = X[i, :, j]
-
-                # 1. Gradient features
-                grad1 = np.gradient(signal_1d)
-                grad2 = np.gradient(grad1)
-
-                # 2. Peak detection with prominence
-                peaks, properties = signal.find_peaks(
-                    signal_1d, prominence=0.1, distance=3)
-                peak_indicator = np.zeros_like(signal_1d)
-                if len(peaks) > 0:
-                    peak_indicator[peaks] = properties['prominences'] if 'prominences' in properties else 1
-
-                # 3. Valley detection
-                valleys, valley_props = signal.find_peaks(
-                    -signal_1d, prominence=0.1, distance=3)
-                valley_indicator = np.zeros_like(signal_1d)
-                if len(valleys) > 0:
-                    valley_indicator[valleys] = 1
-
-                # 4. Local statistics (rolling window)
-                window_len = 7
-                padding = window_len // 2
-                padded_signal = np.pad(signal_1d, padding, mode='edge')
-
-                local_mean = np.array([
-                    np.mean(padded_signal[i:i+window_len])
-                    for i in range(len(signal_1d))
-                ])
-                local_std = np.array([
-                    np.std(padded_signal[i:i+window_len])
-                    for i in range(len(signal_1d))
-                ])
-
-                # 5. Signal energy
-                local_energy = np.array([
-                    np.sum(padded_signal[i:i+window_len]**2)
-                    for i in range(len(signal_1d))
-                ])
-
-                # 6. Zero-crossing rate
-                zero_crossings = np.zeros_like(signal_1d)
-                zero_crossings[1:] = np.abs(
-                    np.sign(signal_1d[1:]) - np.sign(signal_1d[:-1])) / 2
-
-                # Stack all features
-                feature_stack = np.stack([
-                    grad1,
-                    grad2,
-                    peak_indicator,
-                    valley_indicator,
-                    signal_1d - local_mean,  # Deviation from local mean
-                    local_std,
-                    local_energy,
-                    zero_crossings
-                ], axis=-1)
-
-                window_features.append(feature_stack)
-
-            # Average across feature channels
-            window_features = np.mean(np.array(window_features), axis=0)
-            advanced_features.append(window_features)
-
-        advanced_features = np.array(advanced_features, dtype=np.float32)
-
-        # Concatenate with original features
-        X_enhanced = np.concatenate([X, advanced_features], axis=-1)
-
-        return X_enhanced
-
-    def create_model(self):
-        """Create refined model with confidence estimation."""
-        if self.feature_dim is None:
-            raise ValueError("Feature dimension must be set")
-        enhanced_dim = self.feature_dim + 8
-        inp = tf.keras.Input(shape=(self.window_size, enhanced_dim))
-        pos_encoding = self.create_learnable_position_encoding()
-
-        # Initial feature projection
-        embedding_dim = 256
-        x = tf.keras.layers.Dense(embedding_dim, activation='gelu')(inp)
-        x = tf.keras.layers.LayerNormalization(epsilon=1e-6)(x)
-        x = tf.keras.layers.Dropout(0.1)(x)
-
-        # Add positional information
-        x = x + pos_encoding
-
-        # Multi-scale CNN feature extraction
-        cnn_features = []
-
-        # Dilated convolutions for different receptive fields
-        for dilation_rate in [1, 2, 4, 8]:
-            conv = tf.keras.layers.Conv1D(
-                64, 3,
-                dilation_rate=dilation_rate,
-                padding='same',
-                activation='gelu'
-            )(x)
-            conv = tf.keras.layers.BatchNormalization()(conv)
-            cnn_features.append(conv)
-
-        # Merge CNN features
-        x_cnn = tf.keras.layers.Concatenate()(cnn_features)
-        x_cnn = tf.keras.layers.Dense(embedding_dim)(x_cnn)
-        x = tf.keras.layers.Add()([x, x_cnn])
-        x = tf.keras.layers.LayerNormalization(epsilon=1e-6)(x)
-
-        # Transformer encoder with residual connections
-        for layer_idx in range(6):  # 6 transformer layers
-            # Store input for residual
-            residual = x
-
-            # Multi-head attention with different head configurations
-            num_heads = [4, 8, 8, 16, 16, 32][layer_idx]
-
-            attn = tf.keras.layers.MultiHeadAttention(
-                num_heads=num_heads,
-                key_dim=embedding_dim // num_heads,
-                dropout=0.1
-            )(x, x)
-
-            x = tf.keras.layers.Add()([residual, attn])
-            x = tf.keras.layers.LayerNormalization(epsilon=1e-6)(x)
-
-            # Feed-forward with gating
-            ffn_dim = embedding_dim * 4
-
-            # Split pathway
-            gate = tf.keras.layers.Dense(ffn_dim, activation='sigmoid')(x)
-            transform = tf.keras.layers.Dense(ffn_dim, activation='gelu')(x)
-
-            gated = gate * transform
-            gated = tf.keras.layers.Dropout(0.1)(gated)
-            gated = tf.keras.layers.Dense(embedding_dim)(gated)
-
-            x = tf.keras.layers.Add()([x, gated])
-            x = tf.keras.layers.LayerNormalization(epsilon=1e-6)(x)
-
-        # Dual output heads for position and confidence
-
-        # Position prediction head
-        # Path 1: Attention-based scoring
-        query_token = tf.keras.layers.Embedding(input_dim=1, output_dim=embedding_dim, name="position_query_token")(
-            tf.zeros((1, 1), dtype=tf.int32)
-        )  # shape: (1, 1, embedding_dim)
-
-        # Tile to (batch, 1, embedding_dim)
-        query_vector = tf.keras.layers.Lambda(
-            lambda t: tf.tile(t[0], [tf.shape(t[1])[0], 1, 1])
-        )([query_token, x])
-
-        position_attn, attn_weights = tf.keras.layers.MultiHeadAttention(
-            num_heads=32, key_dim=8, dropout=0.1, name="position_attn"
-        )(query_vector, x, return_attention_scores=True)
-
-        # Average attention weights across heads
-        attn_scores = tf.reduce_mean(attn_weights, axis=1)
-        attn_scores = tf.squeeze(attn_scores, axis=1)
-
-        # Path 2: Conv-based position scoring
-        conv_scores = tf.keras.layers.Conv1D(64, 1, activation='gelu')(x)
-        conv_scores = tf.keras.layers.Conv1D(1, 1)(conv_scores)
-        conv_scores = tf.keras.layers.Flatten()(conv_scores)
-
-        # Path 3: Global context
-        global_context = tf.keras.layers.GlobalAveragePooling1D()(x)
-        global_dense = tf.keras.layers.Dense(
-            512, activation='gelu')(global_context)
-        global_dense = tf.keras.layers.Dropout(0.2)(global_dense)
-        global_scores = tf.keras.layers.Dense(self.window_size)(global_dense)
-
-        # Combine paths with learnable weights
-        position_logits = tf.keras.layers.Add()([
-            attn_scores * 128 * 0.4,
-            conv_scores * 0.3,
-            global_scores * 0.3
-        ])
-
-        # Temperature scaling
-        temperature = 0.25  # Lower temperature for sharper peaks
-        position_logits = position_logits / temperature
-
-        # Position output
-        position_output = tf.keras.layers.Softmax(
-            name='position')(position_logits)
-
-        # Confidence estimation head
-        confidence_features = tf.keras.layers.GlobalMaxPooling1D()(x)
-        confidence_dense = tf.keras.layers.Dense(
-            256, activation='gelu')(confidence_features)
-        confidence_dense = tf.keras.layers.Dropout(0.3)(confidence_dense)
-        confidence_dense = tf.keras.layers.Dense(
-            128, activation='gelu')(confidence_dense)
-        confidence_output = tf.keras.layers.Dense(
-            1, activation='sigmoid', name='confidence')(confidence_dense)
-
-        model = tf.keras.Model(
-            inputs=inp,
-            outputs=[position_output, confidence_output],
-            name="refined_poi_detector"
-        )
-
-        return model
-
-    def create_learnable_position_encoding(self):
-        """Create learnable position embeddings."""
-        # Learnable embeddings
-        pos_embedding = tf.keras.layers.Embedding(
-            self.window_size, 256
-        )(tf.range(self.window_size))
-
-        return pos_embedding
-
-    def create_learnable_query(self):
-        """Create learnable query for attention."""
-        query = tf.Variable(
-            tf.random.normal([1, 1, 256]),
-            trainable=True,
-            name='position_query'
-        )
-        return tf.tile(query, [tf.shape(query)[0], 1, 1])
-
-    def compile_model(self, model, learning_rate=0.001, warmup_steps=100, decay_steps=2000, alpha=0.05):
-        """Compile with multi-task loss and a manual Warmup→Cosine LR, applied via callback."""
-
-        # ---------- losses ----------
-        def position_loss(y_true, y_pred):
-            y_pred = tf.clip_by_value(y_pred, 1e-7, 1.0 - 1e-7)
-
-            label_smoothing = 0.05
-            y_true_smooth = y_true * (1 - label_smoothing) + \
-                label_smoothing / self.window_size
-
-            gamma = 2.0
-            alpha_f = 0.5
-
-            ce = -y_true_smooth * tf.math.log(y_pred)
-            p_t = tf.reduce_sum(y_true * y_pred, axis=1, keepdims=True)
-            focal_weight = alpha_f * tf.pow(1.0 - p_t, gamma)
-            focal_loss = focal_weight * ce
-
-            positions = tf.cast(tf.range(self.window_size), tf.float32)
-            true_pos = tf.reduce_sum(y_true * positions, axis=1)
-            pred_pos = tf.reduce_sum(y_pred * positions, axis=1)
-            position_error = tf.keras.losses.huber(true_pos, pred_pos)
-
-            entropy = -tf.reduce_sum(y_pred *
-                                     tf.math.log(y_pred + 1e-7), axis=1)
-            entropy_reg = 0.01 * entropy
-
-            return tf.reduce_mean(tf.reduce_sum(focal_loss, axis=1) + 0.5 * position_error - entropy_reg)
-
-        def confidence_loss(y_true, y_pred):
-            return tf.keras.losses.binary_crossentropy(tf.ones_like(y_pred), y_pred)
-
-        def accuracy_within_n(n):
-            def metric(y_true, y_pred):
-                true_pos = tf.argmax(y_true, axis=1)
-                pred_pos = tf.argmax(y_pred, axis=1)
-                return tf.reduce_mean(tf.cast(tf.abs(true_pos - pred_pos) <= n, tf.float32))
-            metric.__name__ = f'acc_within_{n}'
-            return metric
-
-        # ---------- LR schedule logic (kept), but applied via a callback ----------
-        class WarmupThenCosine:
-            def __init__(self, init_lr, warmup_steps, decay_steps, alpha):
-                self.init_lr = float(init_lr)
-                self.warmup_steps = int(warmup_steps)
-                self.decay_steps = int(decay_steps)
-                self.alpha = float(alpha)
-                self.cosine = tf.keras.optimizers.schedules.CosineDecay(
-                    initial_learning_rate=self.init_lr,
-                    decay_steps=self.decay_steps,
-                    alpha=self.alpha
-                )
-
-            @tf.function
-            def __call__(self, step):
-                step = tf.cast(step, tf.float32)
-                warm = tf.cast(self.warmup_steps, tf.float32)
-                warmup_lr = self.init_lr * (step + 1.0) / (warm + 1.0)
-                cosine_lr = self.cosine(tf.maximum(step - warm, 0.0))
-                return tf.where(step < warm, warmup_lr, cosine_lr)
-
-        self._lr_schedule = WarmupThenCosine(
-            learning_rate, warmup_steps, decay_steps, alpha)
-
-        class WarmupCosineCallback(tf.keras.callbacks.Callback):
-            def __init__(self, schedule):
-                super().__init__()
-                self.schedule = schedule
-
-            def on_train_batch_begin(self, batch, logs=None):
-                step = tf.cast(self.model.optimizer.iterations, tf.float32)
-                lr = self.schedule(step)
-                # ensure a Python float ends up in the optimizer var
-                tf.keras.backend.set_value(
-                    self.model.optimizer.learning_rate, float(lr.numpy()))
-
-            def on_epoch_begin(self, epoch, logs=None):
-                # also set at epoch boundaries for nice LR in logs
-                step = tf.cast(self.model.optimizer.iterations, tf.float32)
-                lr = self.schedule(step)
-                tf.keras.backend.set_value(
-                    self.model.optimizer.learning_rate, float(lr.numpy()))
-
-        self._lr_callback = WarmupCosineCallback(self._lr_schedule)
-
-        # IMPORTANT: give optimizer a scalar LR (not a schedule object)
-        optimizer = tfa.optimizers.AdamW(
-            learning_rate=float(learning_rate),
-            weight_decay=1e-5,
-            clipnorm=1.0
-        )
-
-        model.compile(
-            optimizer=optimizer,
-            loss={'position': position_loss, 'confidence': confidence_loss},
-            loss_weights={'position': 1.0, 'confidence': 0.1},
-            metrics={
-                'position': ['accuracy',
-                             accuracy_within_n(0),
-                             accuracy_within_n(1),
-                             accuracy_within_n(3),
-                             accuracy_within_n(5),
-                             accuracy_within_n(10)],
-                'confidence': ['mae']
-            }
-        )
-        return model
-
-    def prepare_data(self, data_dir: str, num_datasets: int = None,
-                     augmentations_per_poi: int = 10,
-                     is_validation: bool = False) -> Tuple[np.ndarray, np.ndarray]:
-        """Refined data preparation with parallel per-file processing."""
-        poi_indices = [0, 1, 3, 4, 5]
-
-        # Materialize for length + stable ordering
-        dataset_tuples = list(DP.load_content(data_dir, num_datasets))
-        if len(dataset_tuples) == 0:
-            return (np.empty((0, self.window_size, self.feature_dim or 0), dtype=np.float32),
-                    np.empty((0, self.window_size), dtype=np.float32))
-
-        # Validation uses 1 augmentation per-POI
-        eff_augs = 1 if is_validation else augmentations_per_poi
-
-        # Reproducible per-file RNG seeds
-        base_seed = 123 if is_validation else 42
-        ss = np.random.SeedSequence(base_seed)
-        child_seeds = ss.spawn(len(dataset_tuples))
-
-        # Parallel per-file processing (DP.gen_features + windowing)
-        X_chunks = [None] * len(dataset_tuples)
-        y_chunks = [None] * len(dataset_tuples)
-
-        max_workers = max(1, (os.cpu_count() or 1) - 1)  # leave one core free
-        desc = f"Preparing {'validation' if is_validation else 'training'} data"
-
-        with ProcessPoolExecutor(max_workers=max_workers) as ex, tqdm(total=len(dataset_tuples), desc=desc) as pbar:
-            futures = {}
-            for i, (data_path, poi_path) in enumerate(dataset_tuples):
-                futures[ex.submit(
-                    _prepare_one_dataset,
-                    data_path,
-                    poi_path,
-                    self.window_size,
-                    eff_augs,
-                    is_validation,
-                    poi_indices,
-                    # child seed as plain int for portability
-                    int(child_seeds[i].generate_state(1, dtype=np.uint64)[0])
-                )] = i
-
-            for fut in as_completed(futures):
-                i = futures[fut]
-                Xi, yi = fut.result()
-                X_chunks[i] = Xi
-                y_chunks[i] = yi
-                pbar.update(1)
-
-        # Concatenate in original order for determinism
-        X_windows = [Xi for Xi in X_chunks if Xi is not None and len(Xi)]
-        y_positions = [yi for yi in y_chunks if yi is not None and len(yi)]
-
-        if not X_windows:
-            return (np.empty((0, self.window_size, self.feature_dim or 0), dtype=np.float32),
-                    np.empty((0, self.window_size), dtype=np.float32))
-
-        X = np.concatenate(X_windows, axis=0).astype(np.float32)
-        y = np.concatenate(y_positions, axis=0).astype(np.int32)
-
-        if self.feature_dim is None:
-            self.feature_dim = X.shape[2]
-
-        # Global normalization on the aggregated set
-        X_reshaped = X.reshape(-1, X.shape[-1])
-        if is_validation:
-            X_norm = self.scaler.transform(X_reshaped).astype(np.float32)
+    NUM_BOOST_ROUND = 10
+    DEFAULT_TRAIN_DIR = os.path.join('content', 'static', 'train')
+    DEFAULT_EVAL_DIR = os.path.join('content', 'static', 'test')
+
+    def __init__(self, train_dir: str = DEFAULT_TRAIN_DIR, eval_dir: str = DEFAULT_EVAL_DIR) -> None:
+        self._train_data = DataGen(train_dir, num_datasets=300).gen()
+        self._eval_data = DataGen(eval_dir, num_datasets=10).gen()
+        self._scaler = RobustScaler()  # More robust to outliers
+        self._feature_scaler = StandardScaler()
+        self._classifier = None
+        self._regressor = None
+        self._confidence_model = None
+        self._feature_importance = None
+
+    def _prepare_data(self, dataset, fit_scaler=False):
+        """
+        Prepare data with enhanced feature engineering.
+        """
+        logger.info("Preparing data")
+        all_features = []
+        all_positions = []
+        all_raw_windows = []
+
+        for _, windows_list in tqdm(dataset.items()):
+            for windows in windows_list:
+                for window in windows:
+                    labels = window["label"].values
+                    features = window.drop(
+                        columns=["label"], errors='ignore').values
+
+                    basic_features = features.flatten()
+
+                    all_features.append(basic_features)
+                    all_positions.append(np.argmax(labels))
+                    all_raw_windows.append(features)
+
+        X = np.array(all_features)
+        y = np.array(all_positions)
+
+        # Scale features
+        if fit_scaler:
+            X_scaled = self._scaler.fit_transform(X)
         else:
-            X_norm = self.scaler.fit_transform(X_reshaped).astype(np.float32)
-        X = X_norm.reshape(X.shape)
+            X_scaled = self._scaler.transform(X)
 
-        # Optional feature expansion
-        X = self.create_advanced_features(X)
+        return X_scaled, y, all_raw_windows
 
-        # One-hot encode positions
-        y_onehot = tf.keras.utils.to_categorical(
-            y, num_classes=self.window_size).astype(np.float32)
+    def _prepare_data_by_poi(self, dataset, fit_scaler=False):
+        """
+        Prepare data organized by POI type for proper evaluation.
+        """
+        logger.info("Preparing data by POI type")
+        data_by_poi = {}
 
-        print(f"Created {len(X)} windows (workers={max_workers})")
-        return X, y_onehot
+        for poi_type, windows_list in dataset.items():
+            features = []
+            positions = []
+            raw_windows = []
 
-    def train(self, X_train, y_train, X_val, y_val, epochs=150, batch_size=32):
-        """Train with refined strategy."""
+            for windows in windows_list:
+                for window in windows:
+                    labels = window["label"].values
+                    feat = window.drop(
+                        columns=["label"], errors='ignore').values
 
-        # Create model
-        print("Creating model...")
-        self.model = self.create_model()
-        self.model = self.compile_model(self.model, learning_rate=0.002)
+                    features.append(feat.flatten())
+                    positions.append(np.argmax(labels))
+                    raw_windows.append(feat)
 
-        # Callbacks
-        callbacks = [
-            self._lr_callback,  # <— add this FIRST so LR is set before other callbacks act
-            tf.keras.callbacks.EarlyStopping(
-                patience=25,
-                restore_best_weights=True,
-                monitor='val_position_acc_within_1',
-                mode='max',
-                verbose=1
-            ),
-            tf.keras.callbacks.ReduceLROnPlateau(
-                factor=0.5,
-                patience=8,
-                min_lr=1e-7,
-                monitor='val_position_loss',
-                verbose=1
-            ),
-            tf.keras.callbacks.ModelCheckpoint(
-                'best_refined_model.h5',
-                save_best_only=True,
-                monitor='val_position_acc_within_1',
-                mode='max',
-                verbose=1
-            )
-        ]
+            if features:
+                X = np.array(features)
+                y = np.array(positions)
 
-        # Prepare confidence targets (dummy for now)
-        confidence_train = np.ones((len(y_train), 1), dtype=np.float32)
-        confidence_val = np.ones((len(y_val), 1), dtype=np.float32)
+                # Scale features
+                if fit_scaler and poi_type == list(dataset.keys())[0]:
+                    X_scaled = self._scaler.fit_transform(X)
+                else:
+                    X_scaled = self._scaler.transform(X)
 
-        # Train
-        print("\nTraining model...")
-        self.history = self.model.fit(
-            X_train,
-            {'position': y_train, 'confidence': confidence_train},
-            validation_data=(
-                X_val, {'position': y_val, 'confidence': confidence_val}),
-            epochs=epochs,
-            batch_size=batch_size,
-            callbacks=callbacks,
-            verbose=1
+                data_by_poi[poi_type] = {
+                    'X': X_scaled,
+                    'y': y,
+                    'raw_windows': raw_windows
+                }
+
+        return data_by_poi
+
+    def build_ensemble_models(self):
+        """
+        Build ensemble of models with different strengths.
+        """
+        # Classification model for coarse prediction
+        classifier_params = {
+            'objective': 'multi:softprob',
+            'num_class': 128,
+            'max_depth': 10,
+            'eta': 0.03,
+            'subsample': 0.8,
+            'colsample_bytree': 0.7,
+            'tree_method': 'hist',
+            'device': 'cuda',
+            'lambda': 2.0,
+            'alpha': 0.5,
+            'min_child_weight': 3,
+            'gamma': 0.1,
+            'verbosity': 0
+        }
+
+        # Regression model for fine-tuning
+        regressor_params = {
+            'objective': 'reg:squarederror',
+            'max_depth': 8,
+            'eta': 0.05,
+            'subsample': 0.9,
+            'colsample_bytree': 0.8,
+            'tree_method': 'hist',
+            'device': 'cuda',
+            'lambda': 1.0,
+            'verbosity': 0
+        }
+
+        # Confidence model (binary classification)
+        confidence_params = {
+            'objective': 'binary:logistic',
+            'max_depth': 6,
+            'eta': 0.1,
+            'subsample': 0.8,
+            'colsample_bytree': 0.8,
+            'verbosity': 0
+        }
+
+        return classifier_params, regressor_params, confidence_params
+
+    def train(self, test_size=0.2, random_state=42):
+        """
+        Train on a single train/validation split for monitoring and early stopping.
+        Returns validation scores for reporting.
+        """
+        logger.info(
+            "Training enhanced V4 localizer with single train/validation split")
+
+        # Prepare full dataset
+        X, y, raw_windows = self._prepare_data(
+            self._train_data, fit_scaler=True
         )
 
-        return self.history
+        # Create train/validation split
+        X_train, X_val, y_train, y_val = train_test_split(
+            X, y, test_size=test_size, random_state=random_state, shuffle=True
+        )
 
-    def predict_with_confidence(self, X):
-        """Predict with confidence filtering."""
-        position_pred, confidence_pred = self.model.predict(X, verbose=0)
+        # Get model parameters
+        classifier_params, regressor_params, confidence_params = self.build_ensemble_models()
 
-        # Get positions
-        positions = np.argmax(position_pred, axis=1)
+        # ----- Classifier -----
+        logger.info("Starting classification training")
+        dtrain = xgb.DMatrix(X_train, label=y_train)
+        dval = xgb.DMatrix(X_val, label=y_val)
 
-        # Filter by confidence
-        high_confidence_mask = confidence_pred.squeeze() > self.confidence_threshold
+        self._classifier = xgb.train(
+            classifier_params,
+            dtrain,
+            num_boost_round=600,
+            evals=[(dtrain, "train"), (dval, "val")],
+            early_stopping_rounds=50,
+            verbose_eval=True
+        )
 
-        return positions, confidence_pred.squeeze(), high_confidence_mask
+        # ----- Regressor -----
+        logger.info("Starting regression training")
+        self._regressor = xgb.train(
+            regressor_params,
+            dtrain,
+            num_boost_round=500,
+            evals=[(dtrain, "train"), (dval, "val")],
+            early_stopping_rounds=50,
+            verbose_eval=True
+        )
 
-    def evaluate_refined(self, X_test, y_test):
-        """Refined evaluation with confidence analysis."""
-        positions, confidences, high_conf_mask = self.predict_with_confidence(
-            X_test)
-        true_positions = np.argmax(y_test, axis=1)
+        # ----- Confidence Model -----
+        logger.info("Training confidence model")
+        classifier_preds = self._classifier.predict(dtrain)
+        pred_classes = np.argmax(classifier_preds, axis=1)
+        errors = np.abs(pred_classes - y_train)
+        confidence_labels = (errors <= 3).astype(
+            int)  # High confidence if error <= 3
 
-        # Overall metrics
-        errors = np.abs(positions - true_positions)
+        dtrain_conf = xgb.DMatrix(X_train, label=confidence_labels)
+        dval_conf = xgb.DMatrix(X_val, label=(np.abs(np.argmax(
+            self._classifier.predict(dval), axis=1) - y_val) <= 3).astype(int))
 
-        print("\n=== Overall Metrics ===")
-        print(f"Total samples: {len(errors)}")
-        print(f"MAE: {np.mean(errors):.2f} points")
-        print(f"Median Error: {np.median(errors):.1f} points")
-        print(f"Exact Match: {np.mean(errors == 0):.1%}")
-        print(f"Within 1 point: {np.mean(errors <= 1):.1%}")
-        print(f"Within 3 points: {np.mean(errors <= 3):.1%}")
-        print(f"Within 5 points: {np.mean(errors <= 5):.1%}")
+        self._confidence_model = xgb.train(
+            confidence_params,
+            dtrain_conf,
+            num_boost_round=300,
+            evals=[(dtrain_conf, "train"), (dval_conf, "val")],
+            early_stopping_rounds=30,
+            verbose_eval=True
+        )
 
-        # High confidence metrics
-        if np.any(high_conf_mask):
-            high_conf_errors = errors[high_conf_mask]
+        # Store feature importance
+        self._feature_importance = self._classifier.get_score(
+            importance_type='gain')
+
+        # Calculate validation score
+        val_preds = self._classifier.predict(dval)
+        val_pred_classes = np.argmax(val_preds, axis=1)
+        val_mae = np.mean(np.abs(val_pred_classes - y_val))
+
+        logger.info(f"Training complete - Validation MAE: {val_mae:.3f}")
+        return val_mae
+
+    def predict_with_confidence(self, features_scaled):
+        """
+        Make prediction with confidence scoring and refinement.
+        """
+        dtest = xgb.DMatrix(features_scaled)
+
+        # Get predictions from multiple models
+        class_probs = self._classifier.predict(dtest)[0]
+        regression_pred = float(self._regressor.predict(dtest)[0])
+        confidence = float(self._confidence_model.predict(dtest)[0])
+
+        # Weighted ensemble prediction
+        class_pred = np.argmax(class_probs)
+        top_k = 5  # Consider top-k predictions
+        top_k_indices = np.argsort(class_probs)[-top_k:][::-1]
+
+        # Refine prediction based on confidence and regression
+        if confidence > 0.7:
+            # High confidence - use classifier directly
+            final_pred = class_pred
+        else:
+            # Lower confidence - blend with regression
+            regression_pred_clipped = np.clip(regression_pred, 0, 127)
+
+            # Find closest top-k prediction to regression
+            distances = np.abs(top_k_indices - regression_pred_clipped)
+            closest_idx = top_k_indices[np.argmin(distances)]
+
+            # Weighted average
+            final_pred = 0.7 * class_pred + 0.3 * closest_idx
+            final_pred = int(np.round(final_pred))
+
+        return final_pred, confidence, class_probs
+
+    def post_process_prediction(self, prediction, raw_window, confidence):
+        """
+        Post-process prediction using signal characteristics.
+        """
+        signal = raw_window[:, 0] if raw_window.ndim > 1 else raw_window
+
+        # If low confidence, try peak-based refinement
+        if confidence < 0.5:
+            # Find significant peaks
+            peaks, properties = find_peaks(
+                signal,
+                prominence=0.2 * np.std(signal),
+                distance=10
+            )
+
+            if len(peaks) > 0:
+                # Find peak closest to prediction
+                distances = np.abs(peaks - prediction)
+                closest_peak = peaks[np.argmin(distances)]
+
+                # If peak is within reasonable distance, adjust
+                if np.min(distances) < 10:
+                    prediction = closest_peak
+
+        return prediction
+
+    def evaluate_detailed(self):
+        """
+        Comprehensive evaluation with detailed metrics - fixed to properly evaluate each POI type.
+        """
+        logger.info("Performing detailed evaluation")
+        results = {}
+
+        # Prepare data organized by POI type
+        data_by_poi = self._prepare_data_by_poi(
+            self._eval_data, fit_scaler=False)
+
+        for poi_type, poi_data in data_by_poi.items():
+            X_test = poi_data['X']
+            y_test = poi_data['y']
+            raw_windows = poi_data['raw_windows']
+
+            all_errors = []
+            all_confidences = []
+            predictions_by_confidence = {'high': [], 'medium': [], 'low': []}
+
+            logger.info(f"Evaluating {poi_type} with {len(X_test)} samples")
+
+            for idx in tqdm(range(len(X_test)), desc=f"Evaluating {poi_type}"):
+                features_scaled = X_test[idx:idx+1]
+                actual_pos = y_test[idx]
+                raw_window = raw_windows[idx]
+
+                # Predict with confidence
+                pred_pos, confidence, _ = self.predict_with_confidence(
+                    features_scaled)
+
+                # Optional post-processing
+                # pred_pos = self.post_process_prediction(pred_pos, raw_window, confidence)
+
+                error = abs(pred_pos - actual_pos)
+                all_errors.append(error)
+                all_confidences.append(confidence)
+
+                # Categorize by confidence
+                if confidence > 0.7:
+                    predictions_by_confidence['high'].append(error)
+                elif confidence > 0.4:
+                    predictions_by_confidence['medium'].append(error)
+                else:
+                    predictions_by_confidence['low'].append(error)
+
+            # Calculate comprehensive metrics
+            all_errors = np.array(all_errors)
+            all_confidences = np.array(all_confidences)
+
+            results[poi_type] = {
+                'mae': np.mean(all_errors),
+                'rmse': np.sqrt(np.mean(all_errors**2)),
+                'median_error': np.median(all_errors),
+                'std_error': np.std(all_errors),
+                'within_1': np.mean(all_errors <= 1) * 100,
+                'within_2': np.mean(all_errors <= 2) * 100,
+                'within_3': np.mean(all_errors <= 3) * 100,
+                'within_5': np.mean(all_errors <= 5) * 100,
+                'within_10': np.mean(all_errors <= 10) * 100,
+                'max_error': np.max(all_errors),
+                'mean_confidence': np.mean(all_confidences),
+                'high_conf_mae': np.mean(predictions_by_confidence['high']) if predictions_by_confidence['high'] else -1,
+                'med_conf_mae': np.mean(predictions_by_confidence['medium']) if predictions_by_confidence['medium'] else -1,
+                'low_conf_mae': np.mean(predictions_by_confidence['low']) if predictions_by_confidence['low'] else -1,
+                'sample_count': len(all_errors)
+            }
+
+            # Print detailed results
             print(
-                f"\n=== High Confidence Predictions ({np.sum(high_conf_mask)}/{len(errors)}) ===")
-            print(f"MAE: {np.mean(high_conf_errors):.2f} points")
-            print(f"Exact Match: {np.mean(high_conf_errors == 0):.1%}")
-            print(f"Within 1 point: {np.mean(high_conf_errors <= 1):.1%}")
+                f"\n{poi_type} Detailed Results ({results[poi_type]['sample_count']} samples):")
+            print(
+                f"  MAE: {results[poi_type]['mae']:.2f} ± {results[poi_type]['std_error']:.2f}")
+            print(f"  Median: {results[poi_type]['median_error']:.2f}")
+            print(f"  RMSE: {results[poi_type]['rmse']:.2f}")
+            print(f"  Within 1: {results[poi_type]['within_1']:.1f}%")
+            print(f"  Within 3: {results[poi_type]['within_3']:.1f}%")
+            print(f"  Within 5: {results[poi_type]['within_5']:.1f}%")
+            print(f"  Within 10: {results[poi_type]['within_10']:.1f}%")
+            print(
+                f"  Mean Confidence: {results[poi_type]['mean_confidence']:.3f}")
 
-        # Error distribution analysis
-        print("\n=== Error Distribution ===")
-        print(f"25th percentile: {np.percentile(errors, 25):.1f} points")
-        print(f"50th percentile: {np.percentile(errors, 50):.1f} points")
-        print(f"75th percentile: {np.percentile(errors, 75):.1f} points")
-        print(f"90th percentile: {np.percentile(errors, 90):.1f} points")
-        print(f"95th percentile: {np.percentile(errors, 95):.1f} points")
-        print(f"99th percentile: {np.percentile(errors, 99):.1f} points")
+            if results[poi_type]['high_conf_mae'] > 0:
+                print(
+                    f"  High Confidence MAE: {results[poi_type]['high_conf_mae']:.2f}")
+            if results[poi_type]['med_conf_mae'] > 0:
+                print(
+                    f"  Medium Confidence MAE: {results[poi_type]['med_conf_mae']:.2f}")
+            if results[poi_type]['low_conf_mae'] > 0:
+                print(
+                    f"  Low Confidence MAE: {results[poi_type]['low_conf_mae']:.2f}")
 
-        return errors, confidences
+        return results
 
-    def save(
-        self,
-        out_dir: str = "artifacts",
-        filename: str = "refined_poi_detector"
-    ):
+    def save(self, filepath='v4_enhanced_localizer'):
+        """Save all model components."""
+        self._classifier.save_model(f"{filepath}_classifier.xgb")
+        self._regressor.save_model(f"{filepath}_regressor.xgb")
+        self._confidence_model.save_model(f"{filepath}_confidence.xgb")
+        joblib.dump(self._scaler, f"{filepath}_scaler.pkl")
+        joblib.dump(self._feature_importance, f"{filepath}_importance.pkl")
+        logger.info(f"Models saved with prefix: {filepath}")
+
+    def load(self, filepath='v4_enhanced_localizer'):
+        """Load all model components."""
+        self._classifier = xgb.Booster()
+        self._classifier.load_model(f"{filepath}_classifier.xgb")
+
+        self._regressor = xgb.Booster()
+        self._regressor.load_model(f"{filepath}_regressor.xgb")
+
+        self._confidence_model = xgb.Booster()
+        self._confidence_model.load_model(f"{filepath}_confidence.xgb")
+
+        self._scaler = joblib.load(f"{filepath}_scaler.pkl")
+        self._feature_importance = joblib.load(f"{filepath}_importance.pkl")
+        logger.info(f"Models loaded with prefix: {filepath}")
+
+    def visualize_prediction(self, window_data, actual_pos, pred_pos, confidence, poi_type="Unknown"):
         """
-        Save the trained Keras model (.h5) and the fitted scaler (.joblib).
+        Enhanced visualization with confidence bands and features.
         """
-        if self.model is None:
-            raise RuntimeError(
-                "No model to save. Train or load a model first.")
-        out_path = Path(out_dir)
-        out_path.mkdir(parents=True, exist_ok=True)
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
 
-        model_path = out_path / f"{filename}.h5"
-        scaler_path = out_path / f"{filename}_scaler.joblib"
+        # Main signal with predictions
+        ax = axes[0, 0]
+        signal = window_data[:, 0] if window_data.ndim > 1 else window_data
+        x = np.arange(len(signal))
 
-        # Save full model in HDF5 format
-        self.model.save(model_path)
+        ax.plot(x, signal, 'b-', label='Signal', alpha=0.7)
+        ax.axvline(actual_pos, color='green', linestyle='--',
+                   linewidth=2, label=f'Actual: {actual_pos}')
+        ax.axvline(pred_pos, color='red', linestyle='--',
+                   linewidth=2, label=f'Predicted: {pred_pos}')
 
-        # Save fitted scaler
-        joblib.dump(self.scaler, scaler_path)
+        # Add confidence shading
+        conf_width = max(1, int((1 - confidence) * 10))
+        ax.axvspan(max(0, pred_pos - conf_width), min(127, pred_pos + conf_width),
+                   alpha=0.2, color='red', label=f'Confidence: {confidence:.2%}')
 
-        print(f"Saved model to:   {model_path}")
-        print(f"Saved scaler to:  {scaler_path}")
+        ax.set_title(f'{poi_type} - Error: {abs(pred_pos - actual_pos)}')
+        ax.set_xlabel('Index')
+        ax.set_ylabel('Signal Value')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        # Smoothed signal and derivatives
+        ax = axes[0, 1]
+        smoothed = savgol_filter(
+            signal, window_length=min(11, len(signal)), polyorder=3)
+        derivative = np.gradient(smoothed)
+
+        ax.plot(x, smoothed, 'g-', label='Smoothed Signal', alpha=0.7)
+        ax2 = ax.twinx()
+        ax2.plot(x, derivative, 'r-', label='Derivative', alpha=0.5)
+        ax.set_title('Smoothed Signal & Derivative')
+        ax.set_xlabel('Index')
+        ax.set_ylabel('Smoothed Value')
+        ax2.set_ylabel('Derivative')
+        ax.legend(loc='upper left')
+        ax2.legend(loc='upper right')
+        ax.grid(True, alpha=0.3)
+
+        # Peak detection
+        ax = axes[1, 0]
+        peaks, properties = find_peaks(signal, prominence=0.1 * np.std(signal))
+        ax.plot(x, signal, 'b-', alpha=0.5)
+        if len(peaks) > 0:
+            ax.plot(peaks, signal[peaks], 'ro',
+                    markersize=8, label='Detected Peaks')
+        ax.axvline(actual_pos, color='green', linestyle='--', alpha=0.7)
+        ax.axvline(pred_pos, color='red', linestyle='--', alpha=0.7)
+        ax.set_title('Peak Detection')
+        ax.set_xlabel('Index')
+        ax.set_ylabel('Signal Value')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        # Error analysis over window segments
+        ax = axes[1, 1]
+        window_size = len(signal) // 8
+        segment_means = []
+        segment_stds = []
+        for i in range(8):
+            start = i * window_size
+            end = (i + 1) * window_size if i < 7 else len(signal)
+            segment = signal[start:end]
+            segment_means.append(np.mean(segment))
+            segment_stds.append(np.std(segment))
+
+        x_segments = np.arange(8)
+        ax.bar(x_segments, segment_means,
+               yerr=segment_stds, capsize=5, alpha=0.7)
+        ax.set_title('Window Segment Analysis')
+        ax.set_xlabel('Segment')
+        ax.set_ylabel('Mean ± Std')
+        ax.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        return fig
 
 
 def main():
-    """Main pipeline."""
+    """
+    Main training and evaluation pipeline.
+    """
+    # Initialize enhanced localizer
+    localizer = V4PrecisionLocalizer()
 
-    # Initialize
-    detector = Localizer(window_size=128)
+    print("="*60)
+    print("TRAINING ENHANCED V4 PRECISION LOCALIZER")
+    print("="*60)
 
-    # Prepare training data
-    print("Preparing training data...")
-    X_train_full, y_train_full = detector.prepare_data(
-        'content/static/train',
-        num_datasets=np.inf,
-        augmentations_per_poi=10,
-        is_validation=False
-    )
-
-    # Split for validation
-    X_train, X_val, y_train, y_val = train_test_split(
-        X_train_full, y_train_full,
-        test_size=0.2,
-        random_state=42,
-        stratify=np.argmax(y_train_full, axis=1)
-    )
-
-    print(f"Training: {X_train.shape}, Validation: {X_val.shape}")
-
-    # Train
-    history = detector.train(
-        X_train, y_train,
-        X_val, y_val,
-        epochs=150,
-        batch_size=32
-    )
-    # Test on separate data
-    print("\nPreparing test data...")
-    X_test, y_test = detector.prepare_data(
-        'content/static/valid',
-        num_datasets=np.inf,
-        augmentations_per_poi=1,
-        is_validation=True
-    )
+    # Train and get validation score
+    val_score = localizer.train()
 
     # Evaluate
-    print("\nEvaluating on test set...")
-    errors, confidences = detector.evaluate_refined(X_test, y_test)
+    print("\n" + "="*60)
+    print("DETAILED EVALUATION RESULTS")
+    print("="*60)
 
-    return detector
+    results = localizer.evaluate_detailed()
+
+    # Save models
+    localizer.save()
+
+    # Summary
+    print("\n" + "="*60)
+    print("PERFORMANCE SUMMARY")
+    print("="*60)
+
+    overall_mae = np.mean([r['mae'] for r in results.values()])
+    overall_within_3 = np.mean([r['within_3'] for r in results.values()])
+    overall_within_5 = np.mean([r['within_5'] for r in results.values()])
+    overall_confidence = np.mean([r['mean_confidence']
+                                 for r in results.values()])
+
+    print(f"\nOverall Performance:")
+    print(f"  Average MAE: {overall_mae:.2f}")
+    print(f"  Average within 3 points: {overall_within_3:.1f}%")
+    print(f"  Average within 5 points: {overall_within_5:.1f}%")
+    print(f"  Average Confidence: {overall_confidence:.3f}")
+    print(f"  Validation Score: {val_score:.3f}")
+
+    return localizer, results
+
+
+def simulate_enhanced(localizer, eval_limit=5):
+    """
+    Enhanced simulation with detailed visualizations.
+    """
+    logger.info(f"Running enhanced simulation (limit={eval_limit})")
+
+    # Use the fixed method to prepare data by POI
+    data_by_poi = localizer._prepare_data_by_poi(
+        localizer._eval_data, fit_scaler=False
+    )
+
+    count = 0
+
+    for poi_type, poi_data in data_by_poi.items():
+        if count >= eval_limit:
+            break
+
+        print(f"\n{'='*40}")
+        print(f"Simulating POI Type: {poi_type}")
+        print(f"{'='*40}")
+
+        X_test = poi_data['X']
+        y_test = poi_data['y']
+        raw_windows = poi_data['raw_windows']
+
+        # Show first few samples from this POI type
+        samples_to_show = min(3, len(X_test), eval_limit - count)
+
+        for idx in range(samples_to_show):
+            if count >= eval_limit:
+                break
+
+            features_scaled = X_test[idx:idx+1]
+            actual_pos = y_test[idx]
+            raw_window = raw_windows[idx]
+
+            # Make prediction
+            pred_pos, confidence, class_probs = localizer.predict_with_confidence(
+                features_scaled)
+
+            # Optional post-processing
+            pred_pos = localizer.post_process_prediction(
+                pred_pos, raw_window, confidence)
+
+            error = abs(pred_pos - actual_pos)
+
+            print(f"\nSample {count + 1} (from {poi_type}):")
+            print(f"  Actual Position: {actual_pos}")
+            print(f"  Predicted Position: {pred_pos}")
+            print(f"  Error: {error}")
+            print(f"  Confidence: {confidence:.3f}")
+
+            # Top-3 predictions
+            top_3_idx = np.argsort(class_probs)[-3:][::-1]
+            top_3_probs = class_probs[top_3_idx]
+            print(
+                f"  Top 3 Predictions: {[(int(i), f'{p:.3f}') for i, p in zip(top_3_idx, top_3_probs)]}")
+
+            # Visualize
+            fig = localizer.visualize_prediction(
+                raw_window, actual_pos, pred_pos, confidence, poi_type
+            )
+            plt.show()
+
+            count += 1
 
 
 if __name__ == "__main__":
-    detector = main()
-    detector.save("localizer", "v4_localizer")
+    # Train and evaluate
+    localizer, results = main()
+
+    # Run enhanced simulation
+    print("\n" + "="*60)
+    print("ENHANCED SIMULATION")
+    print("="*60)
+    simulate_enhanced(localizer, eval_limit=5)
