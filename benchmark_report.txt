@@ -1,0 +1,70 @@
+================================================================================
+POI PREDICTOR BENCHMARK REPORT (TIME-BASED ERRORS)
+================================================================================
+
+NORMALIZATION FACTORS
+--------------------------------------------------------------------------------
+  POI1: 1
+  POI2: 1
+  POI4: 25
+  POI5: 100
+  POI6: 200
+
+RAW METRICS (in seconds)
+--------------------------------------------------------------------------------
+   Predictor  POI       MAE          MSE       RMSE  Median_AE    Std_AE  Valid_Predictions  Total_Predictions  Detection_Rate
+   V4_Fusion POI1  0.075662     0.025120   0.158492    0.01910  0.139265                 50                 50            1.00
+   V4_Fusion POI2  0.182514     0.286794   0.535532    0.02525  0.503471                 50                 50            1.00
+   V4_Fusion POI4  2.339324    46.485229   6.818008    0.13575  6.404123                 50                 50            1.00
+   V4_Fusion POI5 40.129060 11142.006317 105.555702    3.80075 97.630246                 50                 50            1.00
+   V4_Fusion POI6 10.330214  1723.044080  41.509566    1.49820 40.203616                 50                 50            1.00
+V4_Predictor POI1  0.055878     0.011777   0.108524    0.02290  0.093033                 50                 50            1.00
+V4_Predictor POI2  0.269786     0.892417   0.944678    0.03660  0.905336                 50                 50            1.00
+V4_Predictor POI4  5.948581   227.104603  15.069990    0.15540 13.846262                 48                 50            0.96
+V4_Predictor POI5 40.633269 10153.641085 100.765277    5.42560 92.209428                 48                 50            0.96
+V4_Predictor POI6 18.246067  2734.529442  52.292728    1.66385 49.006229                 48                 50            0.96
+
+NORMALIZED METRICS (using predefined factors)
+--------------------------------------------------------------------------------
+   Predictor  POI  Norm_Factor  Normalized_MAE  Normalized_MSE  Normalized_RMSE
+   V4_Fusion POI1            1        0.075662        0.025120         0.158492
+   V4_Fusion POI2            1        0.182514        0.286794         0.535532
+   V4_Fusion POI4           25        0.093573        0.074376         0.272720
+   V4_Fusion POI5          100        0.401291        1.114201         1.055557
+   V4_Fusion POI6          200        0.051651        0.043076         0.207548
+V4_Predictor POI1            1        0.055878        0.011777         0.108524
+V4_Predictor POI2            1        0.269786        0.892417         0.944678
+V4_Predictor POI4           25        0.237943        0.363367         0.602800
+V4_Predictor POI5          100        0.406333        1.015364         1.007653
+V4_Predictor POI6          200        0.091230        0.068363         0.261464
+
+SUMMARY
+--------------------------------------------------------------------------------
+
+V4_Fusion:
+  Raw Metrics:
+    Average MAE: 10.6114 seconds
+    Average MSE: 2582.3695 seconds
+    Average RMSE: 30.9155 seconds
+  Normalized Metrics:
+    Average Norm MAE: 0.1609
+    Average Norm MSE: 0.3087
+    Average Norm RMSE: 0.4460
+  Performance:
+    Avg Inference Time: 14.698s
+    Total Time: 734.904s
+
+V4_Predictor:
+  Raw Metrics:
+    Average MAE: 13.0307 seconds
+    Average MSE: 2623.2359 seconds
+    Average RMSE: 33.8362 seconds
+  Normalized Metrics:
+    Average Norm MAE: 0.2122
+    Average Norm MSE: 0.4703
+    Average Norm RMSE: 0.5850
+  Performance:
+    Avg Inference Time: 3.786s
+    Total Time: 189.288s
+
+================================================================================

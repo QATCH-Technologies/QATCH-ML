@@ -1,0 +1,64 @@
+================================================================================
+POI PREDICTOR BENCHMARK REPORT - RELATIVE_TIME ANALYSIS
+================================================================================
+
+INDEX-BASED METRICS (samples)
+--------------------------------------------------------------------------------
+   Predictor  POI  MAE_Index    MSE_Index  RMSE_Index  Median_AE_Index  Std_AE_Index  Valid_Predictions  Total_Predictions  Detection_Rate
+   V4_Fusion POI1   4.351515 4.666667e+01    6.831301              2.0      5.266022                165                165        1.000000
+   V4_Fusion POI2   3.824242 4.821212e+01    6.943495              2.0      5.795454                165                165        1.000000
+   V4_Fusion POI4 164.642424 7.491976e+05  865.562014             20.0    849.759067                165                165        1.000000
+   V4_Fusion POI5 232.830303 1.084809e+06 1041.541500             18.0   1015.184095                165                165        1.000000
+   V4_Fusion POI6  76.254545 1.033403e+05  321.465809             19.0    312.290747                165                165        1.000000
+V4_Predictor POI1   6.824242 8.775758e+01    9.367901              5.0      6.417733                165                165        1.000000
+V4_Predictor POI2   6.369697 8.147273e+01    9.026224              5.0      6.395286                165                165        1.000000
+V4_Predictor POI4 137.422360 1.661883e+05  407.662028             14.0    383.801282                161                165        0.975758
+V4_Predictor POI5 280.379747 1.478857e+06 1216.082749             15.0   1183.319251                158                165        0.957576
+V4_Predictor POI6  83.852564 6.903010e+04  262.735792             16.0    248.995670                156                165        0.945455
+
+RELATIVE_TIME METRICS (seconds)
+--------------------------------------------------------------------------------
+   Predictor  POI  MAE_Time  MSE_Time  RMSE_Time  Median_AE_Time  Std_AE_Time  Min_Error_Time  Max_Error_Time
+   V4_Fusion POI1  0.020241  0.000998   0.031586         0.00930     0.024247             0.0          0.1459
+   V4_Fusion POI2  0.017904  0.001062   0.032596         0.01330     0.027238             0.0          0.2736
+   V4_Fusion POI4  0.815666 19.230971   4.385313         0.09540     4.308789             0.0         44.3295
+   V4_Fusion POI5  1.243830 26.489031   5.146750         0.09400     4.994188             0.0         49.8895
+   V4_Fusion POI6  1.667459 43.381813   6.586487         0.13070     6.371922             0.0         59.3685
+V4_Predictor POI1  0.031734  0.001888   0.043446         0.02270     0.029673             0.0          0.1964
+V4_Predictor POI2  0.029931  0.001800   0.042426         0.02270     0.030068             0.0          0.2295
+V4_Predictor POI4  0.670076  4.006567   2.001641         0.06650     1.886151             0.0         12.8820
+V4_Predictor POI5  1.789230 46.392988   6.811240         0.07560     6.572035             0.0         53.1543
+V4_Predictor POI6  2.426583 67.272566   8.201985         0.08575     7.834811             0.0         57.0945
+
+SUMMARY
+--------------------------------------------------------------------------------
+
+V4_Fusion:
+  Index-based Metrics:
+    Average MAE: 96.38 samples
+    Average RMSE: 448.47 samples
+    Detection Rate: 100.00%
+  Relative_time Metrics:
+    Average MAE: 0.7530 seconds
+    Average RMSE: 3.2365 seconds
+    Min Error: 0.0000
+    Max Error: 59.3685
+  Performance:
+    Avg Inference Time: 7.289s
+    Total Time: 1202.702s
+
+V4_Predictor:
+  Index-based Metrics:
+    Average MAE: 102.97 samples
+    Average RMSE: 380.97 samples
+    Detection Rate: 97.58%
+  Relative_time Metrics:
+    Average MAE: 0.9895 seconds
+    Average RMSE: 3.4201 seconds
+    Min Error: 0.0000
+    Max Error: 57.0945
+  Performance:
+    Avg Inference Time: 1.824s
+    Total Time: 300.915s
+
+================================================================================

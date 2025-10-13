@@ -1,0 +1,120 @@
+{
+  "default_thresholds": {
+    "overall": {
+      "accuracy": 0.0,
+      "precision_macro": 0.0,
+      "recall_macro": 0.0,
+      "f1_macro": 0.0,
+      "n_samples": 0
+    },
+    "per_poi": {
+      "POI1": {
+        "accuracy": 0.0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "auc": NaN,
+        "n_samples": 0
+      },
+      "POI2": {
+        "accuracy": 0.0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "auc": NaN,
+        "n_samples": 0
+      },
+      "POI4": {
+        "accuracy": 0.0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "auc": NaN,
+        "n_samples": 0
+      },
+      "POI5": {
+        "accuracy": 0.0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "auc": NaN,
+        "n_samples": 0
+      },
+      "POI6": {
+        "accuracy": 0.0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "auc": NaN,
+        "n_samples": 0
+      }
+    }
+  },
+  "optimized_thresholds": {
+    "overall": {
+      "accuracy": 0.0,
+      "precision_macro": 0.0,
+      "recall_macro": 0.0,
+      "f1_macro": 0.0,
+      "n_samples": 0
+    },
+    "per_poi": {
+      "POI1": {
+        "accuracy": 0.0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "auc": NaN,
+        "n_samples": 0
+      },
+      "POI2": {
+        "accuracy": 0.0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "auc": NaN,
+        "n_samples": 0
+      },
+      "POI4": {
+        "accuracy": 0.0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "auc": NaN,
+        "n_samples": 0
+      },
+      "POI5": {
+        "accuracy": 0.0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "auc": NaN,
+        "n_samples": 0
+      },
+      "POI6": {
+        "accuracy": 0.0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "auc": NaN,
+        "n_samples": 0
+      }
+    }
+  },
+  "thresholds_used": {
+    "default": {
+      "1": 0.5,
+      "2": 0.5,
+      "4": 0.01,
+      "5": 0.1,
+      "6": 0.1
+    },
+    "optimized": {
+      "1": 0.01,
+      "2": 0.01,
+      "4": 0.01,
+      "5": 0.01,
+      "6": 0.01
+    }
+  }
+}

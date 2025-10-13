@@ -217,10 +217,12 @@ class DatasetFetcher:
 
         with ThreadPoolExecutor() as executor:
             for root, _, files in os.walk(self.source_dir):
-                file_poi, file_xml, file_zip = None, None, None
+                file_poi, file_xml, file_zip, analyze_file = None, None, None, None
                 root_path = Path(root)
-
+                latest_analyze_idx = -1
+                latest_analyze = ""
                 for fname in files:
+
                     if fname.endswith("_poi.csv"):
                         file_poi = fname
                     elif fname.endswith(".xml"):
@@ -229,7 +231,15 @@ class DatasetFetcher:
                             file_xml = fname
                     elif fname == "capture.zip":
                         file_zip = fname
+                    elif fname.startswith("analyze"):
+                        split_fname = fname.split("-")
+                        split_csv = split_fname[-1].split(".")
+                        latest = int(split_csv[0])
+                        if latest > latest_analyze_idx:
+                            latest_analyze_idx = latest
+                            latest_analyze = fname
 
+                analyze_file = latest_analyze
                 if file_poi and file_xml and file_zip:
                     if file_poi in self.existing_runs:
                         logging.debug(
@@ -237,7 +247,7 @@ class DatasetFetcher:
                     else:
                         run_index = len(self.existing_runs) + new_runs_count
                         tasks.append(executor.submit(
-                            self.store_run_files, root_path, file_poi, file_xml, file_zip, run_index
+                            self.store_run_files, root_path, file_poi, file_xml, file_zip, run_index, analyze_file
                         ))
                         new_runs_count += 1
                         if self.num_files is not None and new_runs_count >= self.num_files:
@@ -251,7 +261,7 @@ class DatasetFetcher:
         logging.debug(
             f"Completed processing of {new_runs_count} new runs from the source directory.")
 
-    def store_run_files(self, src_root: Path, poi_fname: str, xml_fname: str, zip_fname: str, run_index: int) -> None:
+    def store_run_files(self, src_root: Path, poi_fname: str, xml_fname: str, zip_fname: str, run_index: int, analyze_file: str) -> None:
         """Stores the run files from the source directory into a new run directory in the target.
 
         The method creates a new run directory (named with a zero-padded index) in the target directory,
@@ -268,9 +278,13 @@ class DatasetFetcher:
         run_dir.mkdir(parents=True, exist_ok=True)
         self.run_dirs.append(run_dir)
 
-        for fname in (poi_fname, xml_fname, zip_fname):
+        for fname in (poi_fname, xml_fname, zip_fname, analyze_file):
             src_file = src_root / fname
             dest_file = run_dir / fname
+            if not src_file.is_file():
+                logging.debug(
+                    f"Omitting file {fname} for run {run_index:05d}; source file is not a file.")
+                continue
             if dest_file.exists():
                 logging.debug(
                     f"Omitting file {fname} for run {run_index:05d}; file already present in target directory.")
@@ -358,7 +372,7 @@ def parse_arguments() -> argparse.Namespace:
     """
     source_path = os.path.join(os.environ.get(
         "USERPROFILE", ""), "QATCH Dropbox/QATCH Team Folder/Production Notes")
-    target_path = os.path.join("content", "dropbox_dump")
+    target_path = os.path.join("content", "raw")
     parser = argparse.ArgumentParser(
         description="Fetch and process source files into structured target directories."
     )
