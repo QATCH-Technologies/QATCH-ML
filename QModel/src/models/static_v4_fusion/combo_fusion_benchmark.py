@@ -192,7 +192,7 @@ class POIBenchmark:
         print(f"Loaded {len(dataset_pairs)} dataset pairs\n")
 
         self.results = []
-        self.predictor_names = ['V4_Fusion_Original', 'V4_Fusion_1400']
+        self.predictor_names = ['V4_Fusion_Original', 'V4_Fusion_2000']
         if v4_predictor is not None:
             self.predictor_names.append('V4_Predictor')
 
@@ -207,12 +207,12 @@ class POIBenchmark:
             print(
                 f"  V4_Fusion_Original: {result_fusion_1.inference_time:.3f}s")
 
-            # Run V4 Fusion 1400
+            # Run V4 Fusion 2000
             result_fusion_2 = self.run_predictor(
-                fusion_predictor_2, data_file, "V4_Fusion_1400", poi_file, **fusion_kwargs_2
+                fusion_predictor_2, data_file, "V4_Fusion_2000", poi_file, **fusion_kwargs_2
             )
             self.results.append(result_fusion_2)
-            print(f"  V4_Fusion_1400: {result_fusion_2.inference_time:.3f}s")
+            print(f"  V4_Fusion_2000: {result_fusion_2.inference_time:.3f}s")
 
             # Run V4 Predictor if provided
             if v4_predictor is not None:
@@ -320,7 +320,7 @@ class POIBenchmark:
         # Define colors for different predictors
         color_map = {
             'V4_Fusion_Original': '#2E86AB',
-            'V4_Fusion_1400': '#E63946',
+            'V4_Fusion_2000': '#E63946',
             'V4_Predictor': '#A23B72'
         }
         colors = [color_map.get(name, '#666666')
@@ -645,10 +645,10 @@ if __name__ == "__main__":
     # Model paths for V4 Fusion Original
     FUSION_REG_PATH_1 = "poi_model_mini_window_0.pth"
     FUSION_REG_PATH_2 = "poi_model_mini_window_1.pth"
-    FUSION_CLF_PATH_ORIGINAL = "v4_model_pytorch.pth"
+    FUSION_CLF_PATH_ORIGINAL = "v4_model_pytorch_800.pth"
 
-    # Classifier path for V4 Fusion 1400
-    FUSION_CLF_PATH_1400 = "v4_fusion_pytorch_1400.pth"
+    # Classifier path for V4 Fusion 2000
+    FUSION_CLF_PATH_2000 = "v4_model_pytorch_2000.pth"
 
     # Optional: V4 Predictor paths (set to None to skip)
     V4_MODEL_PATH = "QModel/SavedModels/qmode_v4_tf/v4_model_mini.h5"
@@ -666,11 +666,11 @@ if __name__ == "__main__":
         clf_batch_size=256
     )
 
-    # V4 Fusion with 1400 classifier
-    fusion_predictor_1400 = QModelV4Fusion(
+    # V4 Fusion with 2000 classifier
+    fusion_predictor_2000 = QModelV4Fusion(
         reg_path_1=FUSION_REG_PATH_1,
         reg_path_2=FUSION_REG_PATH_2,
-        clf_path=FUSION_CLF_PATH_1400,
+        clf_path=FUSION_CLF_PATH_2000,
         reg_batch_size=512,
         clf_batch_size=256
     )
@@ -692,7 +692,7 @@ if __name__ == "__main__":
         data_dir=DATA_DIR,
         num_datasets=NUM_DATASETS,
         fusion_predictor_1=fusion_predictor_original,
-        fusion_predictor_2=fusion_predictor_1400,
+        fusion_predictor_2=fusion_predictor_2000,
         v4_predictor=v4_predictor,
         fusion_kwargs_1={'visualize': False},
         fusion_kwargs_2={'visualize': False},

@@ -617,7 +617,7 @@ if __name__ == "__main__":
     # Model paths - Update these to your actual model paths
     FUSION_REG_PATH_1 = "poi_model_mini_window_0.pth"
     FUSION_REG_PATH_2 = "poi_model_mini_window_1.pth"
-    FUSION_CLF_PATH = "v4_model_pytorch.pth"
+    FUSION_CLF_PATH = "v4_model_pytorch_.pth"
 
     V4_MODEL_PATH = "QModel/SavedModels/qmode_v4_tf/v4_model_mini.h5"
     V4_SCALER_PATH = "QModel/SavedModels/qmode_v4_tf/v4_scaler_mini.joblib"
