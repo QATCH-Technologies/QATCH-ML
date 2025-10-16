@@ -1291,7 +1291,7 @@ if __name__ == "__main__":
     print("Loading data...")
     X, y = poi_system.load_and_prepare_data(
         data_dir="content/raw",
-        num_datasets=2400,
+        num_datasets=2200,
         num_viscosity_bins=5,
         remove_outliers=True,
         outlier_method='iqr'

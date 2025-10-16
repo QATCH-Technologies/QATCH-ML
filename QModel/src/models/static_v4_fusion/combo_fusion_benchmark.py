@@ -649,7 +649,8 @@ if __name__ == "__main__":
 
     # Classifier path for V4 Fusion 2000
     FUSION_CLF_PATH_2000 = "v4_model_pytorch_2000.pth"
-
+    FUSION_REG_PATH_1_1600 = "poi_model_mini_window_0_1600.pth"
+    FUSION_REG_PATH_2_1600 = "poi_model_mini_window_1_1600.pth"
     # Optional: V4 Predictor paths (set to None to skip)
     V4_MODEL_PATH = "QModel/SavedModels/qmode_v4_tf/v4_model_mini.h5"
     V4_SCALER_PATH = "QModel/SavedModels/qmode_v4_tf/v4_scaler_mini.joblib"
@@ -668,8 +669,8 @@ if __name__ == "__main__":
 
     # V4 Fusion with 2000 classifier
     fusion_predictor_2000 = QModelV4Fusion(
-        reg_path_1=FUSION_REG_PATH_1,
-        reg_path_2=FUSION_REG_PATH_2,
+        reg_path_1=FUSION_REG_PATH_1_1600,
+        reg_path_2=FUSION_REG_PATH_2_1600,
         clf_path=FUSION_CLF_PATH_2000,
         reg_batch_size=512,
         clf_batch_size=256

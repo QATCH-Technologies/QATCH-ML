@@ -611,7 +611,7 @@ class POIBenchmark:
 # Main execution
 if __name__ == "__main__":
     # Configuration
-    DATA_DIR = "content/XANTHAM"  # Update this
+    DATA_DIR = "content/PROTEIN"  # Update this
     NUM_DATASETS = np.inf  # Number of datasets to benchmark
 
     # Model paths - Update these to your actual model paths
