@@ -1,5 +1,85 @@
-*.xml
-*.png
-__pycache__
-content/
-cache/
+# ==============================================================================
+# Custom Project Overrides
+# ==============================================================================
+/data/
+/test/
+/runs/
+
+# ==============================================================================
+# Ultralytics & ML Specific
+# ==============================================================================
+# Datasets and weights downloaded automatically or custom trained
+*.pt
+*.onnx
+*.engine
+*.torchscript
+*.tflite
+*.pb
+*.mlmodel
+*.param
+*.bin
+*.dla
+
+# Kaggle / WandB / ClearML / MLflow logs and artifacts
+.wandb/
+wandb/
+artifacts/
+mlruns/
+lightning_logs/
+
+# Hyperparameter tuning
+ray_results/
+
+# Dataset downloading locks/caches
+*.tar.gz
+*.zip
+*.tar
+*.rar
+
+# ==============================================================================
+# Python Environment & Caches
+# ==============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IPython Notebook checkpoints
+.ipynb_checkpoints
+
+# ==============================================================================
+# Operating System & IDEs
+# ==============================================================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+Ehthumbs.db
+desktop.ini
+
+# VS Code
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# PyCharm / JetBrains
+.idea/
+
+# ==============================================================================
+# Logs and Diagnostics
+# ==============================================================================
+*.log
+crash_dump*
