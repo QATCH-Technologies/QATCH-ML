@@ -1,5 +1,5 @@
 """
-QModel V7 — Signal processing and image rendering
+QModel v6 — Signal processing and image rendering
 ==================================================
 
 Three responsibilities, in order of execution:
@@ -56,11 +56,19 @@ from config import (
     DIFF_FACTOR,
     FINE_SCALES_PX,
     LOCAL_NORM_WIN_PX,
+    RENDER_ENGINEERED_STRIP,
+    RENDER_TIME_STRIP,
+    RENDER_X_TICKS,
+    RENDER_Y_TICKS,
     TARGET_DT_SEC,
+    TICK_COLOR_BGR,
+    TICK_THICKNESS,
+    X_TICK_INTERVAL_SEC,
+    Y_TICK_FRACTIONS,
     ChannelConfig,
 )
 
-LOG = logging.getLogger("v7.signal")
+LOG = logging.getLogger("v6.signal")
 
 
 # ===========================================================================
@@ -395,15 +403,14 @@ def render_detection_image(
             lineType=cv2.LINE_AA,
         )
 
-    # ── Strip 3: engineered feature channels as heatmap ───────────────
-    if cfg.include_engineered_features and COL_DIFF in grid:
-        feat_y_off = 3 * strip_h
+    # ── Strip 3: engineered feature channels as heatmap (optional) ────
+    next_y = 3 * strip_h  # running Y cursor below the three signal strips
+    if RENDER_ENGINEERED_STRIP and cfg.include_engineered_features and COL_DIFF in grid:
         features = compute_feature_channels(grid[COL_DIFF])
         # BGR layout: B = diff_neg_coarse, G = diff_neg_fine, R = diff_pos
         b = (features["diff_neg_coarse"] * 255).astype(np.uint8)
         g = (features["diff_neg_fine"] * 255).astype(np.uint8)
         r = (features["diff_pos"] * 255).astype(np.uint8)
-        # Tile each 1-D vector vertically across the strip.
         strip = np.stack(
             [
                 np.tile(b, (strip_h, 1)),
@@ -412,12 +419,73 @@ def render_detection_image(
             ],
             axis=-1,
         )
-        img[feat_y_off : feat_y_off + strip_h, :, :] = strip
+        img[next_y : next_y + strip_h, :, :] = strip
+        next_y += strip_h
 
-    # ── Strip 4: time-position gradient ───────────────────────────────
-    time_y_off = 4 * strip_h
-    time_y_end = time_y_off + time_strip_h
-    ramp = np.linspace(0, 255, img_w, dtype=np.uint8)
-    img[time_y_off:time_y_end, :, :] = ramp[np.newaxis, :, np.newaxis]
+    # ── Strip 4: time-position gradient (optional) ─────────────────────
+    if RENDER_TIME_STRIP:
+        ramp = np.linspace(0, 255, img_w, dtype=np.uint8)
+        img[next_y : next_y + time_strip_h, :, :] = ramp[np.newaxis, :, np.newaxis]
+
+    # ── Tick-mark overlays ─────────────────────────────────────────────
+    _draw_ticks(img, grid, strip_h, img_w, img_h)
 
     return img
+
+
+def _draw_ticks(
+    img: np.ndarray,
+    grid: dict,
+    strip_h: int,
+    img_w: int,
+    img_h: int,
+) -> None:
+    """Burn optional X and Y tick marks into *img* in-place.
+
+    Ticks are drawn as thin lines in TICK_COLOR_BGR across all active
+    strips. They are applied after all signal rendering so they always
+    sit on top.
+
+    X ticks (vertical lines)
+        One line every X_TICK_INTERVAL_SEC physical seconds. The pixel
+        position is derived from the pixel-grid time array so it is
+        exact to the resampled grid.
+
+    Y ticks (horizontal lines)
+        Drawn at Y_TICK_FRACTIONS relative positions within each of the
+        three raw-signal strips (0 = strip top, 1 = strip bottom).
+        The engineered and time strips are deliberately excluded — they
+        encode discrete information already.
+    """
+    if not (RENDER_X_TICKS or RENDER_Y_TICKS):
+        return
+
+    tick_col = tuple(int(c) for c in TICK_COLOR_BGR)
+
+    # ── X ticks: vertical lines at fixed time intervals ────────────────
+    if RENDER_X_TICKS and "time" in grid:
+        t_arr = grid["time"]
+        t_min = float(t_arr[0])
+        t_max = float(t_arr[-1])
+        duration = t_max - t_min
+        if duration > 0 and X_TICK_INTERVAL_SEC > 0:
+            n_ticks = int(duration / X_TICK_INTERVAL_SEC)
+            for k in range(1, n_ticks + 1):
+                t_tick = t_min + k * X_TICK_INTERVAL_SEC
+                if t_tick >= t_max:
+                    break
+                # Map physical time → pixel column via the grid.
+                frac = (t_tick - t_min) / duration
+                x_px = int(round(frac * (img_w - 1)))
+                cv2.line(img, (x_px, 0), (x_px, img_h - 1), tick_col, TICK_THICKNESS)
+
+    # ── Y ticks: horizontal lines at fractional positions in signal strips
+    if RENDER_Y_TICKS:
+        # Only draw on the three raw-signal strips (strips 0-2); the
+        # engineered heatmap and time ramp have their own implicit scale.
+        for s in range(3):
+            y_top = s * strip_h
+            for frac in Y_TICK_FRACTIONS:
+                y_px = int(round(y_top + frac * strip_h))
+                y_px = max(0, min(img_h - 1, y_px))
+                cv2.line(img, (0, y_px), (img_w - 1, y_px), tick_col, TICK_THICKNESS)

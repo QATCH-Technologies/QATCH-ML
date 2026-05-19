@@ -1,5 +1,5 @@
 """
-QModel V7 — Benchmark and per-tier evaluation
+QModel v6 — Benchmark and per-tier evaluation
 ==============================================
 
 Runs the trained cascade on every discovered run and reports per-POI
@@ -43,7 +43,7 @@ from config import (
 )
 from dataset_builder import discover_runs
 
-LOG = logging.getLogger("v7.benchmark")
+LOG = logging.getLogger("v6.benchmark")
 
 
 # ===========================================================================
@@ -105,7 +105,7 @@ def _print_global(
     refine_tag = " (sub-pixel refined)" if refine_used else " (coarse YOLO)"
 
     print(f"\n{BAR}")
-    print(f"  V7 Post-Train Time-MAE Benchmark{refine_tag}")
+    print(f"  v6 Post-Train Time-MAE Benchmark{refine_tag}")
     print(f"  {n_runs} runs  |  gross > {gross_threshold} s")
     print(f"  Output → {output_dir}")
     print(f"  {SEP}")

@@ -1,10 +1,10 @@
 """
-QModel V7 — Top-level pipeline driver
+QModel v6 — Top-level pipeline driver
 ======================================
 
 Run::
 
-    python -m qmodel_v7.pipeline
+    python -m qmodel_v6.pipeline
 
 Or as a script::
 
@@ -22,7 +22,7 @@ Version:
 """
 
 from __future__ import annotations
-
+import os
 import logging
 from pathlib import Path
 
@@ -40,7 +40,9 @@ from config import (
     VAL_SPLIT,
 )
 
-LOG = logging.getLogger("v7")
+LOG = logging.getLogger("v6")
+
+os.environ["KMP_DUPLICATE_LIB_OK"] = "True"
 
 
 def _setup_logging(verbose: bool = False) -> None:
@@ -60,7 +62,7 @@ def _summarize_plan() -> None:
     if RUN_BENCHMARK:
         steps.append("benchmark")
     LOG.info("=" * 70)
-    LOG.info("QModel V7 pipeline — %s", " → ".join(steps) if steps else "(no steps enabled)")
+    LOG.info("QModel v6 pipeline — %s", " → ".join(steps) if steps else "(no steps enabled)")
     LOG.info("=" * 70)
     LOG.info("Runs root        : %s", RUNS_ROOT)
     LOG.info("Dataset root     : %s", DATASET_ROOT)

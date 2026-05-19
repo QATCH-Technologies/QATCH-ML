@@ -1,166 +1,197 @@
 """
-QModel V7 — Training driver
-============================
+QModel v6 — Training orchestrator  (OOM-resilient)
+===================================================
 
-Trains every cascade channel sequentially using Ultralytics YOLO. Per-
-channel hyperparameters merge in this order (later overrides earlier):
+Orchestrates per-channel training. Each channel is, by default, trained
+in its own subprocess (see :mod:`_train_subprocess`) so a CUDA OOM in
+one channel cannot poison the CUDA context for the next.
 
-    YOLO_DEFAULTS          (config.py — sensible defaults)
-    ↓
-    channel.yolo_extra     (channel-specific overrides — box, dfl, …)
+Two modes:
 
-After each training run the absolute path to ``best.pt`` is written to
-``<run_dir>/best_weights_path.txt`` so :mod:`cascade_inference` can
-locate weights even if the working directory is different at inference
-time.
+  USE_SUBPROCESS_TRAINING=True   (default, recommended on Windows)
+      Spawns ``python -m _train_subprocess`` per channel. Exit code
+      tells us OOM vs other failure vs success.
+
+  USE_SUBPROCESS_TRAINING=False  (in-process, useful for debugging)
+      Imports and calls :func:`_train_subprocess._train_one` directly.
+      The 7.1 behaviour; do not use on Windows for multi-channel runs.
 
 Author:
     Paul MacNichol (paul.macnichol@qatchtech.com)
 Version:
-    7.0.0
+    7.2.0
 """
 
 from __future__ import annotations
 
-import json
 import logging
-import shutil
-from dataclasses import dataclass, field
+import os
+import subprocess
+import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from config import (
     BASE_WEIGHTS,
     CASCADE_CHANNELS,
     DATASET_ROOT,
+    LIMIT_CHANNELS,
+    NUM_WORKERS,
     TRAIN_DEVICE,
     TRAIN_PROJECT,
-    YOLO_DEFAULTS,
-    NUM_WORKERS,
+    USE_SUBPROCESS_TRAINING,
     ChannelConfig,
 )
 
-LOG = logging.getLogger("v7.train")
-
-try:
-    from ultralytics import YOLO
-
-    _HAS_ULTRALYTICS = True
-except ImportError:
-    _HAS_ULTRALYTICS = False
+LOG = logging.getLogger("v6.train")
 
 
 # ===========================================================================
-#  Per-channel training config
+#  Subprocess driver
 # ===========================================================================
 
 
-@dataclass
-class TrainConfig:
-    """Resolved training configuration for one channel."""
+def _train_channel_subprocess(
+    cfg: ChannelConfig,
+    dataset_yaml: Path,
+    output_dir: Path,
+    workers: int,
+    device: str,
+    resume: bool,
+) -> Optional[Path]:
+    """Spawn train_subprocess.py for one channel. Returns best.pt path or None.
 
-    channel: ChannelConfig
-    dataset_yaml: Path
-    output_dir: Path
-    base_weights: str = BASE_WEIGHTS
-    workers: int = NUM_WORKERS
-    device: str = TRAIN_DEVICE
-    resume: bool = False
+    Exit code mapping (see :mod:`train_subprocess`):
+        0  success
+        2  OOM
+        3  other error
+        4  bad inputs (channel not found, etc.)
 
-    def merged_hyperparams(self) -> Dict[str, Any]:
-        params = dict(YOLO_DEFAULTS)
-        params.update(self.channel.yolo_extra)
-        return params
+    Note: Python exits with code 2 when it cannot open the script file
+    ("can't open file ... No such file or directory"). A pre-flight
+    existence check catches this before launch so it is never
+    misclassified as OOM.
+    """
+    # File is train_subprocess.py — no leading underscore.
+    script_path = Path(__file__).parent / "train_subprocess.py"
+    if not script_path.is_file():
+        LOG.error(
+            "%s: training script not found at %s — verify file name/location",
+            cfg.name,
+            script_path,
+        )
+        return None
 
-
-# ===========================================================================
-#  Training a single channel
-# ===========================================================================
-
-
-def train_channel(tc: TrainConfig) -> Path:
-    """Train one channel. Returns the path to its best.pt."""
-    if not _HAS_ULTRALYTICS:
-        raise RuntimeError("ultralytics is not installed. Install with `pip install ultralytics`.")
-
-    cfg = tc.channel
-    tc.output_dir.mkdir(parents=True, exist_ok=True)
-    run_dir = tc.output_dir / cfg.name
-    run_dir.mkdir(parents=True, exist_ok=True)
-
-    hyper = tc.merged_hyperparams()
-    imgsz = max(cfg.resolution.img_w, cfg.resolution.img_h)
-
-    # Snapshot the full resolved config for traceability.
-    snapshot = {
-        "channel": {
-            "name": cfg.name,
-            "target": cfg.target,
-            "slice_mode": cfg.slice_mode,
-            "cutoff_poi": cfg.cutoff_poi,
-            "anchor_poi": cfg.anchor_poi,
-            "resolution": {
-                "img_w": cfg.resolution.img_w,
-                "img_h": cfg.resolution.img_h,
-                "strip_h": cfg.resolution.strip_h,
-                "time_strip_h": cfg.resolution.time_strip_h,
-            },
-            "smooth_signal_window": cfg.smooth_signal_window,
-            "include_engineered_features": cfg.include_engineered_features,
-            "base_truncations": cfg.base_truncations,
-            "stretch_prob": cfg.stretch_prob,
-            "high_cp_boost": cfg.high_cp_boost,
-            "epochs": cfg.epochs,
-            "batch": cfg.batch,
-            "conf_threshold": cfg.conf_threshold,
-        },
-        "merged_hyperparams": hyper,
-        "dataset_yaml": str(tc.dataset_yaml),
-        "base_weights": tc.base_weights,
-        "imgsz": imgsz,
-    }
-    with open(run_dir / "training_config.json", "w") as f:
-        json.dump(snapshot, f, indent=2, default=str)
-
-    LOG.info("─" * 70)
-    LOG.info(
-        "Training %s  (target=%s, %dx%d, epochs=%d, batch=%d, device=%s)",
+    cmd = [
+        sys.executable,
+        str(script_path),
+        "--channel",
         cfg.name,
-        cfg.target,
-        cfg.resolution.img_w,
-        cfg.resolution.img_h,
-        cfg.epochs,
-        cfg.batch,
-        tc.device,
-    )
-    LOG.info("─" * 70)
-    LOG.debug("Merged hyperparams:\n%s", json.dumps(hyper, indent=2, default=str))
+        "--dataset-yaml",
+        str(dataset_yaml),
+        "--output-dir",
+        str(output_dir),
+        "--device",
+        device,
+        "--workers",
+        str(workers),
+    ]
+    if resume:
+        cmd.append("--resume")
 
-    model = YOLO(tc.base_weights)
-    model.train(
-        data=str(tc.dataset_yaml),
-        epochs=cfg.epochs,
-        imgsz=imgsz,
-        rect=True,
-        batch=cfg.batch,
-        workers=tc.workers,
-        device=tc.device,
-        project=str(tc.output_dir),
-        name=cfg.name,
-        resume=tc.resume,
-        exist_ok=True,
-        **hyper,
-    )
+    LOG.info("Subprocess: %s", " ".join(cmd))
+
+    # Inherit env so the child sees CUDA_VISIBLE_DEVICES, PATH, conda env, etc.
+    # PYTHONUNBUFFERED=1 forces line-buffered stdout/stderr so progress
+    # lines stream into our log instead of buffering for minutes.
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    # Reduce CUDA allocator fragmentation. Without this the allocator can
+    # fail to find a contiguous block even when total free VRAM is sufficient,
+    # turning a borderline-fit batch into a hard OOM. Safe to set globally.
+    env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
     try:
-        best: Path = Path(model.trainer.best)
-    except AttributeError:
-        best = run_dir / "weights" / "best.pt"
+        proc = subprocess.run(
+            cmd,
+            env=env,
+            check=False,
+            # Stream child output to our stdout/stderr in real time.
+            stdout=None,
+            stderr=None,
+        )
+    except FileNotFoundError as exc:
+        LOG.error("%s: subprocess launch failed (%s)", cfg.name, exc)
+        return None
 
-    sidecar = run_dir / "best_weights_path.txt"
-    sidecar.write_text(str(best))
-    LOG.info("Best checkpoint: %s  (sidecar: %s)", best, sidecar)
-    return best
+    rc = proc.returncode
+    if rc == 0:
+        # Recover best.pt path from the sidecar.
+        sidecar = output_dir / cfg.name / "best_weights_path.txt"
+        if sidecar.is_file():
+            best = Path(sidecar.read_text().strip())
+            LOG.info("%s: success — best.pt at %s", cfg.name, best)
+            return best
+        LOG.warning(
+            "%s: subprocess exited 0 but sidecar missing at %s",
+            cfg.name,
+            sidecar,
+        )
+        return None
+    if rc == 2:
+        # Exit code 2 from train_subprocess means CUDA OOM.
+        # Python itself also exits 2 for "can't open file" errors, but
+        # the pre-flight is_file() check above makes that unreachable.
+        LOG.error(
+            "%s: subprocess OOM. Consider:\n"
+            "  - Lowering AUTO_BATCH_FRACTION from current value\n"
+            "  - Setting AUTO_BATCH=False and reducing BATCH_BY_RESOLUTION\n"
+            "  - Reducing NUM_WORKERS further (4 instead of 8)",
+            cfg.name,
+        )
+        return None
+    if rc == 3:
+        LOG.error("%s: subprocess training error (see traceback above)", cfg.name)
+        return None
+    if rc == 4:
+        LOG.error("%s: subprocess invocation error (bad channel name or dataset)", cfg.name)
+        return None
+    LOG.error("%s: subprocess exited with unexpected code %d", cfg.name, rc)
+    return None
+
+
+# ===========================================================================
+#  In-process fallback (debugging only)
+# ===========================================================================
+
+
+def _train_channel_inprocess(
+    cfg: ChannelConfig,
+    dataset_yaml: Path,
+    output_dir: Path,
+    workers: int,
+    device: str,
+    resume: bool,
+) -> Optional[Path]:
+    """Run training inside this process. NOT recommended for multi-channel
+    runs on Windows — a CUDA OOM corrupts the context for all subsequent
+    channels."""
+    from _train_subprocess import _train_one
+
+    base_weights = cfg.base_weights_override or BASE_WEIGHTS
+    try:
+        return _train_one(
+            cfg=cfg,
+            dataset_yaml=dataset_yaml,
+            output_dir=output_dir,
+            base_weights=base_weights,
+            workers=workers,
+            device=device,
+            resume=resume,
+        )
+    except Exception as exc:
+        LOG.error("%s: in-process training failed: %s", cfg.name, exc, exc_info=True)
+        return None
 
 
 # ===========================================================================
@@ -172,22 +203,39 @@ def train_all(
     channels: List[ChannelConfig] = CASCADE_CHANNELS,
     dataset_root: Path = Path(DATASET_ROOT),
     output_dir: Path = Path(TRAIN_PROJECT),
-    base_weights: str = BASE_WEIGHTS,
     workers: int = NUM_WORKERS,
     device: str = TRAIN_DEVICE,
     resume: bool = False,
     continue_on_error: bool = True,
+    limit_channels: Optional[List[str]] = LIMIT_CHANNELS,
 ) -> Dict[str, Optional[Path]]:
-    """Train every cascade channel sequentially.
+    """Train every cascade channel.
 
-    Returns a dict mapping channel name → best.pt path (or None on failure).
+    Honours :data:`LIMIT_CHANNELS` so you can validate one channel
+    end-to-end before committing to the full 6-channel run.
     """
+    if limit_channels:
+        channels = [c for c in channels if c.name in limit_channels]
+        LOG.info("LIMIT_CHANNELS=%s → training %d channel(s)", limit_channels, len(channels))
+
+    mode_label = "subprocess" if USE_SUBPROCESS_TRAINING else "in-process"
+    LOG.info("Training mode: %s", mode_label)
+
     out: Dict[str, Optional[Path]] = {}
     failures: List[str] = []
 
     for i, cfg in enumerate(channels, start=1):
         LOG.info("=" * 70)
-        LOG.info("[%d/%d] Training channel %s", i, len(channels), cfg.name)
+        LOG.info(
+            "[%d/%d] Channel %s  (target=%s, %dx%d, epochs=%d)",
+            i,
+            len(channels),
+            cfg.name,
+            cfg.target,
+            cfg.resolution.img_w,
+            cfg.resolution.img_h,
+            cfg.epochs,
+        )
         LOG.info("=" * 70)
 
         dataset_yaml = Path(dataset_root) / cfg.name / "data.yaml"
@@ -197,23 +245,31 @@ def train_all(
             failures.append(cfg.name)
             continue
 
-        tc = TrainConfig(
-            channel=cfg,
-            dataset_yaml=dataset_yaml,
-            output_dir=Path(output_dir),
-            base_weights=base_weights,
-            workers=workers,
-            device=device,
-            resume=resume,
-        )
-        try:
-            out[cfg.name] = train_channel(tc)
-        except Exception as exc:
-            LOG.error("%s training failed: %s", cfg.name, exc, exc_info=True)
-            out[cfg.name] = None
+        if USE_SUBPROCESS_TRAINING:
+            result = _train_channel_subprocess(
+                cfg,
+                dataset_yaml,
+                Path(output_dir),
+                workers=workers,
+                device=device,
+                resume=resume,
+            )
+        else:
+            result = _train_channel_inprocess(
+                cfg,
+                dataset_yaml,
+                Path(output_dir),
+                workers=workers,
+                device=device,
+                resume=resume,
+            )
+
+        out[cfg.name] = result
+        if result is None:
             failures.append(cfg.name)
             if not continue_on_error:
-                raise
+                LOG.error("Aborting: %s failed and continue_on_error=False", cfg.name)
+                break
 
     if failures:
         LOG.warning("train_all: %d channel(s) failed: %s", len(failures), ", ".join(failures))

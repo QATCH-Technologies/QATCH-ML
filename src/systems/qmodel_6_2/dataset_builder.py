@@ -1,26 +1,33 @@
 """
-QModel V7 — Dataset builder
-============================
+QModel v6 — Dataset builder  (parallel rendering)
+==================================================
 
 Walks a runs root, computes per-tier statistics, splits train/val
-stratified by viscosity tier, and renders YOLO datasets for every
-channel in :data:`config.CASCADE_CHANNELS`.
+stratified by viscosity tier, and renders YOLO datasets in parallel
+for every channel in :data:`config.CASCADE_CHANNELS`.
 
 Critical leakage fix vs the 10k approach
 ----------------------------------------
-The 10k approach upsampled high-cP runs (made many copies) THEN shuffled
-and split. Variants of the same physical run ended up in both train and
-val, inflating val metrics.
+The 10k approach upsampled high-cP runs THEN shuffled-and-split.
+Variants of the same physical run leaked between train and val.
 
-v7 inverts the order: split first by physical run, then generate
-variants. Every variant of a run lives in the same split as its parent.
-The high-cP boost (more variants for rare-tier runs) operates within a
-split, not across splits, so no leakage is possible.
+v6 inverts the order: split first by physical run, then render variants
+inside each split via :mod:`parallel_renderer`. No variant can cross a
+split boundary.
+
+Hardware-optimised changes vs 7.0
+---------------------------------
+  * Variant rendering is now ProcessPool-parallel (RENDER_WORKERS).
+  * Variant count is capped by :func:`augmentation.effective_variant_count`
+    using the lower :class:`ChannelConfig.tier_cap` and ``high_cp_boost``
+    defaults from v6.1.
+  * ``LIMIT_RUNS`` / ``LIMIT_CHANNELS`` toggles support a fast
+    "iterate on one channel" loop.
 
 Author:
     Paul MacNichol (paul.macnichol@qatchtech.com)
 Version:
-    7.0.0
+    7.1.0
 """
 
 from __future__ import annotations
@@ -33,31 +40,29 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
-import cv2
-import numpy as np
 import pandas as pd
 
 from augmentation import (
-    compute_box_width_norm,
     compute_tier_multipliers,
     effective_variant_count,
-    sample_stretch_factor,
-    time_stretch_df,
     viscosity_tier,
 )
 from config import (
+    CASCADE_CHANNELS,
+    LIMIT_CHANNELS,
+    LIMIT_RUNS,
     POI_ROW_MAP,
+    RENDER_WORKERS,
     RNG_SEED,
     TIER_LABELS,
     VAL_SPLIT,
-    CASCADE_CHANNELS,
     ChannelConfig,
 )
-from signal_processing import COL_TIME, preprocess_dataframe, render_detection_image
+from parallel_renderer import RenderTask, render_parallel
 
-LOG = logging.getLogger("v7.dataset")
+LOG = logging.getLogger("v6.dataset")
 
 
 # ===========================================================================
@@ -67,8 +72,6 @@ LOG = logging.getLogger("v7.dataset")
 
 @dataclass
 class RunSpec:
-    """Metadata for one training run."""
-
     csv_path: Path
     viscosity_cP: float
     poi_times: Dict[str, float]
@@ -76,7 +79,7 @@ class RunSpec:
 
 
 # ===========================================================================
-#  Run discovery (mirrors train_v6_yolo_balanced.discover_runs)
+#  Run discovery
 # ===========================================================================
 
 _ANALYZE_ZIP_RE = re.compile(r"^analyze-(\d+)\.zip$", re.IGNORECASE)
@@ -96,7 +99,7 @@ def _find_analyze_zip(run_dir: Path) -> Optional[Path]:
 
 
 def read_run_viscosity(run_dir: Path) -> Optional[float]:
-    """Mean ``viscosity_raw`` from analyze-N.zip/analyze_out.csv."""
+    """Mean viscosity_raw from analyze-N.zip/analyze_out.csv."""
     zip_path = _find_analyze_zip(run_dir)
     if zip_path is None:
         return None
@@ -123,7 +126,7 @@ def discover_runs(
     min_duration_sec: float = 2.0,
     n_workers: int = 8,
 ) -> List[RunSpec]:
-    """Walk runs_root and build a RunSpec for every valid run directory."""
+    """Walk runs_root and build a RunSpec for every valid run."""
     runs_root = Path(runs_root)
     if not runs_root.is_dir():
         raise NotADirectoryError(f"runs_root not a directory: {runs_root}")
@@ -133,7 +136,6 @@ def discover_runs(
     if not candidates:
         return []
 
-    # Parallel viscosity read (zip extraction is the slow part).
     visc_map: Dict[str, Optional[float]] = {}
     with ThreadPoolExecutor(max_workers=max(1, n_workers)) as ex:
         futures = {ex.submit(read_run_viscosity, d): d for d in candidates}
@@ -233,7 +235,7 @@ def discover_runs(
 
 
 # ===========================================================================
-#  Stratified train / val split
+#  Stratified train/val split
 # ===========================================================================
 
 
@@ -242,11 +244,9 @@ def stratified_split(
     val_ratio: float = VAL_SPLIT,
     rng_seed: int = RNG_SEED,
 ) -> Tuple[List[int], List[int]]:
-    """Split runs by viscosity tier. Returns (train_indices, val_indices).
+    """Per-tier split on PHYSICAL RUNS. Variants stay inside their split."""
+    import numpy as np
 
-    The split is on PHYSICAL RUNS. Variants are generated per-split
-    downstream, so no variant of a run can leak across splits.
-    """
     rng = np.random.default_rng(rng_seed)
     by_tier: Dict[int, List[int]] = {}
     for i, r in enumerate(runs):
@@ -270,42 +270,6 @@ def stratified_split(
 
 
 # ===========================================================================
-#  Slicing
-# ===========================================================================
-
-
-def _apply_slice(
-    df: pd.DataFrame,
-    cfg: ChannelConfig,
-    poi_times: Dict[str, float],
-) -> Optional[pd.DataFrame]:
-    """Slice df according to cfg.slice_mode. Returns None when invalid."""
-    if cfg.slice_mode == "full":
-        return df
-
-    if cfg.slice_mode == "backward":
-        if cfg.cutoff_poi not in poi_times:
-            return None
-        cutoff_t = poi_times[cfg.cutoff_poi]
-        return df[df[COL_TIME] <= cutoff_t].reset_index(drop=True)
-
-    if cfg.slice_mode == "forward":
-        if cfg.anchor_poi not in poi_times:
-            return None
-        anchor_t = poi_times[cfg.anchor_poi]
-        return df[df[COL_TIME] >= anchor_t].reset_index(drop=True)
-
-    if cfg.slice_mode == "windowed":
-        if cfg.anchor_poi not in poi_times or cfg.cutoff_poi not in poi_times:
-            return None
-        anchor_t = poi_times[cfg.anchor_poi]
-        cutoff_t = poi_times[cfg.cutoff_poi]
-        return df[(df[COL_TIME] >= anchor_t) & (df[COL_TIME] <= cutoff_t)].reset_index(drop=True)
-
-    return None
-
-
-# ===========================================================================
 #  Per-channel dataset assembly
 # ===========================================================================
 
@@ -316,23 +280,9 @@ def build_dataset_for_channel(
     output_root: Path,
     val_split: float = VAL_SPLIT,
     rng_seed: int = RNG_SEED,
+    n_workers: int = RENDER_WORKERS,
 ) -> Optional[Path]:
-    """
-    Render a YOLO-format detection dataset for one cascade channel.
-
-    Args:
-        cfg: Channel configuration.
-        runs: All discovered runs.
-        output_root: Output directory root (e.g. ``datasets_v7/``).
-        val_split: Validation fraction (per-tier).
-        rng_seed: RNG seed for reproducibility.
-
-    Returns:
-        Path to ``data.yaml`` for the rendered dataset, or ``None``
-        if no images were produced.
-    """
-    rng = np.random.default_rng(rng_seed)
-
+    """Render a YOLO-format detection dataset for one cascade channel."""
     output_dir = Path(output_root) / cfg.name
     for split in ("train", "val"):
         (output_dir / "images" / split).mkdir(parents=True, exist_ok=True)
@@ -342,59 +292,53 @@ def build_dataset_for_channel(
     train_idx, val_idx = stratified_split(runs, val_ratio=val_split, rng_seed=rng_seed)
     tier_mult = compute_tier_multipliers([r.viscosity_cP for r in runs], cap=cfg.tier_cap)
     LOG.info(
-        "Tier multipliers for %s: %s",
+        "Tier multipliers for %s (cap=%d): %s",
         cfg.name,
+        cfg.tier_cap,
         {TIER_LABELS[k]: v for k, v in sorted(tier_mult.items())},
     )
 
-    n_train_img = 0
-    n_val_img = 0
-    n_stretched = 0
-    n_runs_used = 0
+    # ── Build task lists ───────────────────────────────────────────────
+    train_tasks = _build_tasks(
+        cfg,
+        [runs[i] for i in train_idx],
+        output_dir,
+        "train",
+        tier_mult,
+        allow_stretch=True,
+        rng_seed_base=rng_seed,
+    )
+    val_tasks = _build_tasks(
+        cfg,
+        [runs[i] for i in val_idx],
+        output_dir,
+        "val",
+        tier_mult,
+        allow_stretch=False,
+        rng_seed_base=rng_seed,
+    )
 
-    for j, i in enumerate(train_idx):
-        rendered = _render_run_variants(
-            cfg,
-            runs[i],
-            output_dir,
-            "train",
-            rng,
-            tier_mult,
-            allow_stretch=True,
-        )
-        if rendered:
-            n_runs_used += 1
-            n_train_img += rendered.n_images
-            n_stretched += rendered.n_stretched
-        if (j + 1) % 100 == 0:
-            LOG.info(
-                "%s train: %d / %d runs processed (%d images, %d stretched)",
-                cfg.name,
-                j + 1,
-                len(train_idx),
-                n_train_img,
-                n_stretched,
-            )
+    # Estimated dataset size — handy for spotting variant-explosion regressions.
+    est_train = sum(t.n_variants for t in train_tasks)
+    est_val = sum(t.n_variants for t in val_tasks)
+    LOG.info(
+        "%s: estimated %d train + %d val variants (%d eligible runs)",
+        cfg.name,
+        est_train,
+        est_val,
+        len(train_tasks) + len(val_tasks),
+    )
 
-    # Val: never stretch (val should reflect natural inference distribution).
-    for i in val_idx:
-        rendered = _render_run_variants(
-            cfg,
-            runs[i],
-            output_dir,
-            "val",
-            rng,
-            tier_mult,
-            allow_stretch=False,
-        )
-        if rendered:
-            n_val_img += rendered.n_images
+    # ── Render in parallel ─────────────────────────────────────────────
+    LOG.info("%s: rendering with %d worker(s)", cfg.name, n_workers)
+    n_train_img, n_train_str, _ = render_parallel(train_tasks, n_workers)
+    n_val_img, _, _ = render_parallel(val_tasks, n_workers, log_every=50)
 
     LOG.info(
         "%s built: %d train (%d stretched), %d val images",
         cfg.name,
         n_train_img,
-        n_stretched,
+        n_train_str,
         n_val_img,
     )
 
@@ -404,7 +348,7 @@ def build_dataset_for_channel(
 
     yaml_path = output_dir / "data.yaml"
     with open(yaml_path, "w") as f:
-        f.write("# Auto-generated by qmodel_v7.dataset_builder\n")
+        f.write("# Auto-generated by qmodel_v6.dataset_builder\n")
         f.write(f"path: {output_dir.resolve()}\n")
         f.write("train: images/train\n")
         f.write("val: images/val\n")
@@ -413,131 +357,52 @@ def build_dataset_for_channel(
     return yaml_path
 
 
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class _RenderTally:
-    n_images: int
-    n_stretched: int
-
-
-def _render_run_variants(
+def _build_tasks(
     cfg: ChannelConfig,
-    run: RunSpec,
+    runs: List[RunSpec],
     output_dir: Path,
     split: str,
-    rng: np.random.Generator,
     tier_mult: Dict[int, int],
     allow_stretch: bool,
-) -> Optional[_RenderTally]:
-    """Render the configured number of variants for one (channel, run, split)."""
-    # ── Validity gates ────────────────────────────────────────────────
-    if cfg.target not in run.poi_times:
-        return None
-    if cfg.slice_mode == "backward" and cfg.cutoff_poi not in run.poi_times:
-        return None
-    if cfg.slice_mode == "forward" and cfg.anchor_poi not in run.poi_times:
-        return None
-    if cfg.slice_mode == "windowed" and (
-        cfg.anchor_poi not in run.poi_times or cfg.cutoff_poi not in run.poi_times
-    ):
-        return None
-
-    # ── Load + preprocess once per run ────────────────────────────────
-    try:
-        raw = pd.read_csv(run.csv_path)
-    except Exception as exc:
-        LOG.debug("%s read failed (%s)", run.csv_path, exc)
-        return None
-
-    df_full = preprocess_dataframe(raw)
-    if df_full is None or df_full.empty:
-        return None
-
-    df_base = _apply_slice(df_full, cfg, run.poi_times)
-    if df_base is None or len(df_base) < 32:
-        return None
-
-    poi_t = run.poi_times[cfg.target]
-    t_min = float(df_base[COL_TIME].min())
-    t_max = float(df_base[COL_TIME].max())
-    if not (t_min < poi_t < t_max):
-        return None
-
-    # ── Variant count for this run ────────────────────────────────────
-    tier_idx = viscosity_tier(run.viscosity_cP)
-    n_variants = effective_variant_count(
-        base=cfg.base_truncations,
-        tier_multiplier=tier_mult.get(tier_idx, 1),
-        viscosity_tier_idx=tier_idx,
-        high_cp_boost=cfg.high_cp_boost,
-    )
-
-    n_imgs = 0
-    n_stretch = 0
-    seen_keys: set = set()
-
-    for i in range(n_variants):
-        if i == 0:
-            df_view = df_base
-            tag = "full"
-            stretched = False
-        else:
-            # Truncate the post-POI tail to a random fraction in (0.05, 1.0).
-            tail_frac = float(rng.uniform(0.05, 1.0))
-            cut_t = poi_t + (t_max - poi_t) * tail_frac
-            df_view = df_base[df_base[COL_TIME] <= cut_t].reset_index(drop=True)
-            if len(df_view) < 32:
-                continue
-            tag = f"trunc{i:02d}_p{tail_frac:.2f}"
-
-            # Optional stretch: train only, never on the first or second
-            # variant (so every run reliably contributes at least one
-            # un-augmented truncated image).
-            stretched = False
-            if allow_stretch and i >= 2 and rng.random() < cfg.stretch_prob:
-                factor = sample_stretch_factor(tier_idx, rng)
-                df_view = time_stretch_df(df_view, factor)
-                tag += f"_s{factor:.2f}"
-                stretched = True
-
-        # Deduplicate near-identical truncation cuts.
-        cut_key = round(float(df_view[COL_TIME].iloc[-1]), 2)
-        if cut_key in seen_keys:
+    rng_seed_base: int,
+) -> List[RenderTask]:
+    """Materialise one RenderTask per (run, channel, split)."""
+    tasks: List[RenderTask] = []
+    for r in runs:
+        # Quick pre-filter — skip runs that can't satisfy this channel.
+        if cfg.target not in r.poi_times:
             continue
-        seen_keys.add(cut_key)
-
-        slice_t_min = float(df_view[COL_TIME].min())
-        slice_t_max = float(df_view[COL_TIME].max())
-        slice_dur = max(slice_t_max - slice_t_min, 1e-6)
-        x_center = (poi_t - slice_t_min) / slice_dur
-        if not (0.0 < x_center < 1.0):
+        if cfg.slice_mode == "backward" and cfg.cutoff_poi not in r.poi_times:
+            continue
+        if cfg.slice_mode == "forward" and cfg.anchor_poi not in r.poi_times:
+            continue
+        if cfg.slice_mode == "windowed" and (
+            cfg.anchor_poi not in r.poi_times or cfg.cutoff_poi not in r.poi_times
+        ):
             continue
 
-        # Dynamic box width: physical seconds, then normalised against
-        # this variant's slice duration.
-        box_w = compute_box_width_norm(
-            poi_name=cfg.target,
-            slice_duration_s=slice_dur,
-            viscosity_cP=run.viscosity_cP,
+        tier_idx = viscosity_tier(r.viscosity_cP)
+        n_variants = effective_variant_count(
+            base=cfg.base_truncations,
+            tier_multiplier=tier_mult.get(tier_idx, 1),
+            viscosity_tier_idx=tier_idx,
+            high_cp_boost=cfg.high_cp_boost,
         )
-
-        img = render_detection_image(df_view, cfg)
-        if img is None:
-            continue
-
-        stem = f"{run.run_id or run.csv_path.stem}_{tag}"
-        img_path = output_dir / "images" / split / f"{stem}.jpg"
-        lbl_path = output_dir / "labels" / split / f"{stem}.txt"
-        cv2.imwrite(str(img_path), img)
-        with open(lbl_path, "w") as f:
-            f.write(f"0 {x_center:.6f} 0.5 {box_w:.6f} 1.0\n")
-        n_imgs += 1
-        if stretched:
-            n_stretch += 1
-
-    return _RenderTally(n_imgs, n_stretch) if n_imgs else None
+        tasks.append(
+            RenderTask(
+                run_id=r.run_id,
+                csv_path=str(r.csv_path),
+                viscosity_cP=r.viscosity_cP,
+                poi_times=dict(r.poi_times),
+                channel=cfg,
+                output_dir=str(output_dir),
+                split=split,
+                n_variants=n_variants,
+                allow_stretch=allow_stretch,
+                rng_seed_base=rng_seed_base,
+            )
+        )
+    return tasks
 
 
 # ===========================================================================
@@ -551,23 +416,50 @@ def build_all_datasets(
     channels: List[ChannelConfig] = CASCADE_CHANNELS,
     val_split: float = VAL_SPLIT,
     rng_seed: int = RNG_SEED,
-    n_workers: int = 8,
+    n_workers: int = RENDER_WORKERS,
     continue_on_error: bool = True,
+    limit_runs: Optional[int] = LIMIT_RUNS,
+    limit_channels: Optional[List[str]] = LIMIT_CHANNELS,
 ) -> Dict[str, Optional[Path]]:
-    """Discover runs once, then build a dataset for every channel.
+    """Discover runs once, then build a dataset for every selected channel.
 
-    Returns a dict mapping channel name → yaml path (or None on failure).
+    Args:
+        runs_root, output_root, val_split, rng_seed: standard.
+        channels: full cascade list (the default).
+        n_workers: passed through to :func:`render_parallel`.
+        limit_runs: if set, randomly sample this many discovered runs.
+            Useful for a "build a tiny dataset to validate the pipeline"
+            iteration loop.
+        limit_channels: if set, only build the listed channel names.
+            Pair with ``LIMIT_RUNS`` to validate one channel end-to-end
+            before committing to the full 6-channel build.
     """
-    runs = discover_runs(runs_root, n_workers=n_workers)
+    import numpy as np
+
+    runs = discover_runs(runs_root, n_workers=8)
     if not runs:
         raise FileNotFoundError(f"No valid runs found under {runs_root}")
+
+    if limit_runs is not None and len(runs) > limit_runs:
+        rng = np.random.default_rng(rng_seed)
+        idx = rng.choice(len(runs), size=limit_runs, replace=False)
+        runs = [runs[int(i)] for i in idx]
+        LOG.info("LIMIT_RUNS=%d → restricted to %d runs", limit_runs, len(runs))
+
+    if limit_channels:
+        channels = [c for c in channels if c.name in limit_channels]
+        LOG.info(
+            "LIMIT_CHANNELS=%s → building %d channel(s)",
+            limit_channels,
+            len(channels),
+        )
 
     out: Dict[str, Optional[Path]] = {}
     for i, cfg in enumerate(channels, start=1):
         slice_str = _slice_desc(cfg)
         LOG.info("=" * 70)
         LOG.info(
-            "[%d/%d] Channel %s  target=%s  slice=%s  res=%dx%d  stretch=%.2f  boost=%.2f",
+            "[%d/%d] %s  target=%s  slice=%s  res=%dx%d  batch=%d  stretch=%.2f  boost=%.2f",
             i,
             len(channels),
             cfg.name,
@@ -575,6 +467,7 @@ def build_all_datasets(
             slice_str,
             cfg.resolution.img_w,
             cfg.resolution.img_h,
+            cfg.effective_batch,
             cfg.stretch_prob,
             cfg.high_cp_boost,
         )
@@ -586,6 +479,7 @@ def build_all_datasets(
                 Path(output_root),
                 val_split=val_split,
                 rng_seed=rng_seed,
+                n_workers=n_workers,
             )
             out[cfg.name] = yaml_path
         except Exception as exc:

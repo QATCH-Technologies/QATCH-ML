@@ -1,5 +1,5 @@
 """
-QModel V7 — Cascade inference
+QModel v6 — Cascade inference
 ==============================
 
 Reverse-cascade POI detection. The cascade walks coarse-to-fine in
@@ -60,7 +60,7 @@ from config import (
 )
 from signal_processing import COL_TIME, preprocess_dataframe, render_detection_image
 
-LOG = logging.getLogger("v7.inference")
+LOG = logging.getLogger("v6.inference")
 
 # Optional sub-pixel refinement.
 try:

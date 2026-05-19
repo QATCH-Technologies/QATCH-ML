@@ -1,5 +1,5 @@
 """
-QModel V7 — Augmentation and variant generation
+QModel v6 — Augmentation and variant generation
 ================================================
 
 This module bundles three augmentation concerns:
@@ -211,40 +211,57 @@ def compute_box_width_norm(
     poi_name: str,
     slice_duration_s: float,
     viscosity_cP: float,
+    img_w: int = 1600,
     profile: Optional[BoxSizeProfile] = None,
 ) -> float:
-    """
-    Return the normalised ([0, 1]) bounding-box width for one YOLO label.
+    """Return the normalised ([0, 1]) bounding-box width for one YOLO label.
 
-    The width is computed from a PHYSICAL second target via
-    :class:`BoxSizeProfile`, then divided by the slice duration to
-    normalise. A min/max floor/ceiling (also on the profile) prevents
-    degenerate widths on extreme slice durations.
+    The width is expressed as a **pixel target** (via
+    :meth:`BoxSizeProfile.target_pixel_width`) rather than a fixed number
+    of seconds.  This decouples box size from slice duration, so runs of
+    the same viscosity but different total lengths produce consistent pixel
+    boxes in the rendered image.
+
+    Two scalings are applied inside ``target_pixel_width``:
+
+    * **Resolution scaling** — the ``base_px`` value (calibrated at 1600 px)
+      is multiplied by ``img_w / 1600`` so the *normalised* fraction stays
+      the same across HIRES / MIDRES / ZOOM presets.
+
+    * **Duration boost** — a sub-linear power-law ``(duration / ref)^exp``
+      gives longer runs slightly wider boxes, reflecting the physical truth
+      that high-viscosity (longer) runs have genuinely broader transitions.
+      Shorter runs get proportionally smaller boxes because the ratio < 1.
 
     Args:
-        poi_name: One of POI1..POI5.
-        slice_duration_s: Duration of the slice the YOLO box will sit
-            inside (after any forward / backward / windowed cropping).
+        poi_name: One of ``POI1``..``POI5``.
+        slice_duration_s: Duration of the rendered slice in seconds.
         viscosity_cP: Mean viscosity of the run, used for tier lookup.
+        img_w: Pixel width of the rendered image.  Pass
+            ``cfg.resolution.img_w`` from the channel config.  Defaults to
+            1600 (MIDRES) for backwards-compatible call sites that don't
+            yet pass the argument.
         profile: Override for the default profile (handy for ablations).
 
     Returns:
-        Normalised box width in [profile.min_norm_width,
-        profile.max_norm_width].
+        Normalised width in ``[profile.min_px / img_w, profile.max_norm_width]``.
     """
     if profile is None:
         profile = BOX_SIZE_PROFILES.get(poi_name)
     if profile is None:
         return 0.025  # safe default
 
-    tier = viscosity_tier(viscosity_cP)
-    width_s = profile.width_seconds(tier)
-
     if slice_duration_s <= 0:
-        return profile.min_norm_width
+        return profile.min_px / img_w
 
-    raw = width_s / slice_duration_s
-    return float(np.clip(raw, profile.min_norm_width, profile.max_norm_width))
+    tier = viscosity_tier(viscosity_cP)
+    target_px = profile.target_pixel_width(tier, img_w, slice_duration_s)
+
+    raw = target_px / img_w
+    min_norm = profile.min_px / img_w  # absolute pixel floor
+    max_norm = profile.max_norm_width  # normalised ceiling
+
+    return float(np.clip(raw, min_norm, max_norm))
 
 
 # ===========================================================================
