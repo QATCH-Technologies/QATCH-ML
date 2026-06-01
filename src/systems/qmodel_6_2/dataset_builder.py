@@ -447,7 +447,10 @@ def build_all_datasets(
         LOG.info("LIMIT_RUNS=%d → restricted to %d runs", limit_runs, len(runs))
 
     if limit_channels:
-        channels = [c for c in channels if c.name in limit_channels]
+        # Accept either full channel names (ch_poi5_diff) or group names
+        # (ch_poi5, which selects all three of its signal channels).
+        wanted = set(limit_channels)
+        channels = [c for c in channels if c.name in wanted or c.group in wanted]
         LOG.info(
             "LIMIT_CHANNELS=%s → building %d channel(s)",
             limit_channels,

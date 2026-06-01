@@ -1,8 +1,8 @@
 """
-QModel v6 — Signal processing and image rendering
-==================================================
+QModel v6 — Signal processing and image rendering  (v7 single-signal)
+=====================================================================
 
-Three responsibilities, in order of execution:
+Two responsibilities, in order of execution:
 
   1. Standardised-dt preprocessing
        ``preprocess_dataframe`` interpolates the raw run onto a uniform
@@ -11,29 +11,26 @@ Three responsibilities, in order of execution:
        and physical time as proportional — no more sampling-rate
        surprises buried in gradient computations.
 
-  2. Engineered feature channels
-       ``compute_feature_channels`` builds three multiscale signed-
-       gradient bands from the Difference curve:
-           - diff_pos          : loading events (POI3 / POI4 / POI5)
-           - diff_neg_fine     : sharp baseline events (POI1/POI2 low-cP)
-           - diff_neg_coarse   : slow baseline events (POI1/POI2 high-cP)
-       Locally-normalised via rolling p90 so each channel is calibrated
-       against local activity rather than the run's global maximum.
+  2. Single-signal image rendering
+       ``render_detection_image`` renders ONE signal — the channel's
+       ``signal_column`` (Dissipation, Resonance_Frequency, or the derived
+       Difference) — filling the whole canvas. There is one detector per
+       signal per POI, so each rendered image contains exactly one curve.
 
-  3. Image rendering
-       ``render_detection_image`` composes the five-strip canvas:
-           [ Diss | Freq | Diff | EngFeatures | TimeGradient ]
-       Per-channel resolution and smoothing come from the channel's
-       ``ResolutionPreset`` (config.py).
-
-The renderer is shared by every cascade channel. The only thing that
-varies between channels is the ResolutionPreset and a handful of bool /
-window-size toggles, all packaged in :class:`ChannelConfig`.
+What changed in v7
+------------------
+The old multi-strip layout stacked all three raw signals plus an
+engineered multiscale-gradient heatmap (``diff_pos`` / ``diff_neg_fine`` /
+``diff_neg_coarse``) and a time-position ramp into a single tall image.
+v7 drops the stacked layout entirely: one signal per image, and NO
+slow-trend / gradient heatmap of any kind is rendered. The Difference
+curve remains a first-class signal (it is a derived measurement curve,
+not a trend line).
 
 Author:
     Paul MacNichol (paul.macnichol@qatchtech.com)
 Version:
-    7.0.0
+    8.0.0
 """
 
 from __future__ import annotations
@@ -44,20 +41,13 @@ from typing import Dict, Optional
 import cv2
 import numpy as np
 import pandas as pd
-from scipy.ndimage import uniform_filter1d
 from scipy.signal import medfilt, savgol_filter
 
 from config import (
-    ALL_SCALES_PX,
     BASELINE_END_SEC,
     BASELINE_OFFSET_SEC,
     BASELINE_START_SEC,
-    COARSE_SCALES_PX,
     DIFF_FACTOR,
-    FINE_SCALES_PX,
-    LOCAL_NORM_WIN_PX,
-    RENDER_ENGINEERED_STRIP,
-    RENDER_TIME_STRIP,
     RENDER_X_TICKS,
     RENDER_Y_TICKS,
     TARGET_DT_SEC,
@@ -194,97 +184,26 @@ def _compute_difference_curve(
 
 
 # ===========================================================================
-#  Stage 2 — Engineered feature channels
+#  Stage 2 — Single-signal image rendering
 # ===========================================================================
-# All gradients here are taken on the uniform-dt pixel grid, which after
-# resampling is exactly proportional to Relative_time. This is the
-# explicit answer to bucket-list item #2: "ensure all features are
-# computed w.r.t. relative time as the X-axis, not the indices of the
-# data."
-
-
-def _multiscale_signed(
-    values_px: np.ndarray,
-    scales_px: tuple,
-) -> tuple:
-    """Return (pos_envelope, neg_envelope) of signed-gradient event rate.
-
-    For each smoothing window, compute the signed gradient, normalise by
-    its own p99 magnitude, clip to [-1, 1], split into positive and
-    negative envelopes, and take the per-pixel max across scales.
-    """
-    pos = np.zeros_like(values_px)
-    neg = np.zeros_like(values_px)
-    for win in scales_px:
-        w = win if win % 2 == 1 else win + 1
-        sm = uniform_filter1d(values_px, size=w, mode="reflect")
-        g = np.gradient(sm)
-        p99 = float(np.percentile(np.abs(g), 99)) + EPSILON
-        pos = np.maximum(pos, np.clip(g / p99, 0.0, 1.0))
-        neg = np.maximum(neg, np.clip(-g / p99, 0.0, 1.0))
-    return pos, neg
-
-
-def _adaptive_norm(rate: np.ndarray, win: int = LOCAL_NORM_WIN_PX) -> np.ndarray:
-    """Locally-normalise a [0, 1] rate signal by its rolling 90th percentile."""
-    if len(rate) < 2 * win + 1:
-        # Fall back to global p90 on very short slices.
-        p90 = float(np.percentile(rate, 90)) + EPSILON
-        return np.clip(rate / p90, 0.0, 1.0)
-
-    from numpy.lib.stride_tricks import sliding_window_view
-
-    padded = np.pad(rate, win, mode="reflect")
-    windows = sliding_window_view(padded, 2 * win + 1)
-    local_p90 = np.percentile(windows, 90, axis=1) + EPSILON
-    return np.clip(rate / local_p90, 0.0, 1.0)
-
-
-def compute_feature_channels(diff_px: np.ndarray) -> Dict[str, np.ndarray]:
-    """
-    Build the three engineered event-rate channels from a Difference
-    signal resampled onto the pixel grid.
-
-    Returns a dict with keys ``diff_pos``, ``diff_neg_fine``,
-    ``diff_neg_coarse``, each a [0, 1] array of length ``len(diff_px)``.
-    """
-    pos_all, _ = _multiscale_signed(diff_px, ALL_SCALES_PX)
-    _, neg_fine = _multiscale_signed(diff_px, FINE_SCALES_PX)
-    _, neg_coarse = _multiscale_signed(diff_px, COARSE_SCALES_PX)
-
-    return {
-        "diff_pos": _adaptive_norm(pos_all),
-        "diff_neg_fine": _adaptive_norm(neg_fine),
-        "diff_neg_coarse": _adaptive_norm(neg_coarse),
-    }
-
-
-# ===========================================================================
-#  Stage 3 — Image rendering
-# ===========================================================================
-# Layout (top → bottom):
+# v7 layout: one signal fills the entire canvas. No stacked strips, no
+# engineered-gradient heatmap, no time-position ramp. The signal drawn is
+# selected per-channel via ``cfg.signal_column``.
 #
-#     ┌──────────────────────────────────┐  ┐
-#     │  strip 0 : Dissipation (R)       │  │
-#     ├──────────────────────────────────┤  │ 4 × strip_h
-#     │  strip 1 : Frequency   (G)       │  │
-#     ├──────────────────────────────────┤  │
-#     │  strip 2 : Difference  (B)       │  │
-#     ├──────────────────────────────────┤  │
-#     │  strip 3 : Engineered (R/G/B)    │  │
-#     ├──────────────────────────────────┤  ┘
-#     │  strip 4 : Time-position ramp    │  ← time_strip_h
-#     └──────────────────────────────────┘
+#     ┌──────────────────────────────────────┐
+#     │                                       │
+#     │   single signal (Diss | Freq | Diff)  │   img_h = strip_h
+#     │                                       │
+#     └──────────────────────────────────────┘
 #
 
 
 def _signal_polyline(
     values: np.ndarray,
     img_w: int,
-    strip_h: int,
-    strip_y_off: int,
+    img_h: int,
 ) -> Optional[np.ndarray]:
-    """Map a 1-D signal to (x, y) integer pixel coordinates for one strip."""
+    """Map a 1-D signal to (x, y) integer pixel coordinates spanning the canvas."""
     if len(values) < 2:
         return None
 
@@ -296,33 +215,33 @@ def _signal_polyline(
     norm = np.clip((values - v_min) / diff, 0.0, 1.0)
 
     xs = np.linspace(0, img_w - 1, len(values)).astype(np.int32)
-    draw_h = strip_h - (2 * PADDING)
-    y_rel = (strip_h - PADDING) - (norm * draw_h)
-    ys = (strip_y_off + y_rel).astype(np.int32)
+    draw_h = img_h - (2 * PADDING)
+    ys = ((img_h - PADDING) - (norm * draw_h)).astype(np.int32)
     return np.stack((xs, ys), axis=1)
 
 
-def _resample_to_pixel_grid(df: pd.DataFrame, img_w: int) -> Dict[str, np.ndarray]:
-    """Sample each signal column onto a uniform img_w-pixel grid.
+def _resample_signal_to_pixel_grid(
+    df: pd.DataFrame,
+    col: str,
+    img_w: int,
+) -> Optional[Dict[str, np.ndarray]]:
+    """Sample ONE signal column onto a uniform img_w-pixel grid.
 
-    All gradients downstream operate on this grid, which after dt
-    resampling is exactly proportional to Relative_time. So pixel-space
-    gradients == physical-time gradients up to a constant scale.
+    The grid is uniform in Relative_time, so pixel column == physical time
+    up to a constant scale. Returns ``{"time": ..., "signal": ...}`` or
+    ``None`` if the column is missing or the slice is degenerate.
     """
-    if COL_TIME not in df.columns or len(df) < 2:
-        return {}
+    if COL_TIME not in df.columns or col not in df.columns or len(df) < 2:
+        return None
 
     t = df[COL_TIME].to_numpy(dtype=float)
     t_min, t_max = float(t[0]), float(t[-1])
     if (t_max - t_min) < 1e-9:
-        return {}
+        return None
 
     pixel_t = np.linspace(t_min, t_max, img_w)
-    out: Dict[str, np.ndarray] = {"time": pixel_t}
-    for col in (COL_DISS, COL_FREQ, COL_DIFF):
-        if col in df.columns:
-            out[col] = np.interp(pixel_t, t, df[col].to_numpy(dtype=float))
-    return out
+    sig = np.interp(pixel_t, t, df[col].to_numpy(dtype=float))
+    return {"time": pixel_t, "signal": sig}
 
 
 def render_detection_image(
@@ -330,13 +249,18 @@ def render_detection_image(
     cfg: ChannelConfig,
 ) -> Optional[np.ndarray]:
     """
-    Render the five-strip detection image for one channel.
+    Render the single-signal detection image for one channel.
+
+    Exactly one signal — ``cfg.signal_column`` — is drawn, filling the
+    whole canvas. The signal is colour-coded by its BGR channel
+    (Dissipation=red, Frequency=green, Difference=blue) purely as a visual
+    aid; YOLO sees the silhouette either way.
 
     Args:
         df: A *preprocessed* dataframe (uniform dt, with Difference
             column). Run :func:`preprocess_dataframe` first.
-        cfg: Channel configuration. Determines resolution, smoothing,
-            and whether the engineered-feature strip is rendered.
+        cfg: Channel configuration. Determines resolution, which signal to
+            render, and per-signal smoothing.
 
     Returns:
         ``np.ndarray`` of shape ``(cfg.resolution.img_h, cfg.resolution.img_w, 3)``,
@@ -347,88 +271,56 @@ def render_detection_image(
 
     res = cfg.resolution
     img_w = res.img_w
-    strip_h = res.strip_h
-    time_strip_h = res.time_strip_h
     img_h = res.img_h
 
     img = np.zeros((img_h, img_w, 3), dtype=np.uint8)
 
-    # ── Optional signal smoothing ──────────────────────────────────────
+    col = cfg.signal_column
+    if col not in df.columns:
+        LOG.warning("render: signal column %s missing for channel %s", col, cfg.name)
+        return img
+
+    # ── Optional per-signal smoothing ──────────────────────────────────
     if cfg.smooth_signal_window >= 5:
         df = df.copy()
         win = cfg.smooth_signal_window
         win = win if win % 2 == 1 else win + 1
         poly = min(3, win - 1)
-        for col in (COL_DISS, COL_FREQ, COL_DIFF):
-            if col in df.columns:
-                arr = df[col].to_numpy(dtype=float)
-                if len(arr) >= win:
-                    try:
-                        df[col] = savgol_filter(arr, win, poly)
-                    except Exception:
-                        pass
+        arr = df[col].to_numpy(dtype=float)
+        if len(arr) >= win:
+            try:
+                df[col] = savgol_filter(arr, win, poly)
+            except Exception:
+                pass
 
-    # ── Sample each signal onto the rendering pixel grid ──────────────
-    grid = _resample_to_pixel_grid(df, img_w)
-    if not grid:
+    # ── Sample the single signal onto the pixel grid ──────────────────
+    grid = _resample_signal_to_pixel_grid(df, col, img_w)
+    if grid is None:
         return img
 
-    # ── Strips 0-2: raw signals as polylines with filled silhouette ───
-    strip_specs = (
-        (0, COL_DISS),  # R
-        (1, COL_FREQ),  # G
-        (2, COL_DIFF),  # B
+    pts = _signal_polyline(grid["signal"], img_w, img_h)
+    if pts is None:
+        return img
+
+    # Colour the fill by the signal's BGR channel; outline in white.
+    ch = SIGNAL_BGR_CHANNEL.get(col, 0)
+    fill = [0, 0, 0]
+    fill[ch] = 255
+
+    bottom_y = img_h - PADDING
+    poly = np.concatenate([pts, [[pts[-1, 0], bottom_y]], [[pts[0, 0], bottom_y]]])
+    cv2.fillPoly(img, [poly], tuple(fill))
+    cv2.polylines(
+        img,
+        [pts.reshape((-1, 1, 2))],
+        isClosed=False,
+        color=WHITE,
+        thickness=1,
+        lineType=cv2.LINE_AA,
     )
-    for strip_idx, col in strip_specs:
-        if col not in grid:
-            continue
-        y_off = strip_idx * strip_h
-        pts = _signal_polyline(grid[col], img_w, strip_h, y_off)
-        if pts is None:
-            continue
-
-        ch = SIGNAL_BGR_CHANNEL[col]
-        fill = [0, 0, 0]
-        fill[ch] = 255
-
-        bottom_y = y_off + strip_h - PADDING
-        poly = np.concatenate([pts, [[pts[-1, 0], bottom_y]], [[pts[0, 0], bottom_y]]])
-        cv2.fillPoly(img, [poly], tuple(fill))
-        cv2.polylines(
-            img,
-            [pts.reshape((-1, 1, 2))],
-            isClosed=False,
-            color=WHITE,
-            thickness=1,
-            lineType=cv2.LINE_AA,
-        )
-
-    # ── Strip 3: engineered feature channels as heatmap (optional) ────
-    next_y = 3 * strip_h  # running Y cursor below the three signal strips
-    if RENDER_ENGINEERED_STRIP and cfg.include_engineered_features and COL_DIFF in grid:
-        features = compute_feature_channels(grid[COL_DIFF])
-        # BGR layout: B = diff_neg_coarse, G = diff_neg_fine, R = diff_pos
-        b = (features["diff_neg_coarse"] * 255).astype(np.uint8)
-        g = (features["diff_neg_fine"] * 255).astype(np.uint8)
-        r = (features["diff_pos"] * 255).astype(np.uint8)
-        strip = np.stack(
-            [
-                np.tile(b, (strip_h, 1)),
-                np.tile(g, (strip_h, 1)),
-                np.tile(r, (strip_h, 1)),
-            ],
-            axis=-1,
-        )
-        img[next_y : next_y + strip_h, :, :] = strip
-        next_y += strip_h
-
-    # ── Strip 4: time-position gradient (optional) ─────────────────────
-    if RENDER_TIME_STRIP:
-        ramp = np.linspace(0, 255, img_w, dtype=np.uint8)
-        img[next_y : next_y + time_strip_h, :, :] = ramp[np.newaxis, :, np.newaxis]
 
     # ── Tick-mark overlays ─────────────────────────────────────────────
-    _draw_ticks(img, grid, strip_h, img_w, img_h)
+    _draw_ticks(img, grid, img_w, img_h)
 
     return img
 
@@ -436,26 +328,18 @@ def render_detection_image(
 def _draw_ticks(
     img: np.ndarray,
     grid: dict,
-    strip_h: int,
     img_w: int,
     img_h: int,
 ) -> None:
     """Burn optional X and Y tick marks into *img* in-place.
 
-    Ticks are drawn as thin lines in TICK_COLOR_BGR across all active
-    strips. They are applied after all signal rendering so they always
-    sit on top.
-
     X ticks (vertical lines)
-        One line every X_TICK_INTERVAL_SEC physical seconds. The pixel
-        position is derived from the pixel-grid time array so it is
-        exact to the resampled grid.
+        One line every X_TICK_INTERVAL_SEC physical seconds, positioned via
+        the pixel-grid time array so they are exact to the resampled grid.
 
     Y ticks (horizontal lines)
-        Drawn at Y_TICK_FRACTIONS relative positions within each of the
-        three raw-signal strips (0 = strip top, 1 = strip bottom).
-        The engineered and time strips are deliberately excluded — they
-        encode discrete information already.
+        Drawn at Y_TICK_FRACTIONS relative positions across the full image
+        height (0 = top edge, 1 = bottom edge).
     """
     if not (RENDER_X_TICKS or RENDER_Y_TICKS):
         return
@@ -474,18 +358,13 @@ def _draw_ticks(
                 t_tick = t_min + k * X_TICK_INTERVAL_SEC
                 if t_tick >= t_max:
                     break
-                # Map physical time → pixel column via the grid.
                 frac = (t_tick - t_min) / duration
                 x_px = int(round(frac * (img_w - 1)))
                 cv2.line(img, (x_px, 0), (x_px, img_h - 1), tick_col, TICK_THICKNESS)
 
-    # ── Y ticks: horizontal lines at fractional positions in signal strips
+    # ── Y ticks: horizontal lines at fractional positions ──────────────
     if RENDER_Y_TICKS:
-        # Only draw on the three raw-signal strips (strips 0-2); the
-        # engineered heatmap and time ramp have their own implicit scale.
-        for s in range(3):
-            y_top = s * strip_h
-            for frac in Y_TICK_FRACTIONS:
-                y_px = int(round(y_top + frac * strip_h))
-                y_px = max(0, min(img_h - 1, y_px))
-                cv2.line(img, (0, y_px), (img_w - 1, y_px), tick_col, TICK_THICKNESS)
+        for frac in Y_TICK_FRACTIONS:
+            y_px = int(round(frac * img_h))
+            y_px = max(0, min(img_h - 1, y_px))
+            cv2.line(img, (0, y_px), (img_w - 1, y_px), tick_col, TICK_THICKNESS)

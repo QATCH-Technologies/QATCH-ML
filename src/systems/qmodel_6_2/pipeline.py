@@ -69,25 +69,34 @@ def _summarize_plan() -> None:
     LOG.info("Train project    : %s", TRAIN_PROJECT)
     LOG.info("Benchmark output : %s", BENCHMARK_OUTPUT)
     LOG.info("Sub-pixel refine : %s", "ON" if USE_SUBPIXEL_REFINE else "OFF")
-    LOG.info("Channels (%d):", len(CASCADE_CHANNELS))
-    for c in CASCADE_CHANNELS:
-        if c.slice_mode == "backward":
-            slice_str = f"start→{c.cutoff_poi}"
-        elif c.slice_mode == "forward":
-            slice_str = f"{c.anchor_poi}→end"
-        elif c.slice_mode == "windowed":
-            slice_str = f"{c.anchor_poi}→{c.cutoff_poi}"
+
+    from config import CASCADE_GROUPS, SIGNAL_KINDS
+
+    LOG.info(
+        "Cascade: %d groups × %d signals = %d single-signal detectors",
+        len(CASCADE_GROUPS),
+        len(SIGNAL_KINDS),
+        len(CASCADE_CHANNELS),
+    )
+    for g in CASCADE_GROUPS:
+        if g.slice_mode == "backward":
+            slice_str = f"start→{g.cutoff_poi}"
+        elif g.slice_mode == "forward":
+            slice_str = f"{g.anchor_poi}→end"
+        elif g.slice_mode == "windowed":
+            slice_str = f"{g.anchor_poi}→{g.cutoff_poi}"
         else:
             slice_str = "full"
         LOG.info(
-            "  %-15s target=%-4s  slice=%-15s  res=%dx%d  stretch=%.2f  boost=%.2f",
-            c.name,
-            c.target,
+            "  %-13s target=%-4s  slice=%-15s  res=%dx%d  signals=[%s]  stretch=%.2f  boost=%.2f",
+            g.name,
+            g.target,
             slice_str,
-            c.resolution.img_w,
-            c.resolution.img_h,
-            c.stretch_prob,
-            c.high_cp_boost,
+            g.resolution.img_w,
+            g.resolution.img_h,
+            ",".join(SIGNAL_KINDS),
+            g.stretch_prob,
+            g.high_cp_boost,
         )
 
 

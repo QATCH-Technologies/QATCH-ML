@@ -55,6 +55,33 @@ POI_ROW_MAP: Dict[int, str] = {0: "POI1", 1: "POI2", 3: "POI3", 4: "POI4", 5: "P
 
 
 # ===========================================================================
+#  Per-signal detector taxonomy
+# ===========================================================================
+# v7 change: instead of stacking all three raw signals into one multi-strip
+# image, every POI in the cascade now gets THREE independent single-signal
+# detectors — one for Dissipation, one for Resonance_Frequency, and one for
+# the derived Difference curve. Each detector trains on an image that
+# contains exactly one signal filling the full canvas height.
+#
+# SIGNAL_KINDS is the canonical ordered list of signal keys. SIGNAL_COLUMN
+# maps each key to the dataframe column it renders. These keys appear in
+# channel names as a suffix, e.g. ``ch_poi5_diss`` / ``ch_poi5_freq`` /
+# ``ch_poi5_diff``.
+
+SIGNAL_KINDS: Tuple[str, ...] = ("diss", "freq", "diff")
+SIGNAL_COLUMN: Dict[str, str] = {
+    "diss": "Dissipation",
+    "freq": "Resonance_Frequency",
+    "diff": "Difference",
+}
+SIGNAL_LABEL: Dict[str, str] = {
+    "diss": "Dissipation",
+    "freq": "Frequency",
+    "diff": "Difference",
+}
+
+
+# ===========================================================================
 #  Viscosity tiers
 # ===========================================================================
 
@@ -105,41 +132,32 @@ LOCAL_NORM_WIN_PX: int = 150
 class ResolutionPreset:
     img_w: int
     strip_h: int
-    time_strip_h: int
+    time_strip_h: int = 0  # retained for back-compat; unused in single-signal mode
 
     @property
     def img_h(self) -> int:
-        """Computed from the global strip-visibility toggles in this module."""
-        # Import lazily to avoid a circular-reference at class-definition time.
-        # At runtime these are always already defined.
-        import sys
+        """Image height for a single-signal detector.
 
-        cfg = sys.modules[__name__]
-        n_signal_strips = 3  # Diss / Freq / Diff — always on
-        if getattr(cfg, "RENDER_ENGINEERED_STRIP", True):
-            n_signal_strips += 1
-        h = n_signal_strips * self.strip_h
-        if getattr(cfg, "RENDER_TIME_STRIP", True):
-            h += self.time_strip_h
-        return h
+        v7 renders exactly one signal per image filling the whole canvas,
+        so the height is simply ``strip_h``. The old multi-strip height
+        arithmetic (3 raw strips + optional engineered + time strips) is
+        gone along with the stacked-signal layout.
+        """
+        return self.strip_h
 
 
 # ===========================================================================
-#  Strip visibility toggles
+#  Strip visibility toggles  (RETIRED in v7)
 # ===========================================================================
-# Turning a strip off reclaims its vertical pixels for the signal strips.
-# ResolutionPreset.img_h reads these at call time so every downstream
-# path (rendering, dataset building, YOLO imgsz) automatically adjusts.
+# v7 renders a single signal per image. The old multi-strip layout — three
+# raw-signal strips plus an optional engineered multiscale-gradient heatmap
+# (Strip 3) and an optional time-position ramp (Strip 4) — is gone.
 #
-#   RENDER_ENGINEERED_STRIP  — Strip 3: multiscale gradient heatmap
-#                              (diff_pos / diff_neg_fine / diff_neg_coarse).
-#                              Turn off to give more vertical resolution to
-#                              the three raw-signal strips.
-#
-#   RENDER_TIME_STRIP        — Strip 4: left→right luminance ramp that
-#                              encodes absolute time position within the
-#                              slice. Turn off if positional context is
-#                              already implicit from slice_mode.
+# The engineered heatmap encoded slow/coarse gradient trends
+# (``diff_neg_coarse`` in particular). Per the v7 directive, NO slow trend
+# line / trend heatmap is rendered for any detector. These flags are kept
+# only so any external import doesn't break; both are forced off and the
+# renderer ignores them.
 
 RENDER_ENGINEERED_STRIP: bool = False
 RENDER_TIME_STRIP: bool = False
@@ -174,9 +192,13 @@ TICK_COLOR_BGR: Tuple[int, int, int] = (80, 80, 80)
 TICK_THICKNESS: int = 1
 
 
-HIRES_PRESET = ResolutionPreset(img_w=2560, strip_h=160, time_strip_h=64)
-MIDRES_PRESET = ResolutionPreset(img_w=1600, strip_h=160, time_strip_h=64)
-ZOOM_PRESET = ResolutionPreset(img_w=1280, strip_h=160, time_strip_h=64)
+# v7 single-signal presets. ``strip_h`` IS the full image height now
+# (one signal fills the canvas). Heights chosen so the lone signal gets
+# generous vertical resolution — the curve-flattening problem the old
+# 128→160 bump addressed is moot when a single signal owns the whole image.
+HIRES_PRESET = ResolutionPreset(img_w=2560, strip_h=640)
+MIDRES_PRESET = ResolutionPreset(img_w=1600, strip_h=512)
+ZOOM_PRESET = ResolutionPreset(img_w=1280, strip_h=512)
 
 
 # ===========================================================================
@@ -410,13 +432,21 @@ class ChannelConfig:
     name: str
     target: str
 
+    # v7: which single signal this detector renders/trains on.
+    #   "diss" → Dissipation, "freq" → Resonance_Frequency, "diff" → Difference.
+    signal: str = "diff"
+    # The POI-detector group this channel belongs to (e.g. "ch_poi5").
+    # The three signal detectors for one POI share a group so the cascade
+    # can fuse them at inference time.
+    group: str = ""
+
     slice_mode: str = "full"
     cutoff_poi: Optional[str] = None
     anchor_poi: Optional[str] = None
 
     resolution: ResolutionPreset = field(default_factory=lambda: MIDRES_PRESET)
     smooth_signal_window: int = 0
-    include_engineered_features: bool = True
+    include_engineered_features: bool = False  # retired in v7; no trend strip
 
     # Augmentation
     base_truncations: int = 4
@@ -431,6 +461,11 @@ class ChannelConfig:
     base_weights_override: Optional[str] = None
 
     yolo_extra: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def signal_column(self) -> str:
+        """Dataframe column rendered by this single-signal detector."""
+        return SIGNAL_COLUMN.get(self.signal, "Difference")
 
     @property
     def effective_batch(self) -> int:
@@ -452,8 +487,41 @@ class ChannelConfig:
         return f"{self.dataset_dir}/data.yaml"
 
 
-CASCADE_CHANNELS: List[ChannelConfig] = [
-    ChannelConfig(
+# ===========================================================================
+#  Per-POI groups → expanded per-signal channels
+# ===========================================================================
+# Each POI detector group is defined ONCE below as a ``ChannelGroup``. The
+# builder ``_expand_groups`` turns every group into three ChannelConfig
+# objects — one per signal in SIGNAL_KINDS — named ``{group}_{signal}``
+# (e.g. ch_poi5_diss / ch_poi5_freq / ch_poi5_diff). The cascade trains and
+# loads all three and fuses their predictions at inference time.
+
+
+@dataclass(frozen=True)
+class ChannelGroup:
+    name: str  # group id, becomes the channel-name prefix
+    target: str
+    slice_mode: str = "full"
+    cutoff_poi: Optional[str] = None
+    anchor_poi: Optional[str] = None
+    resolution: ResolutionPreset = MIDRES_PRESET
+    base_truncations: int = 5
+    stretch_prob: float = 0.5
+    tier_cap: int = 8
+    high_cp_boost: float = 2.0
+    epochs: int = 60
+    conf_threshold: float = 0.15
+    base_weights_override: Optional[str] = None
+    yolo_extra: Dict[str, Any] = field(default_factory=dict)
+    # Per-signal Savitzky-Golay smoothing window. Difference is derived and
+    # benefits from light smoothing; raw signals are noisier. 0 disables.
+    smooth_by_signal: Dict[str, int] = field(
+        default_factory=lambda: {"diss": 0, "freq": 0, "diff": 0}
+    )
+
+
+CASCADE_GROUPS: List[ChannelGroup] = [
+    ChannelGroup(
         name="ch_poi5",
         target="POI5",
         slice_mode="full",
@@ -461,12 +529,12 @@ CASCADE_CHANNELS: List[ChannelConfig] = [
         base_truncations=5,
         stretch_prob=0.5,
         high_cp_boost=2.0,
-        smooth_signal_window=15,
         epochs=60,
         conf_threshold=0.15,
+        smooth_by_signal={"diss": 15, "freq": 11, "diff": 15},
         yolo_extra={"box": 14.0, "cls": 0.4, "dfl": 2.0, "patience": 25},
     ),
-    ChannelConfig(
+    ChannelGroup(
         name="ch_poi4",
         target="POI4",
         slice_mode="backward",
@@ -475,9 +543,9 @@ CASCADE_CHANNELS: List[ChannelConfig] = [
         base_truncations=5,
         stretch_prob=0.5,
         high_cp_boost=2.0,
-        smooth_signal_window=11,
         epochs=60,
         conf_threshold=0.15,
+        smooth_by_signal={"diss": 11, "freq": 11, "diff": 11},
         yolo_extra={
             "box": 16.0,
             "cls": 0.5,
@@ -487,7 +555,7 @@ CASCADE_CHANNELS: List[ChannelConfig] = [
             "dropout": 0.20,
         },
     ),
-    ChannelConfig(
+    ChannelGroup(
         name="ch_poi3",
         target="POI3",
         slice_mode="backward",
@@ -496,12 +564,12 @@ CASCADE_CHANNELS: List[ChannelConfig] = [
         base_truncations=5,
         stretch_prob=0.5,
         high_cp_boost=2.0,
-        smooth_signal_window=11,
         epochs=60,
         conf_threshold=0.15,
+        smooth_by_signal={"diss": 11, "freq": 11, "diff": 11},
         yolo_extra={"box": 14.0, "cls": 0.4, "dfl": 2.0, "patience": 25},
     ),
-    ChannelConfig(
+    ChannelGroup(
         name="ch_poi2",
         target="POI2",
         slice_mode="backward",
@@ -510,12 +578,12 @@ CASCADE_CHANNELS: List[ChannelConfig] = [
         base_truncations=4,
         stretch_prob=0.3,
         high_cp_boost=2.5,
-        smooth_signal_window=0,
         epochs=60,
         conf_threshold=0.20,
+        smooth_by_signal={"diss": 0, "freq": 0, "diff": 0},
         yolo_extra={"box": 20.0, "dfl": 2.5, "patience": 25},
     ),
-    ChannelConfig(
+    ChannelGroup(
         name="ch_poi1",
         target="POI1",
         slice_mode="backward",
@@ -524,12 +592,12 @@ CASCADE_CHANNELS: List[ChannelConfig] = [
         base_truncations=4,
         stretch_prob=0.3,
         high_cp_boost=2.5,
-        smooth_signal_window=0,
         epochs=60,
         conf_threshold=0.20,
+        smooth_by_signal={"diss": 0, "freq": 0, "diff": 0},
         yolo_extra={"box": 20.0, "dfl": 2.5, "patience": 25},
     ),
-    ChannelConfig(
+    ChannelGroup(
         name="ch_poi5_fine",
         target="POI5",
         slice_mode="forward",
@@ -538,13 +606,55 @@ CASCADE_CHANNELS: List[ChannelConfig] = [
         base_truncations=4,
         stretch_prob=0.4,
         high_cp_boost=1.5,
-        smooth_signal_window=11,
         conf_threshold=0.40,
         epochs=40,
         base_weights_override="yolo26s.pt",
+        smooth_by_signal={"diss": 11, "freq": 11, "diff": 11},
         yolo_extra={"box": 14.0, "dfl": 2.0, "patience": 20},
     ),
 ]
+
+
+def _expand_groups(
+    groups: List[ChannelGroup],
+    signals: Tuple[str, ...] = SIGNAL_KINDS,
+) -> List[ChannelConfig]:
+    """Expand each POI group into one single-signal ChannelConfig per signal."""
+    out: List[ChannelConfig] = []
+    for g in groups:
+        for sig in signals:
+            out.append(
+                ChannelConfig(
+                    name=f"{g.name}_{sig}",
+                    target=g.target,
+                    signal=sig,
+                    group=g.name,
+                    slice_mode=g.slice_mode,
+                    cutoff_poi=g.cutoff_poi,
+                    anchor_poi=g.anchor_poi,
+                    resolution=g.resolution,
+                    smooth_signal_window=int(g.smooth_by_signal.get(sig, 0)),
+                    base_truncations=g.base_truncations,
+                    stretch_prob=g.stretch_prob,
+                    tier_cap=g.tier_cap,
+                    high_cp_boost=g.high_cp_boost,
+                    epochs=g.epochs,
+                    conf_threshold=g.conf_threshold,
+                    base_weights_override=g.base_weights_override,
+                    yolo_extra=dict(g.yolo_extra),
+                )
+            )
+    return out
+
+
+# The cascade is now 6 groups × 3 signals = 18 single-signal detectors.
+CASCADE_CHANNELS: List[ChannelConfig] = _expand_groups(CASCADE_GROUPS)
+
+# Map group name → ordered list of its signal-channel names, for inference
+# fusion and benchmarking.
+GROUP_TO_CHANNELS: Dict[str, List[str]] = {}
+for _c in CASCADE_CHANNELS:
+    GROUP_TO_CHANNELS.setdefault(_c.group, []).append(_c.name)
 
 
 # ===========================================================================
@@ -591,6 +701,30 @@ FINE_MIN_CONF: float = 0.50
 FINE_MAX_DISP_FRAC: float = 0.15
 FINE_LOG_DECISIONS: bool = False
 
+# ---------------------------------------------------------------------------
+# Per-signal fusion (v7). For each POI, three single-signal detectors
+# (diss / freq / diff) run on the same slice. Their box centers are fused
+# into one time prediction.
+#
+#   SIGNAL_FUSION_METHOD  "conf_weighted" — confidence-weighted mean of the
+#                         signal predictions (default). "median" — robust
+#                         median, ignoring confidence. "best" — take the
+#                         single highest-confidence signal.
+#   SIGNAL_MIN_CONF       A signal detection below this confidence is
+#                         dropped before fusion.
+#   SIGNAL_MIN_AGREE      Minimum number of signals that must produce a
+#                         detection for the fused result to be trusted;
+#                         otherwise the POI is reported as None.
+#   SIGNAL_OUTLIER_FRAC   If a signal's prediction lies further than this
+#                         fraction of the slice duration from the median of
+#                         the others, it is treated as an outlier and
+#                         dropped before the final fuse.
+# ---------------------------------------------------------------------------
+SIGNAL_FUSION_METHOD: str = "conf_weighted"
+SIGNAL_MIN_CONF: float = 0.10
+SIGNAL_MIN_AGREE: int = 1
+SIGNAL_OUTLIER_FRAC: float = 0.10
+
 
 # ===========================================================================
 #  Paths and pipeline toggles
@@ -617,4 +751,4 @@ BENCHMARK_N_RUNS: Optional[int] = None
 BENCHMARK_GROSS_THRESHOLD: float = 5.0
 # Iteration aids — cap runs and/or channels for fast validation loops.
 LIMIT_RUNS: Optional[int] = None  # None = use all discovered runs
-LIMIT_CHANNELS: Optional[List[str]] = None  # e.g. ["ch_poi5"] for single-channel
+LIMIT_CHANNELS: Optional[List[str]] = None  # e.g. ["ch_poi5_diff"] single-signal

@@ -54,6 +54,11 @@ from config import (
     FINE_LOG_DECISIONS,
     FINE_MAX_DISP_FRAC,
     FINE_MIN_CONF,
+    GROUP_TO_CHANNELS,
+    SIGNAL_FUSION_METHOD,
+    SIGNAL_MIN_AGREE,
+    SIGNAL_MIN_CONF,
+    SIGNAL_OUTLIER_FRAC,
     TRAIN_PROJECT,
     USE_SUBPIXEL_REFINE,
     ChannelConfig,
@@ -153,6 +158,115 @@ def _render_and_detect(
             )
 
     return t_coarse, conf
+
+
+# ===========================================================================
+#  Per-signal fusion
+# ===========================================================================
+
+
+def _fuse_signal_predictions(
+    preds: List[Tuple[float, float, str]],
+    slice_dur: float,
+    method: str = SIGNAL_FUSION_METHOD,
+    min_conf: float = SIGNAL_MIN_CONF,
+    min_agree: int = SIGNAL_MIN_AGREE,
+    outlier_frac: float = SIGNAL_OUTLIER_FRAC,
+    poi_label: str = "?",
+) -> Tuple[Optional[float], Optional[float]]:
+    """Fuse the three single-signal detections for one POI into one time.
+
+    Args:
+        preds: list of ``(t_pred, conf, signal_key)`` from each signal
+            detector that produced a detection.
+        slice_dur: duration of the slice (for outlier rejection scaling).
+        method: "conf_weighted" | "median" | "best".
+        min_conf: drop any signal below this confidence first.
+        min_agree: require at least this many surviving detections.
+        outlier_frac: drop a signal whose prediction is further than
+            ``outlier_frac × slice_dur`` from the median of the rest.
+
+    Returns:
+        ``(t_fused, conf_fused)`` or ``(None, None)`` if agreement fails.
+        ``conf_fused`` is the mean confidence of the contributing signals,
+        used downstream by the fine-refinement gate.
+    """
+    # 1. Confidence floor.
+    kept = [(t, c, s) for (t, c, s) in preds if c >= min_conf]
+    if len(kept) < max(1, min_agree):
+        if FINE_LOG_DECISIONS:
+            LOG.info(
+                "[%s fuse] reject: only %d signal(s) ≥ conf %.2f", poi_label, len(kept), min_conf
+            )
+        return None, None
+
+    # 2. Outlier rejection against the median (needs ≥ 3 to be meaningful).
+    if len(kept) >= 3 and outlier_frac > 0 and slice_dur > 0:
+        times = np.array([t for (t, _, _) in kept])
+        med = float(np.median(times))
+        tol = outlier_frac * slice_dur
+        survivors = [(t, c, s) for (t, c, s) in kept if abs(t - med) <= tol]
+        if len(survivors) >= max(1, min_agree):
+            kept = survivors
+
+    times = np.array([t for (t, _, _) in kept], dtype=float)
+    confs = np.array([c for (_, c, _) in kept], dtype=float)
+
+    # 3. Fuse.
+    if method == "best":
+        bi = int(np.argmax(confs))
+        t_fused = float(times[bi])
+    elif method == "median":
+        t_fused = float(np.median(times))
+    else:  # conf_weighted (default)
+        w = confs / (confs.sum() + 1e-9)
+        t_fused = float((times * w).sum())
+
+    conf_fused = float(confs.mean())
+    if FINE_LOG_DECISIONS:
+        sigs = ",".join(s for (_, _, s) in kept)
+        LOG.info(
+            "[%s fuse] %s → t=%.3f conf=%.2f (signals: %s)",
+            poi_label,
+            method,
+            t_fused,
+            conf_fused,
+            sigs,
+        )
+    return t_fused, conf_fused
+
+
+def _detect_group(
+    df_view: pd.DataFrame,
+    group: str,
+    models: Dict[str, Any],
+    channel_map: Dict[str, ChannelConfig],
+    use_subpixel_refine: bool = False,
+) -> Tuple[Optional[float], Optional[float]]:
+    """Run every available signal detector for ``group`` on ``df_view`` and fuse.
+
+    Returns ``(t_fused, conf_fused)``. ``(None, None)`` if the group has no
+    loaded models or no signal produced a detection.
+    """
+    if df_view is None or len(df_view) < 32:
+        return None, None
+
+    chan_names = GROUP_TO_CHANNELS.get(group, [])
+    preds: List[Tuple[float, float, str]] = []
+    for cname in chan_names:
+        if cname not in models:
+            continue
+        cfg = channel_map[cname]
+        t_pred, conf = _render_and_detect(df_view, models[cname], cfg, use_subpixel_refine)
+        if t_pred is not None and conf is not None:
+            preds.append((t_pred, conf, cfg.signal))
+
+    if not preds:
+        return None, None
+
+    t_min = float(df_view[COL_TIME].iloc[0])
+    t_max = float(df_view[COL_TIME].iloc[-1])
+    return _fuse_signal_predictions(preds, slice_dur=t_max - t_min, poi_label=group)
 
 
 # ===========================================================================
@@ -268,6 +382,11 @@ def _sanity_check_ordering(
 # ===========================================================================
 
 
+def _group_loaded(group: str, models: Dict[str, Any]) -> bool:
+    """True if at least one signal detector for ``group`` is loaded."""
+    return any(c in models for c in GROUP_TO_CHANNELS.get(group, []))
+
+
 def cascade_predict(
     df_raw: pd.DataFrame,
     models: Dict[str, Any],
@@ -277,9 +396,13 @@ def cascade_predict(
     """
     Run the reverse cascade end-to-end and return ``{POI1..5: time | None}``.
 
+    Each POI is detected by fusing its three single-signal detectors
+    (dissipation / resonance / difference) on the same slice — see
+    :func:`_detect_group`.
+
     Args:
         df_raw: Raw run dataframe (will be preprocessed here).
-        models: Dict of channel_name → loaded YOLO model.
+        models: Dict of channel_name → loaded YOLO model (one per signal).
         channel_map: Dict of channel_name → ChannelConfig.
         use_subpixel_refine: When True and ``refine_poi.py`` is on the
             path, snap each YOLO box center to a derivative peak inside
@@ -300,39 +423,26 @@ def cascade_predict(
 
     preds: Dict[str, Optional[float]] = {p: None for p in ("POI1", "POI2", "POI3", "POI4", "POI5")}
 
-    # --- 1. POI5 coarse ---------------------------------------------------
-    if "ch_poi5" in models:
-        t_poi5, _ = _render_and_detect(
-            df,
-            models["ch_poi5"],
-            channel_map["ch_poi5"],
-            use_subpixel_refine,
-        )
+    # --- 1. POI5 coarse (signal-fused) -----------------------------------
+    if _group_loaded("ch_poi5", models):
+        t_poi5, _ = _detect_group(df, "ch_poi5", models, channel_map, use_subpixel_refine)
         t_poi5 = _sanity_check_poi5(t_poi5, t_min, t_max)
     else:
         t_poi5 = None
 
-    # --- 2. POI4 coarse ---------------------------------------------------
+    # --- 2. POI4 coarse (signal-fused) -----------------------------------
     t5_cut = _safe_cut(t_poi5, t_max)
     df_4 = df[df[COL_TIME] <= t5_cut].reset_index(drop=True)
-    if "ch_poi4" in models:
-        t_poi4, _ = _render_and_detect(
-            df_4,
-            models["ch_poi4"],
-            channel_map["ch_poi4"],
-            use_subpixel_refine,
-        )
+    if _group_loaded("ch_poi4", models):
+        t_poi4, _ = _detect_group(df_4, "ch_poi4", models, channel_map, use_subpixel_refine)
     else:
         t_poi4 = None
 
-    # --- 3. POI5 fine (gated) --------------------------------------------
-    if "ch_poi5_fine" in models and t_poi4 is not None and t_min < t_poi4 < t_max:
+    # --- 3. POI5 fine (gated, signal-fused) ------------------------------
+    if _group_loaded("ch_poi5_fine", models) and t_poi4 is not None and t_min < t_poi4 < t_max:
         df_eof = df[df[COL_TIME] >= t_poi4].reset_index(drop=True)
-        t5_fine, c5_fine = _render_and_detect(
-            df_eof,
-            models["ch_poi5_fine"],
-            channel_map["ch_poi5_fine"],
-            use_subpixel_refine,
+        t5_fine, c5_fine = _detect_group(
+            df_eof, "ch_poi5_fine", models, channel_map, use_subpixel_refine
         )
         t5_fine = _sanity_check_poi5(t5_fine, t_min, t_max)
         t_poi5 = _apply_fine_refinement(
@@ -343,16 +453,11 @@ def cascade_predict(
             poi_label="POI5",
         )
 
-    # --- 4. POI3 coarse ---------------------------------------------------
+    # --- 4. POI3 coarse (signal-fused) -----------------------------------
     t4_cut = _safe_cut(t_poi4, t5_cut)
     df_3 = df[df[COL_TIME] <= t4_cut].reset_index(drop=True)
-    if "ch_poi3" in models:
-        t_poi3, _ = _render_and_detect(
-            df_3,
-            models["ch_poi3"],
-            channel_map["ch_poi3"],
-            use_subpixel_refine,
-        )
+    if _group_loaded("ch_poi3", models):
+        t_poi3, _ = _detect_group(df_3, "ch_poi3", models, channel_map, use_subpixel_refine)
     else:
         t_poi3 = None
 
@@ -365,25 +470,15 @@ def cascade_predict(
         t_max,
     )
 
-    # --- 6. POI1 & POI2 coarse -------------------------------------------
+    # --- 6. POI1 & POI2 coarse (signal-fused) ----------------------------
     t3_cut = _safe_cut(t_poi3, _safe_cut(t_poi4, t5_cut))
     df_12 = df[df[COL_TIME] <= t3_cut].reset_index(drop=True)
-    if "ch_poi2" in models:
-        t_poi2, _ = _render_and_detect(
-            df_12,
-            models["ch_poi2"],
-            channel_map["ch_poi2"],
-            use_subpixel_refine,
-        )
+    if _group_loaded("ch_poi2", models):
+        t_poi2, _ = _detect_group(df_12, "ch_poi2", models, channel_map, use_subpixel_refine)
     else:
         t_poi2 = None
-    if "ch_poi1" in models:
-        t_poi1, _ = _render_and_detect(
-            df_12,
-            models["ch_poi1"],
-            channel_map["ch_poi1"],
-            use_subpixel_refine,
-        )
+    if _group_loaded("ch_poi1", models):
+        t_poi1, _ = _detect_group(df_12, "ch_poi1", models, channel_map, use_subpixel_refine)
     else:
         t_poi1 = None
 

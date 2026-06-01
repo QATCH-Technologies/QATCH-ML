@@ -215,7 +215,9 @@ def train_all(
     end-to-end before committing to the full 6-channel run.
     """
     if limit_channels:
-        channels = [c for c in channels if c.name in limit_channels]
+        # Accept full channel names (ch_poi5_diff) or group names (ch_poi5).
+        wanted = set(limit_channels)
+        channels = [c for c in channels if c.name in wanted or c.group in wanted]
         LOG.info("LIMIT_CHANNELS=%s → training %d channel(s)", limit_channels, len(channels))
 
     mode_label = "subprocess" if USE_SUBPROCESS_TRAINING else "in-process"
