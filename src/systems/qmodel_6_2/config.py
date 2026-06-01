@@ -608,10 +608,10 @@ TRAIN_DEVICE: str = "0"
 VAL_SPLIT: float = 0.15
 RNG_SEED: int = 42
 
-RUN_BUILD_DATASETS: bool = True
-RUN_TRAIN: bool = True
+RUN_BUILD_DATASETS: bool = False
+RUN_TRAIN: bool = False
 RUN_BENCHMARK: bool = True
-USE_SUBPIXEL_REFINE: bool = True
+USE_SUBPIXEL_REFINE: bool = False
 
 BENCHMARK_N_RUNS: Optional[int] = None
 BENCHMARK_GROSS_THRESHOLD: float = 5.0

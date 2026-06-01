@@ -109,7 +109,7 @@ def _train_channel_subprocess(
     # Reduce CUDA allocator fragmentation. Without this the allocator can
     # fail to find a contiguous block even when total free VRAM is sufficient,
     # turning a borderline-fit batch into a hard OOM. Safe to set globally.
-    env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    # env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
     try:
         proc = subprocess.run(
