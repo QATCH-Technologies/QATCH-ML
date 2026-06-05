@@ -1,6 +1,6 @@
 """
-QModel v6 — Signal processing and image rendering  (v7 single-signal)
-=====================================================================
+QModel v6 — Signal processing and image rendering  (v8 grayscale single-signal)
+===============================================================================
 
 Two responsibilities, in order of execution:
 
@@ -17,15 +17,27 @@ Two responsibilities, in order of execution:
        Difference) — filling the whole canvas. There is one detector per
        signal per POI, so each rendered image contains exactly one curve.
 
+What changed in v8 (grayscale)
+------------------------------
+v7 rendered a 3-channel BGR image and colour-coded the lone signal by its
+BGR channel purely as a visual aid. Since each image contains exactly one
+signal, that colour carried NO information YOLO needs. v8 renders a
+single-channel grayscale image instead:
+
+  * Fill and outline are white (255) on a black (0) canvas.
+  * Tick marks use a single gray value.
+  * The returned array is 2-D ``(img_h, img_w)`` uint8, written to disk as
+    grayscale PNG by the renderer — ~3-5x smaller than the old JPEG and
+    lossless. Ultralytics promotes grayscale back to 3-channel at load,
+    so no model change is required and pretrained transfer still works.
+
 What changed in v7
 ------------------
 The old multi-strip layout stacked all three raw signals plus an
 engineered multiscale-gradient heatmap (``diff_pos`` / ``diff_neg_fine`` /
 ``diff_neg_coarse``) and a time-position ramp into a single tall image.
-v7 drops the stacked layout entirely: one signal per image, and NO
-slow-trend / gradient heatmap of any kind is rendered. The Difference
-curve remains a first-class signal (it is a derived measurement curve,
-not a trend line).
+v7 dropped the stacked layout entirely: one signal per image, and NO
+slow-trend / gradient heatmap of any kind is rendered.
 
 Author:
     Paul MacNichol (paul.macnichol@qatchtech.com)
@@ -73,9 +85,9 @@ COL_DIFF = "Difference"
 
 DROP_COLS = ("Date", "Time", "Ambient", "Peak Magnitude (RAW)", "Temperature")
 
-# BGR channel mapping for the three signal strips. Difference → Blue,
-# Frequency → Green, Dissipation → Red. Matches v6 and the analysis
-# scripts so downstream tooling renders the same.
+# Retained for back-compat with any external tooling that imports it. In v8
+# the renderer no longer uses per-signal BGR colour — every image is a
+# single grayscale channel — so this mapping is informational only.
 SIGNAL_BGR_CHANNEL: Dict[str, int] = {
     COL_DIFF: 0,  # B
     COL_FREQ: 1,  # G
@@ -84,7 +96,10 @@ SIGNAL_BGR_CHANNEL: Dict[str, int] = {
 
 EPSILON = 1e-9
 PADDING = 5
-WHITE = (255, 255, 255)
+
+# v8: single-channel intensities.
+FILL_VALUE = 255  # signal fill + outline (white on black)
+SIGNAL_OUTLINE = 255
 
 
 # ===========================================================================
@@ -184,18 +199,16 @@ def _compute_difference_curve(
 
 
 # ===========================================================================
-#  Stage 2 — Single-signal image rendering
+#  Stage 2 — Single-signal image rendering (v8: grayscale, single channel)
 # ===========================================================================
-# v7 layout: one signal fills the entire canvas. No stacked strips, no
-# engineered-gradient heatmap, no time-position ramp. The signal drawn is
-# selected per-channel via ``cfg.signal_column``.
-#
 #     ┌──────────────────────────────────────┐
 #     │                                       │
 #     │   single signal (Diss | Freq | Diff)  │   img_h = strip_h
 #     │                                       │
 #     └──────────────────────────────────────┘
 #
+# The image is a 2-D uint8 array (white signal on black). No colour, no
+# stacked strips, no engineered heatmap, no time-position ramp.
 
 
 def _signal_polyline(
@@ -207,7 +220,11 @@ def _signal_polyline(
     if len(values) < 2:
         return None
 
-    v_min, v_max = np.nanpercentile(values, [1.0, 99.0])
+    v_min = np.nanmin(values)
+    v_max = np.nanmax(values)
+    pad = 0.02 * (v_max - v_min)
+    v_min -= pad
+    v_max += pad
     diff = v_max - v_min
     if diff == 0:
         diff = EPSILON
@@ -249,12 +266,11 @@ def render_detection_image(
     cfg: ChannelConfig,
 ) -> Optional[np.ndarray]:
     """
-    Render the single-signal detection image for one channel.
+    Render the single-signal detection image for one channel (grayscale).
 
-    Exactly one signal — ``cfg.signal_column`` — is drawn, filling the
-    whole canvas. The signal is colour-coded by its BGR channel
-    (Dissipation=red, Frequency=green, Difference=blue) purely as a visual
-    aid; YOLO sees the silhouette either way.
+    Exactly one signal — ``cfg.signal_column`` — is drawn in white on a
+    black canvas, filling the whole image. The returned array is 2-D
+    (single channel); the renderer writes it as grayscale PNG.
 
     Args:
         df: A *preprocessed* dataframe (uniform dt, with Difference
@@ -263,8 +279,8 @@ def render_detection_image(
             render, and per-signal smoothing.
 
     Returns:
-        ``np.ndarray`` of shape ``(cfg.resolution.img_h, cfg.resolution.img_w, 3)``,
-        dtype ``uint8``, BGR. ``None`` on degenerate input.
+        ``np.ndarray`` of shape ``(cfg.resolution.img_h, cfg.resolution.img_w)``,
+        dtype ``uint8``, single channel. ``None`` on degenerate input.
     """
     if df is None or df.empty or len(df) < 32:
         return None
@@ -273,7 +289,8 @@ def render_detection_image(
     img_w = res.img_w
     img_h = res.img_h
 
-    img = np.zeros((img_h, img_w, 3), dtype=np.uint8)
+    # v8: single channel.
+    img = np.zeros((img_h, img_w), dtype=np.uint8)
 
     col = cfg.signal_column
     if col not in df.columns:
@@ -302,21 +319,20 @@ def render_detection_image(
     if pts is None:
         return img
 
-    # Colour the fill by the signal's BGR channel; outline in white.
-    ch = SIGNAL_BGR_CHANNEL.get(col, 0)
-    fill = [0, 0, 0]
-    fill[ch] = 255
-
+    # Fill under the curve + outline, both white. No BGR channel selection.
     bottom_y = img_h - PADDING
     poly = np.concatenate([pts, [[pts[-1, 0], bottom_y]], [[pts[0, 0], bottom_y]]])
-    cv2.fillPoly(img, [poly], tuple(fill))
+    cv2.fillPoly(img, [poly], FILL_VALUE)
     cv2.polylines(
         img,
         [pts.reshape((-1, 1, 2))],
         isClosed=False,
-        color=WHITE,
+        color=SIGNAL_OUTLINE,
         thickness=1,
-        lineType=cv2.LINE_AA,
+        # LINE_8 (hard edge) compresses better than LINE_AA for PNG. If
+        # sub-pixel POI refinement is re-enabled, switch back to cv2.LINE_AA
+        # to keep the anti-aliased sub-pixel edge information.
+        lineType=cv2.LINE_8,
     )
 
     # ── Tick-mark overlays ─────────────────────────────────────────────
@@ -331,7 +347,7 @@ def _draw_ticks(
     img_w: int,
     img_h: int,
 ) -> None:
-    """Burn optional X and Y tick marks into *img* in-place.
+    """Burn optional X and Y tick marks into *img* in-place (grayscale).
 
     X ticks (vertical lines)
         One line every X_TICK_INTERVAL_SEC physical seconds, positioned via
@@ -344,7 +360,8 @@ def _draw_ticks(
     if not (RENDER_X_TICKS or RENDER_Y_TICKS):
         return
 
-    tick_col = tuple(int(c) for c in TICK_COLOR_BGR)
+    # Collapse the (legacy) BGR tuple to a single gray intensity.
+    tick_val = int(TICK_COLOR_BGR[0])
 
     # ── X ticks: vertical lines at fixed time intervals ────────────────
     if RENDER_X_TICKS and "time" in grid:
@@ -360,11 +377,11 @@ def _draw_ticks(
                     break
                 frac = (t_tick - t_min) / duration
                 x_px = int(round(frac * (img_w - 1)))
-                cv2.line(img, (x_px, 0), (x_px, img_h - 1), tick_col, TICK_THICKNESS)
+                cv2.line(img, (x_px, 0), (x_px, img_h - 1), tick_val, TICK_THICKNESS)
 
     # ── Y ticks: horizontal lines at fractional positions ──────────────
     if RENDER_Y_TICKS:
         for frac in Y_TICK_FRACTIONS:
             y_px = int(round(frac * img_h))
             y_px = max(0, min(img_h - 1, y_px))
-            cv2.line(img, (0, y_px), (img_w - 1, y_px), tick_col, TICK_THICKNESS)
+            cv2.line(img, (0, y_px), (img_w - 1, y_px), tick_val, TICK_THICKNESS)

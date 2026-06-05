@@ -176,7 +176,7 @@ def _train_channel_inprocess(
     """Run training inside this process. NOT recommended for multi-channel
     runs on Windows — a CUDA OOM corrupts the context for all subsequent
     channels."""
-    from _train_subprocess import _train_one
+    from train_subprocess import _train_one
 
     base_weights = cfg.base_weights_override or BASE_WEIGHTS
     try:
@@ -197,6 +197,70 @@ def _train_channel_inprocess(
 # ===========================================================================
 #  Top-level driver
 # ===========================================================================
+def _cleanup_channel_caches(
+    dataset_root: Path,
+    channel_name: str,
+    clear_disk_npy: bool = True,
+    clear_label_cache: bool = True,
+) -> None:
+    """Delete on-disk cache artifacts for ONE channel after it finishes.
+
+    Safe to call regardless of CACHE_MODE: if the artifacts don't exist
+    (e.g. CACHE_MODE=None never wrote .npy sidecars) the globs simply match
+    nothing. Never touches .png images or labels/*.txt.
+
+    Args:
+        dataset_root: Root containing per-channel dataset dirs.
+        channel_name: e.g. "ch_poi5_diss".
+        clear_disk_npy: Remove Ultralytics disk-cache .npy sidecars.
+        clear_label_cache: Remove train.cache / val.cache (regenerated next run).
+    """
+    ch_dir = Path(dataset_root) / channel_name
+    if not ch_dir.is_dir():
+        return
+
+    freed_bytes = 0
+    n_files = 0
+
+    patterns = []
+    if clear_disk_npy:
+        patterns.append("*.npy")
+    if clear_label_cache:
+        patterns.append("*.cache")
+
+    for pat in patterns:
+        for f in ch_dir.rglob(pat):
+            try:
+                sz = f.stat().st_size
+                f.unlink()
+                freed_bytes += sz
+                n_files += 1
+            except FileNotFoundError:
+                continue
+            except PermissionError:
+                # A file still held open (rare with subprocess design) — skip,
+                # don't abort the whole cleanup.
+                LOG.warning("cleanup: could not delete (locked) %s", f)
+
+    # Defensive GPU cache flush — redundant under subprocess training (the
+    # child already exited and released VRAM), harmless otherwise.
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+    if n_files:
+        LOG.info(
+            "cleanup %s: removed %d cache file(s), freed %.2f GB",
+            channel_name,
+            n_files,
+            freed_bytes / (1024**3),
+        )
+    else:
+        LOG.debug("cleanup %s: no cache artifacts to remove", channel_name)
 
 
 def train_all(
@@ -267,6 +331,7 @@ def train_all(
             )
 
         out[cfg.name] = result
+        _cleanup_channel_caches(Path(dataset_root), cfg.name)
         if result is None:
             failures.append(cfg.name)
             if not continue_on_error:

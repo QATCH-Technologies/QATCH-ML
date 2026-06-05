@@ -28,8 +28,20 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
+import matplotlib
+
+matplotlib.use("Agg")  # headless: write PNGs without a display server
+import matplotlib.pyplot as plt
+
 from augmentation import viscosity_tier
 from cascade_inference import cascade_predict, load_trained_models
+from signal_processing import (
+    COL_DIFF,
+    COL_DISS,
+    COL_FREQ,
+    COL_TIME,
+    preprocess_dataframe,
+)
 from config import (
     BENCHMARK_GROSS_THRESHOLD,
     BENCHMARK_N_RUNS,
@@ -177,8 +189,104 @@ def _print_tier(
 
 
 # ===========================================================================
-#  Driver
+#  Gross-failure plotting
 # ===========================================================================
+
+# Each signal gets its own row, drawn from the preprocessed (uniform-dt)
+# dataframe so the x-axis matches the time coordinates the cascade used.
+_PLOT_SIGNALS = [
+    (COL_DISS, "Dissipation"),
+    (COL_FREQ, "Resonance_Frequency"),
+    (COL_DIFF, "Difference"),
+]
+
+# Stable per-POI colours so pred/actual pairs are easy to read across rows.
+_POI_COLORS = {
+    "POI1": "#e41a1c",
+    "POI2": "#377eb8",
+    "POI3": "#4daf4a",
+    "POI4": "#984ea3",
+    "POI5": "#ff7f00",
+}
+
+
+def _render_failure_plot(
+    df_raw: pd.DataFrame,
+    run_id: str,
+    viscosity_cP: float,
+    tier_label: str,
+    failures: Dict[str, Dict[str, float]],
+    out_path: Path,
+) -> bool:
+    """Render one diagnostic figure for a run with gross failure(s).
+
+    Draws each signal on its own row with a solid line at every failed
+    POI's actual time and a dashed line at the predicted time. Only POIs
+    that exceeded the gross threshold are marked, so the figure highlights
+    what went wrong rather than every prediction.
+
+    Returns True if a figure was written.
+    """
+    df = preprocess_dataframe(df_raw)
+    if df is None or df.empty:
+        return False
+
+    t = df[COL_TIME].to_numpy(dtype=float)
+
+    fig, axes = plt.subplots(
+        len(_PLOT_SIGNALS),
+        1,
+        figsize=(13, 8),
+        sharex=True,
+    )
+
+    for ax, (col, nice) in zip(axes, _PLOT_SIGNALS):
+        if col in df.columns:
+            ax.plot(t, df[col].to_numpy(dtype=float), color="0.25", lw=0.9)
+        ax.set_ylabel(nice, fontsize=9)
+        ax.grid(alpha=0.25, lw=0.5)
+
+        for poi, info in sorted(failures.items()):
+            color = _POI_COLORS.get(poi, "#000000")
+            true_t = info.get("true_t")
+            pred_t = info.get("pred_t")
+            if true_t is not None:
+                ax.axvline(true_t, color=color, lw=1.6, alpha=0.9)
+            if pred_t is not None:
+                ax.axvline(pred_t, color=color, lw=1.6, ls="--", alpha=0.9)
+
+    # One shared legend: solid = actual, dashed = predicted, plus a colour
+    # key for the POIs that failed in this run.
+    handles = [
+        plt.Line2D([0], [0], color="0.25", lw=1.6, label="actual (solid)"),
+        plt.Line2D([0], [0], color="0.25", lw=1.6, ls="--", label="predicted (dashed)"),
+    ]
+    for poi in sorted(failures):
+        err = failures[poi].get("error_s")
+        err_txt = f"  err={err:+.2f}s" if err is not None else ""
+        handles.append(
+            plt.Line2D(
+                [0],
+                [0],
+                color=_POI_COLORS.get(poi, "#000000"),
+                lw=2.4,
+                label=f"{poi}{err_txt}",
+            )
+        )
+    axes[0].legend(handles=handles, loc="upper left", fontsize=8, framealpha=0.85)
+
+    axes[-1].set_xlabel("Relative_time (s)", fontsize=9)
+    n_fail = len(failures)
+    fig.suptitle(
+        f"Gross failure — run {run_id}   "
+        f"({viscosity_cP:.1f} cP, tier {tier_label})   "
+        f"{n_fail} POI{'s' if n_fail != 1 else ''} over threshold",
+        fontsize=11,
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    fig.savefig(out_path, dpi=110)
+    plt.close(fig)
+    return True
 
 
 def run_benchmark(
@@ -217,6 +325,11 @@ def run_benchmark(
     }
     gross_failures: List[Dict[str, Any]] = []
 
+    # Diagnostic plots for runs with at least one gross failure.
+    plot_dir = output_dir / "gross_failure_plots"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    n_failure_plots = 0
+
     LOG.info(
         "Benchmark: running cascade on %d runs (%s)",
         len(runs),
@@ -243,6 +356,7 @@ def run_benchmark(
             continue
 
         run_tier = viscosity_tier(run.viscosity_cP)
+        run_failures: Dict[str, Dict[str, float]] = {}
         for poi in POI_KEYS:
             true_t = run.poi_times.get(poi)
             pred_t = preds.get(poi)
@@ -262,6 +376,31 @@ def run_benchmark(
                         "true_t": true_t,
                         "error_s": err,
                     }
+                )
+                run_failures[poi] = {
+                    "pred_t": pred_t,
+                    "true_t": true_t,
+                    "error_s": err,
+                }
+
+        # One diagnostic figure per run that had any gross failure. Rendered
+        # here while df_raw is still in scope to avoid re-reading the CSV.
+        if run_failures:
+            try:
+                if _render_failure_plot(
+                    df_raw=df_raw,
+                    run_id=run.run_id,
+                    viscosity_cP=run.viscosity_cP,
+                    tier_label=TIER_LABELS[run_tier],
+                    failures=run_failures,
+                    out_path=plot_dir / f"{run.run_id}.png",
+                ):
+                    n_failure_plots += 1
+            except Exception as exc:
+                LOG.warning(
+                    "Benchmark: failure-plot render failed for run %s (%s)",
+                    run.run_id,
+                    exc,
                 )
 
         n_processed += 1
@@ -331,6 +470,13 @@ def run_benchmark(
             "Benchmark: %d gross failures → %s",
             len(gross_failures),
             output_dir / "gross_failures.csv",
+        )
+
+    if n_failure_plots:
+        LOG.info(
+            "Benchmark: %d gross-failure plot(s) → %s",
+            n_failure_plots,
+            plot_dir,
         )
 
     LOG.info("Benchmark complete. Metrics → %s", output_dir)

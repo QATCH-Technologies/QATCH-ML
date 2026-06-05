@@ -123,6 +123,15 @@ def _render_and_detect(
     if img is None:
         return None, None
 
+    # v8 renderer returns a 2-D (H, W) grayscale array. During training the
+    # images are written to disk as grayscale PNG and read back via
+    # cv2.imread, which promotes them to 3-channel BGR. The weights are
+    # therefore 3-channel. model.predict() on a raw 2-D ndarray skips that
+    # promotion and feeds [1, 1, H, W] to a 3-channel conv stem. Broadcast
+    # to 3 identical channels here so inference matches the training path.
+    if img.ndim == 2:
+        img = np.repeat(img[:, :, None], 3, axis=2)  # (H, W) -> (H, W, 3)
+
     with _quiet_stdout():
         results = model.predict(img, conf=cfg.conf_threshold, iou=0.3, verbose=False)
 

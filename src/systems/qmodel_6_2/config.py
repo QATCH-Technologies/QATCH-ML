@@ -196,8 +196,8 @@ TICK_THICKNESS: int = 1
 # (one signal fills the canvas). Heights chosen so the lone signal gets
 # generous vertical resolution — the curve-flattening problem the old
 # 128→160 bump addressed is moot when a single signal owns the whole image.
-HIRES_PRESET = ResolutionPreset(img_w=2560, strip_h=640)
-MIDRES_PRESET = ResolutionPreset(img_w=1600, strip_h=512)
+HIRES_PRESET = ResolutionPreset(img_w=1600, strip_h=512)
+MIDRES_PRESET = ResolutionPreset(img_w=736, strip_h=512)
 ZOOM_PRESET = ResolutionPreset(img_w=1280, strip_h=512)
 
 
@@ -382,20 +382,15 @@ USE_SUBPROCESS_TRAINING: bool = True
 #   'disk'  : decode once → .npy alongside the JPG (default)
 #   'ram'   : decompress to RAM
 CACHE_MODE: Optional[str] = "disk"
-CACHE_RAM_LIMIT_GB: float = 80.0
+CACHE_RAM_LIMIT_GB: float = 75.0
 
 # Dataset-build parallelism. 32-core box → 16 workers leaves room for I/O.
 RENDER_WORKERS: int = min(16, max(1, (os.cpu_count() or 4) - 2))
 
-# Train-time dataloader workers. Was 32 in v6.1 — too many for Windows;
-# pinned host memory pool exhausted and cuDNN crashed. 8 is the sweet
-# spot for a single-GPU workstation on Windows.
-NUM_WORKERS: int = 8
-
 # Pinned memory — disabled by default. With 32 workers and pin_memory=True
 # the host pool was exhausting before the dataloader could feed the GPU.
 # At 8 workers you may be able to re-enable this for a 5–10 % speedup,
-# but only after baseline metrics are stable.
+# but only after baseline metrics are stable.``````````````````````````````````````````````
 PIN_MEMORY: bool = False
 
 
@@ -408,9 +403,9 @@ PIN_MEMORY: bool = False
 # estimated. The auto-batch path (recommended) ignores these.
 # ---------------------------------------------------------------------------
 BATCH_BY_RESOLUTION: Dict[str, int] = {
-    "HIRES": 16,  # was 6  — ~13.5 GB on 2560×704; 3 is possible but probe first
+    "HIRES": 4,  # was 6  — ~13.5 GB on 2560×704; 3 is possible but probe first
     "MIDRES": 16,  # was 10 — ~16.8 GB on 1600×704; batch=5 hits ~21 GB (OOM risk)
-    "ZOOM": 16,  # was 16 — ~19.1 GB on 1280×704; 8 would exceed 24 GB
+    "ZOOM": 8,  # was 16 — ~19.1 GB on 1280×704; 8 would exceed 24 GB
 }
 
 
@@ -597,21 +592,25 @@ CASCADE_GROUPS: List[ChannelGroup] = [
         smooth_by_signal={"diss": 0, "freq": 0, "diff": 0},
         yolo_extra={"box": 20.0, "dfl": 2.5, "patience": 25},
     ),
-    ChannelGroup(
-        name="ch_poi5_fine",
-        target="POI5",
-        slice_mode="forward",
-        anchor_poi="POI4",
-        resolution=ZOOM_PRESET,
-        base_truncations=4,
-        stretch_prob=0.4,
-        high_cp_boost=1.5,
-        conf_threshold=0.40,
-        epochs=40,
-        base_weights_override="yolo26s.pt",
-        smooth_by_signal={"diss": 11, "freq": 11, "diff": 11},
-        yolo_extra={"box": 14.0, "dfl": 2.0, "patience": 20},
-    ),
+    # ChannelGroup(
+    #     name="ch_poi5_fine",
+    #     target="POI5",
+    #     slice_mode="forward",
+    #     anchor_poi="POI4",
+    #     resolution=ZOOM_PRESET,
+    #     base_truncations=4,
+    #     stretch_prob=0.4,
+    #     high_cp_boost=1.5,
+    #     conf_threshold=0.40,
+    #     epochs=40,
+    #     base_weights_override="yolo26s.pt",
+    #     smooth_by_signal={"diss": 11, "freq": 11, "diff": 11},
+    #     yolo_extra={
+    #         "box": 14.0,
+    #         "dfl": 2.0,
+    #         "patience": 20,
+    #     },
+    # ),
 ]
 
 
@@ -661,6 +660,7 @@ for _c in CASCADE_CHANNELS:
 #  YOLO training defaults
 # ===========================================================================
 YOLO_DEFAULTS: Dict[str, Any] = {
+    "plots": True,
     "box": 12.0,
     "cls": 0.5,
     "dfl": 2.0,
@@ -675,7 +675,7 @@ YOLO_DEFAULTS: Dict[str, Any] = {
     "hsv_h": 0.0,
     "hsv_s": 0.0,
     "hsv_v": 0.0,
-    "translate": 0.02,
+    "translate": 0.0,
     "scale": 0.0,
     "erasing": 0.0,
     "auto_augment": None,
@@ -720,8 +720,8 @@ FINE_LOG_DECISIONS: bool = False
 #                         the others, it is treated as an outlier and
 #                         dropped before the final fuse.
 # ---------------------------------------------------------------------------
-SIGNAL_FUSION_METHOD: str = "conf_weighted"
-SIGNAL_MIN_CONF: float = 0.10
+SIGNAL_FUSION_METHOD: str = "best"
+SIGNAL_MIN_CONF: float = 0.01
 SIGNAL_MIN_AGREE: int = 1
 SIGNAL_OUTLIER_FRAC: float = 0.10
 
@@ -736,19 +736,30 @@ TRAIN_PROJECT: str = "runs/v6"
 BENCHMARK_OUTPUT: str = "test/benchmark"
 
 BASE_WEIGHTS: str = "yolo26s.pt"
-NUM_WORKERS: int = 32
+NUM_WORKERS: int = 4
 TRAIN_DEVICE: str = "0"
 
 VAL_SPLIT: float = 0.15
 RNG_SEED: int = 42
 
-RUN_BUILD_DATASETS: bool = False
-RUN_TRAIN: bool = False
+RUN_BUILD_DATASETS: bool = True
+RUN_TRAIN: bool = True
 RUN_BENCHMARK: bool = True
 USE_SUBPIXEL_REFINE: bool = False
 
 BENCHMARK_N_RUNS: Optional[int] = None
 BENCHMARK_GROSS_THRESHOLD: float = 5.0
 # Iteration aids — cap runs and/or channels for fast validation loops.
-LIMIT_RUNS: Optional[int] = None  # None = use all discovered runs
-LIMIT_CHANNELS: Optional[List[str]] = None  # e.g. ["ch_poi5_diff"] single-signal
+LIMIT_RUNS: Optional[int] = 1500  # None = use all discovered runs
+# LIMIT_CHANNELS: Optional[List[str]] = None
+LIMIT_CHANNELS: Optional[List[str]] = [
+    "ch_poi5_diff",
+    "ch_poi5_diss",
+    "ch_poi5_freq",
+    "ch_poi4_diff",
+    "ch_poi4_diss",
+    "ch_poi4_freq",
+    "ch_poi3_diff",
+    "ch_poi3_diss",
+    "ch_poi3_freq",
+]  # None = use all channels

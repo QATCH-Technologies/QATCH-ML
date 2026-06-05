@@ -23,10 +23,27 @@ worker derives its RNG from ``rng_seed XOR hash(run_id)``, so a given
 ``(run_id, channel, split, rng_seed)`` tuple always produces the same
 variant set regardless of how many processes are used.
 
+What changed in v8 (grayscale PNG)
+----------------------------------
+Each detection image is a single signal on a black canvas — colour
+carried no information for YOLO. Images are now written as single-channel
+grayscale PNG instead of 3-channel JPEG:
+
+  * ~3-5x smaller on disk for this sparse line-drawing content, and
+    lossless (no JPEG ringing on the curve edge, which matters if
+    sub-pixel POI refinement is re-enabled later).
+  * Smaller on-disk datasets fit comfortably in a RAM cache and stop
+    choking the OS volume.
+
+Only the write call changed — ``render_detection_image`` now returns a
+2-D uint8 array. YOLO/Ultralytics reads grayscale PNGs back through
+``cv2.imread`` (promoting to 3-channel at load), so no model change is
+needed and ``yolo26s.pt`` transfer still works.
+
 Author:
     Paul MacNichol (paul.macnichol@qatchtech.com)
 Version:
-    7.1.0
+    8.0.0
 """
 
 from __future__ import annotations
@@ -52,6 +69,12 @@ from config import ChannelConfig
 from signal_processing import COL_TIME, preprocess_dataframe, render_detection_image
 
 LOG = logging.getLogger("v6.parallel")
+
+# PNG encoder compression level (0-9). 3 is a good speed/size balance for
+# sparse line-drawing content; raise toward 6 for smaller files at the cost
+# of slower encode, lower toward 1 for faster build at the cost of size.
+PNG_COMPRESSION: int = 3
+IMG_EXT: str = ".png"
 
 
 # ===========================================================================
@@ -211,7 +234,13 @@ def _worker_render(task: RenderTask) -> RenderResult:
                 continue
 
             stem = f"{task.run_id}_{tag}"
-            cv2.imwrite(str(img_dir / f"{stem}.jpg"), img)
+            # v8: single-channel grayscale PNG (lossless, ~3-5x smaller than
+            # the old 3-channel JPEG for this sparse line-drawing content).
+            cv2.imwrite(
+                str(img_dir / f"{stem}{IMG_EXT}"),
+                img,
+                [cv2.IMWRITE_PNG_COMPRESSION, PNG_COMPRESSION],
+            )
             with open(lbl_dir / f"{stem}.txt", "w") as f:
                 f.write(f"0 {x_center:.6f} 0.5 {box_w:.6f} 1.0\n")
             n_imgs += 1

@@ -86,7 +86,7 @@ def _resolve_cache_mode(
     if not images_dir.is_dir():
         return "disk"
 
-    n_imgs = sum(1 for _ in images_dir.glob("*.jpg"))
+    n_imgs = sum(1 for _ in images_dir.glob("*.png"))
     bytes_per_img = cfg.resolution.img_w * cfg.resolution.img_h * 3
     estimated_gb = (n_imgs * bytes_per_img) / (1024**3)
 
@@ -203,7 +203,7 @@ def _train_one(
         data=str(dataset_yaml),
         epochs=cfg.epochs,
         imgsz=imgsz,
-        rect=True,
+        rect=False,
         batch=batch_arg,
         workers=workers,
         device=device,
