@@ -261,6 +261,97 @@ def _resample_signal_to_pixel_grid(
     return {"time": pixel_t, "signal": sig}
 
 
+def signal_y_center_norm(
+    df: pd.DataFrame,
+    cfg: ChannelConfig,
+    target_time_s: float,
+) -> Optional[float]:
+    """Normalised ([0, 1]) y position of the rendered curve at ``target_time_s``.
+
+    Replicates the EXACT normalisation pipeline of ``render_detection_image`` /
+    ``_signal_polyline`` so the returned value lines up with where the curve is
+    actually drawn in the rendered image:
+
+      * resample the channel's ``signal_column`` onto the same img_w pixel grid,
+      * apply the same per-signal Savitzky-Golay smoothing,
+      * use the same v_min/v_max + 2% padding min-max normalisation,
+      * convert to the image coordinate convention where 0.0 = top edge and
+        1.0 = bottom edge (matching the YOLO label y-axis), accounting for the
+        PADDING border the renderer reserves.
+
+    This is the y-counterpart to the x_center computed in the renderer's worker
+    loop and lets the bounding box be centred ON the curve at the POI rather
+    than spanning the full image height.
+
+    Args:
+        df: Preprocessed (and, if applicable, already-stretched) slice — the
+            SAME dataframe passed to ``render_detection_image``.
+        cfg: Channel config (resolution, signal column, smoothing window).
+        target_time_s: Physical Relative_time of the POI.
+
+    Returns:
+        Normalised y-center in [0, 1] (YOLO convention, top=0), or ``None`` on
+        degenerate input.
+    """
+    if df is None or df.empty or len(df) < 2:
+        return None
+
+    col = cfg.signal_column
+    if col not in df.columns or COL_TIME not in df.columns:
+        return None
+
+    work = df
+
+    # Mirror the renderer's optional per-signal smoothing so the y we report
+    # matches the y that gets drawn.
+    if cfg.smooth_signal_window >= 5:
+        win = cfg.smooth_signal_window
+        win = win if win % 2 == 1 else win + 1
+        poly = min(3, win - 1)
+        arr = work[col].to_numpy(dtype=float)
+        if len(arr) >= win:
+            try:
+                smoothed = savgol_filter(arr, win, poly)
+                work = work.copy()
+                work[col] = smoothed
+            except Exception:
+                pass
+
+    img_w = cfg.resolution.img_w
+    img_h = cfg.resolution.img_h
+
+    grid = _resample_signal_to_pixel_grid(work, col, img_w)
+    if grid is None:
+        return None
+
+    values = grid["signal"]
+    if len(values) < 2:
+        return None
+
+    # Same min-max + 2% padding as _signal_polyline.
+    v_min = np.nanmin(values)
+    v_max = np.nanmax(values)
+    pad = 0.02 * (v_max - v_min)
+    v_min -= pad
+    v_max += pad
+    span = v_max - v_min
+    if span == 0:
+        span = EPSILON
+        v_min -= EPSILON
+
+    # Value of the curve at the target time (on the pixel-time grid).
+    t_grid = grid["time"]
+    sig_at_poi = float(np.interp(target_time_s, t_grid, values))
+    norm = float(np.clip((sig_at_poi - v_min) / span, 0.0, 1.0))
+
+    # _signal_polyline maps norm via:
+    #   y_px = (img_h - PADDING) - norm * (img_h - 2*PADDING)
+    # so norm=1 (peak) sits near the top, norm=0 (trough) near the bottom.
+    draw_h = img_h - (2 * PADDING)
+    y_px = (img_h - PADDING) - (norm * draw_h)
+    return float(np.clip(y_px / img_h, 0.0, 1.0))
+
+
 def render_detection_image(
     df: pd.DataFrame,
     cfg: ChannelConfig,

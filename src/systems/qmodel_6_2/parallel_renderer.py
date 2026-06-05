@@ -66,7 +66,12 @@ from augmentation import (
     viscosity_tier,
 )
 from config import ChannelConfig
-from signal_processing import COL_TIME, preprocess_dataframe, render_detection_image
+from signal_processing import (
+    COL_TIME,
+    preprocess_dataframe,
+    render_detection_image,
+    signal_y_center_norm,
+)
 
 LOG = logging.getLogger("v6.parallel")
 
@@ -233,6 +238,24 @@ def _worker_render(task: RenderTask) -> RenderResult:
             if img is None:
                 continue
 
+            # Centre the box ON the curve at the POI rather than spanning the
+            # full image height. y_center is the normalised position of the
+            # rendered curve at the target time; box_h is chosen so the box is
+            # square IN PIXELS (box_w is normalised to width, so multiply by the
+            # img_w/img_h aspect ratio to get the equivalent normalised height).
+            # This gives equal signal/non-signal on all four sides of the POI.
+            y_center = signal_y_center_norm(df_view, cfg, poi_t)
+            if y_center is None:
+                y_center = 0.5
+            box_h = box_w * (cfg.resolution.img_w / cfg.resolution.img_h)
+
+            # Clamp the box so it stays fully inside the image (YOLO requires
+            # x±w/2 and y±h/2 within [0, 1]).
+            half_w = box_w / 2.0
+            half_h = box_h / 2.0
+            x_center = float(np.clip(x_center, half_w, 1.0 - half_w))
+            y_center = float(np.clip(y_center, half_h, 1.0 - half_h))
+
             stem = f"{task.run_id}_{tag}"
             # v8: single-channel grayscale PNG (lossless, ~3-5x smaller than
             # the old 3-channel JPEG for this sparse line-drawing content).
@@ -242,7 +265,7 @@ def _worker_render(task: RenderTask) -> RenderResult:
                 [cv2.IMWRITE_PNG_COMPRESSION, PNG_COMPRESSION],
             )
             with open(lbl_dir / f"{stem}.txt", "w") as f:
-                f.write(f"0 {x_center:.6f} 0.5 {box_w:.6f} 1.0\n")
+                f.write(f"0 {x_center:.6f} {y_center:.6f} {box_w:.6f} {box_h:.6f}\n")
             n_imgs += 1
             if stretched:
                 n_stretch += 1
