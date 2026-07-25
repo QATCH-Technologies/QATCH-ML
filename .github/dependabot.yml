@@ -1,0 +1,24 @@
+version: 2
+updates:
+  # Python dependencies declared in pyproject.toml
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      # Batch routine dependency bumps into one PR instead of one-per-package.
+      python-dependencies:
+        patterns:
+          - "*"
+
+  # The workflow files themselves (actions/checkout, actions/setup-python, etc.)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      github-actions:
+        patterns:
+          - "*"

@@ -1,0 +1,37 @@
+name: Style
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: style-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ruff:
+    name: ruff (lint + format)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install ruff
+        run: pip install ruff
+
+      # Rule set and line length are read from [tool.ruff]/[tool.ruff.lint]
+      # in pyproject.toml — the same config `ruff check`/`ruff format` use
+      # locally, so a clean run here means a clean run on your machine too.
+      - name: Lint
+        run: ruff check --output-format=github .
+
+      - name: Format check
+        run: ruff format --check --diff .

@@ -30,7 +30,6 @@ Example:
 
 import argparse
 import csv
-import logging
 import os
 import shutil
 import threading
@@ -42,9 +41,9 @@ from typing import List, Optional, Set
 
 from tqdm import tqdm
 
-logging.basicConfig(
-    level=logging.DEBUG, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
+from src.utils.logger import configure_logging, get_logger
+
+LOG = get_logger("dataset_fetcher")
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +96,8 @@ def fast_copy(src: Path, dst: Path, buffer_size: int = 1024 * 1024) -> None:
 
 
 class DatasetFetcher:
-    """Fetches and processes dataset runs from a source directory into structured target directories.
+    """Fetches and processes dataset runs from a source directory into
+    structured target directories.
 
     The DatasetFetcher class performs the following operations:
       - Loads identifiers for previously processed runs.
@@ -122,6 +122,10 @@ class DatasetFetcher:
             across all processing stages.
     """
 
+    # Batch identifiers to reject during XML validation (checked
+    # case-insensitively against every line of the run's XML file). This is
+    # a data-quality denylist, not a path — extend it here for a permanent
+    # change, or override per-invocation via `bad_batches` / `--exclude-batch`.
     BAD_BATCHES = ["MM240506", "DD240501"]
 
     def __init__(
@@ -130,6 +134,7 @@ class DatasetFetcher:
         target_dir: str,
         num_files: Optional[int] = None,
         max_workers: Optional[int] = None,
+        bad_batches: Optional[List[str]] = None,
     ):
         """Initializes the DatasetFetcher.
 
@@ -140,11 +145,15 @@ class DatasetFetcher:
                 Defaults to None, meaning all available runs will be processed.
             max_workers (Optional[int], optional): Maximum number of worker threads for
                 the thread pools. Defaults to None (executor-chosen).
+            bad_batches (Optional[List[str]], optional): Batch identifiers to reject
+                during XML validation, replacing the class-level ``BAD_BATCHES``
+                default. Defaults to None (use ``BAD_BATCHES``).
         """
         self.source_dir = Path(source_dir)
         self.target_dir = Path(target_dir)
         self.num_files = num_files
         self.max_workers = max_workers
+        self.bad_batches = list(bad_batches) if bad_batches is not None else list(self.BAD_BATCHES)
 
         self.existing_runs: Set[str] = set()
         self.run_dirs: List[Path] = []
@@ -169,7 +178,7 @@ class DatasetFetcher:
         record = FailureRecord(run_id=run_id, stage=stage, reason=reason)
         with self._failures_lock:
             self.failures.append(record)
-        logging.error("[FAILURE] %s | stage=%s | %s", run_id, stage, reason)
+        LOG.error("[FAILURE] {} | stage={} | {}", run_id, stage, reason)
 
     # ------------------------------------------------------------------
     # Public API
@@ -183,13 +192,14 @@ class DatasetFetcher:
         """
         for poi_file in self.target_dir.rglob("*_poi.csv"):
             if poi_file.name.startswith("Dithered_"):
-                logging.debug("Omitting run with dithered identifier: %s", poi_file.name)
+                LOG.debug("Omitting run with dithered identifier: {}", poi_file.name)
             else:
                 self.existing_runs.add(poi_file.name)
-        logging.debug("Successfully loaded %d previously processed runs.", len(self.existing_runs))
+        LOG.debug("Successfully loaded {} previously processed runs.", len(self.existing_runs))
 
     def check_xml_validity(self, xml_path: Path) -> bool:
-        """Checks if an XML file is valid by ensuring it does not contain disallowed batch identifiers.
+        """Checks if an XML file is valid by ensuring it does not contain
+        disallowed batch identifiers.
 
         Args:
             xml_path (Path): Path to the XML file.
@@ -201,15 +211,15 @@ class DatasetFetcher:
         try:
             with xml_path.open("r", errors="ignore") as f:
                 for line in f:
-                    if any(bad in line.upper() for bad in self.BAD_BATCHES):
-                        logging.debug(
-                            "Omitting XML file %s due to disallowed batch identifier.",
+                    if any(bad in line.upper() for bad in self.bad_batches):
+                        LOG.debug(
+                            "Omitting XML file {} due to disallowed batch identifier.",
                             xml_path.name,
                         )
                         return False
             return True
         except Exception as exc:
-            logging.error("Error reading XML file %s: %s", xml_path.name, exc)
+            LOG.error("Error reading XML file {}: {}", xml_path.name, exc)
             return False
 
     def validate_poi_file(self, poi_path: Path) -> bool:
@@ -233,16 +243,16 @@ class DatasetFetcher:
                     try:
                         value = int(row[0])
                         if value <= 0:
-                            logging.error(
-                                "POI file %s contains a non-positive integer: %d",
+                            LOG.error(
+                                "POI file {} contains a non-positive integer: {}",
                                 poi_path.name,
                                 value,
                             )
                             return False
                         values.append(value)
                     except ValueError:
-                        logging.error(
-                            "POI file %s contains a non-integer value: %s",
+                        LOG.error(
+                            "POI file {} contains a non-integer value: {}",
                             poi_path.name,
                             row[0],
                         )
@@ -257,14 +267,15 @@ class DatasetFetcher:
             # if len(set(values)) != 6:
             #     logging.error("POI file %s does not contain six unique values.", poi_path.name)
             #     return False
-            logging.debug("POI file %s has been successfully validated.", poi_path.name)
+            LOG.debug("POI file {} has been successfully validated.", poi_path.name)
             return True
         except Exception as exc:
-            logging.error("Error processing POI file %s: %s", poi_path.name, exc)
+            LOG.error("Error processing POI file {}: {}", poi_path.name, exc)
             return False
 
     def validate_and_purge_run_dir(self, run_dir: Path) -> bool:
-        """Validates a run directory by checking its POI CSV file and purges the directory if invalid.
+        """Validates a run directory by checking its POI CSV file and purges
+        the directory if invalid.
 
         Failure details are recorded via :meth:`_record_failure`.
 
@@ -281,7 +292,7 @@ class DatasetFetcher:
             try:
                 shutil.rmtree(run_dir)
             except Exception as exc:
-                logging.error("Error purging run directory %s: %s", run_dir.name, exc)
+                LOG.error("Error purging run directory {}: {}", run_dir.name, exc)
             return False
 
         poi_path = poi_files[0]
@@ -291,7 +302,7 @@ class DatasetFetcher:
             try:
                 shutil.rmtree(run_dir)
             except Exception as exc:
-                logging.error("Error purging run directory %s: %s", run_dir.name, exc)
+                LOG.error("Error purging run directory {}: {}", run_dir.name, exc)
             return False
 
         return True
@@ -345,8 +356,8 @@ class DatasetFetcher:
                                 latest_analyze_idx = latest
                                 latest_analyze = fname
                         except (IndexError, ValueError):
-                            logging.debug(
-                                "Skipping analyze file with unexpected name format: %s",
+                            LOG.debug(
+                                "Skipping analyze file with unexpected name format: {}",
                                 fname,
                             )
 
@@ -354,8 +365,8 @@ class DatasetFetcher:
 
                 if file_poi and file_xml and file_zip:
                     if file_poi in self.existing_runs:
-                        logging.debug(
-                            "Omitting run; POI file %s already exists in the target repository.",
+                        LOG.debug(
+                            "Omitting run; POI file {} already exists in the target repository.",
                             file_poi,
                         )
                     else:
@@ -373,16 +384,17 @@ class DatasetFetcher:
                         )
                         new_runs_count += 1
                         if self.num_files is not None and new_runs_count >= self.num_files:
-                            logging.debug(
-                                "The specified limit on new runs has been reached; ceasing further processing."
+                            LOG.debug(
+                                "The specified limit on new runs has been reached; "
+                                "ceasing further processing."
                             )
                             break
 
             for task in tqdm(as_completed(tasks), total=len(tasks), desc="Copying runs"):
                 task.result()
 
-        logging.debug(
-            "Completed processing of %d new runs from the source directory.",
+        LOG.debug(
+            "Completed processing of {} new runs from the source directory.",
             new_runs_count,
         )
 
@@ -424,28 +436,29 @@ class DatasetFetcher:
             src_file = src_root / fname
             dest_file = run_dir / fname
             if not src_file.is_file():
-                logging.debug(
-                    "Omitting file %s for run %05d; source file is not a file.",
+                LOG.debug(
+                    "Omitting file {} for run {:05d}; source file is not a file.",
                     fname,
                     run_index,
                 )
                 continue
             if dest_file.exists():
-                logging.debug(
-                    "Omitting file %s for run %05d; file already present in target directory.",
+                LOG.debug(
+                    "Omitting file {} for run {:05d}; file already present in target directory.",
                     fname,
                     run_index,
                 )
                 continue
             try:
                 fast_copy(src_file, dest_file)
-                logging.debug("Successfully copied file %s for run %05d.", fname, run_index)
+                LOG.debug("Successfully copied file {} for run {:05d}.", fname, run_index)
             except Exception as exc:
                 reason = f"Copy of '{fname}' from '{src_file}' failed: {exc}"
                 self._record_failure(f"{run_index:05d}/{fname}", "file_copy", reason)
 
     def process_run_dir(self, run_dir: Path) -> None:
-        """Processes a stored run directory by validating, extracting archives, and cleaning up extraneous files.
+        """Processes a stored run directory: validates it, extracts archives,
+        and cleans up extraneous files.
 
         The method validates the run directory by checking its POI CSV file. If validation fails,
         the directory is purged. If a capture.zip file exists, it is unpacked and then removed
@@ -456,7 +469,7 @@ class DatasetFetcher:
             run_dir (Path): The target run directory to process.
         """
         if not run_dir.exists():
-            logging.debug("Run directory %s no longer exists; skipping processing.", run_dir.name)
+            LOG.debug("Run directory {} no longer exists; skipping processing.", run_dir.name)
             return
 
         if not self.validate_and_purge_run_dir(run_dir):
@@ -464,7 +477,7 @@ class DatasetFetcher:
 
         capture_zip = run_dir / "capture.zip"
         if capture_zip.exists():
-            logging.debug("Commencing extraction for run directory: %s.", run_dir.name)
+            LOG.debug("Commencing extraction for run directory: {}.", run_dir.name)
             try:
                 shutil.unpack_archive(str(capture_zip), str(run_dir))
             except Exception as exc:
@@ -479,8 +492,8 @@ class DatasetFetcher:
 
         for file_path in run_dir.iterdir():
             if file_path.suffix == ".crc" or file_path.name.endswith("_tec.csv"):
-                logging.debug(
-                    "Removing extraneous file %s from run directory %s.",
+                LOG.debug(
+                    "Removing extraneous file {} from run directory {}.",
                     file_path.name,
                     run_dir.name,
                 )
@@ -514,14 +527,14 @@ class DatasetFetcher:
         """
         total = len(self.failures)
         if total == 0:
-            logging.info("No failures recorded — all runs completed successfully.")
+            LOG.info("No failures recorded — all runs completed successfully.")
             return
 
         # Console summary
         sep = "-" * 90
-        print(f"\n{'='*90}")
+        print(f"\n{'=' * 90}")
         print(f"  FAILURE REPORT — {total} run(s) failed")
-        print(f"{'='*90}")
+        print(f"{'=' * 90}")
         for rec in self.failures:
             print(sep)
             print(f"  Run ID : {rec.run_id}")
@@ -538,7 +551,7 @@ class DatasetFetcher:
         print("  Failures by stage:")
         for stage, count in sorted(stage_counts.items()):
             print(f"    {stage:<18s}: {count}")
-        print(f"{'='*90}\n")
+        print(f"{'=' * 90}\n")
 
         # Optional CSV output
         if report_path is not None:
@@ -558,9 +571,9 @@ class DatasetFetcher:
                                 "reason": rec.reason,
                             }
                         )
-                logging.info("Failure report written to: %s", report_path)
+                LOG.info("Failure report written to: {}", report_path)
             except Exception as exc:
-                logging.error("Could not write failure report to %s: %s", report_path, exc)
+                LOG.error("Could not write failure report to {}: {}", report_path, exc)
 
     def run(self, report_path: Optional[Path] = None) -> None:
         """Executes the entire dataset fetching and processing procedure.
@@ -589,19 +602,16 @@ def parse_arguments() -> argparse.Namespace:
     Returns:
         argparse.Namespace: Parsed command-line arguments.
     """
-    source_path = os.path.join(
-        os.environ.get("USERPROFILE", ""),
-        "QATCH Dropbox/QATCH Team Folder/Production Notes",
-    )
-    target_path = os.path.join("QModel", "data", "raw")
+    target_path = os.path.join("data", "raw")
     parser = argparse.ArgumentParser(
         description="Fetch and process source files into structured target directories."
     )
     parser.add_argument(
         "--source",
         type=str,
-        default=source_path,
-        help="Path to the source data directory. (Default: %(default)s)",
+        default=os.environ.get("QMODEL_DROPBOX_SOURCE"),
+        help="Path to the source data directory. Required unless the "
+        "QMODEL_DROPBOX_SOURCE environment variable is set.",
     )
     parser.add_argument(
         "--target",
@@ -613,13 +623,23 @@ def parse_arguments() -> argparse.Namespace:
         "--num-files",
         type=int,
         default=None,
-        help="Limit the number of new runs to process. If not specified, all available runs will be processed.",
+        help="Limit the number of new runs to process. If not specified, all "
+        "available runs will be processed.",
     )
     parser.add_argument(
         "--max-workers",
         type=int,
         default=None,
         help="Maximum number of worker threads. Defaults to the executor-chosen value.",
+    )
+    parser.add_argument(
+        "--exclude-batch",
+        type=str,
+        nargs="+",
+        default=None,
+        metavar="BATCH_ID",
+        help="Batch identifiers to reject during XML validation, replacing the "
+        f"built-in default list ({DatasetFetcher.BAD_BATCHES}).",
     )
     parser.add_argument(
         "--report",
@@ -633,19 +653,23 @@ def parse_arguments() -> argparse.Namespace:
         default="DEBUG",
         help="Set the logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL).",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if not args.source:
+        parser.error("--source is required (or set the QMODEL_DROPBOX_SOURCE environment variable)")
+    return args
 
 
 def main() -> None:
     """Main function to run the dataset fetching procedure."""
     args = parse_arguments()
-    logging.getLogger().setLevel(args.log_level.upper())
+    configure_logging(level=args.log_level.upper())
     report_path = Path(args.report) if args.report else None
     processor = DatasetFetcher(
         source_dir=args.source,
         target_dir=args.target,
         num_files=args.num_files,
         max_workers=args.max_workers,
+        bad_batches=args.exclude_batch,
     )
     processor.run(report_path=report_path)
 

@@ -1,0 +1,50 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build sdist/wheel + clean install
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install build tooling
+        run: pip install build
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Install the built wheel into a clean venv
+        run: |
+          python -m venv /tmp/install-check
+          /tmp/install-check/bin/pip install --upgrade pip
+          /tmp/install-check/bin/pip install dist/*.whl
+          /tmp/install-check/bin/python -c "
+          from src.systems.qmodel_7_onyx import Workspace, Pipeline
+          from src.systems.qmodel_7_onyx import paths
+          assert paths.ASSETS_PATHS_JSON.exists(), 'assets_paths.json missing from installed package'
+          print('Workspace/Pipeline import OK; assets_paths.json present')
+          "
+
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 14

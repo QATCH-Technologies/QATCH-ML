@@ -1,0 +1,13 @@
+{
+  "fill_classifier": "src/systems/qmodel_7_onyx/assets/classifiers/fill_classifier/type_cls.pt",
+  "detectors": {
+    "init": "src/systems/qmodel_7_onyx/assets/detectors/init_detector/init.pt",
+    "ch1": "src/systems/qmodel_7_onyx/assets/detectors/ch1_detector/ch1.pt",
+    "ch2": "src/systems/qmodel_7_onyx/assets/detectors/ch2_detector/ch2.pt",
+    "ch3": "src/systems/qmodel_7_onyx/assets/detectors/ch3_detector/ch3.pt",
+    "ch1_zoom": "src/systems/qmodel_7_onyx/assets/detectors/ch1_zoom_detector/ch1_zoom.pt",
+    "ch2_zoom": "src/systems/qmodel_7_onyx/assets/detectors/ch2_zoom_detector/ch2_zoom.pt",
+    "ch3_zoom": "src/systems/qmodel_7_onyx/assets/detectors/ch3_zoom_detector/ch3_zoom.pt"
+    
+  }
+}

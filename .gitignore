@@ -4,7 +4,11 @@
 /data/
 /test/
 /runs/
-
+/src/systems/*/assets
+/runs_moirai/
+/cache_moirai/
+/datasets/
+replay_fill.json
 # ==============================================================================
 # Ultralytics & ML Specific
 # ==============================================================================
@@ -42,6 +46,8 @@ ray_results/
 __pycache__/
 *.py[cod]
 *$py.class
+*.egg-info/
+.pytest_cache/
 
 # Environments
 .env
