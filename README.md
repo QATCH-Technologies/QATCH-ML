@@ -43,17 +43,17 @@ from src.systems.qmodel_7_onyx import Workspace, Pipeline
 # override any of them to point at a different raw-data folder or output location.
 pipeline = Pipeline(Workspace(data_root="path/to/raw"))
 
-result = pipeline.run()                 # prepare() -> build_datasets() -> train()
-print(result.training.weights)          # {"init": Path(...), ..., "fill_classifier": Path(...)}
-print(result.training.metrics)          # best-effort Ultralytics val metrics per stage
+result = pipeline.run()  # prepare() -> build_datasets() -> train()
+print(result.training.weights)  # {"init": Path(...), ..., "fill_classifier": Path(...)}
+print(result.training.metrics)  # best-effort Ultralytics val metrics per stage
 ```
 
 Each stage is also callable on its own for finer control, sharing the same
 `Workspace` so paths never drift out of sync between stages:
 
 ```python
-pipeline.prepare()                                          # fit tiers.json + spacing_prior.json
-pipeline.build_datasets(targets=["fill_classifier"])         # just the fill-classifier dataset
+pipeline.prepare()  # fit tiers.json + spacing_prior.json
+pipeline.build_datasets(targets=["fill_classifier"])  # just the fill-classifier dataset
 pipeline.train(targets=["detectors"], detector_stages=["ch2_zoom"], epochs=50)
 ```
 
