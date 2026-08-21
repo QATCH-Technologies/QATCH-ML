@@ -33,6 +33,17 @@ RUNS_ROOT = _env_path("QMODEL_RUNS_ROOT", REPO_ROOT / "runs")
 CONFIGS_ROOT = _env_path("QMODEL_CONFIGS_ROOT", REPO_ROOT / "configs")
 ARTIFACTS_ROOT = _env_path("QMODEL_ARTIFACTS_ROOT", REPO_ROOT / "artifacts")
 
+# Local Dropbox sync folder holding raw run captures, used by the fetch
+# stage (dataset_fetcher.py / build_and_release_qmodel_onyx.py). Derived from
+# the current user's home directory rather than a hardcoded profile path, so
+# the same default works on any machine/account with this Dropbox team
+# folder synced. Overridable via QMODEL_DROPBOX_SOURCE for machines where the
+# sync folder lives somewhere else (or isn't synced at all).
+DROPBOX_SOURCE = _env_path(
+    "QMODEL_DROPBOX_SOURCE",
+    Path.home() / "QATCH Dropbox" / "QATCH Team Folder" / "Production Notes",
+)
+
 # Fitted/derived config artifacts (single canonical location — replaces the
 # old ambiguity between a CWD-relative default and a copy inside the package).
 TIERS_JSON = CONFIGS_ROOT / "tiers.json"

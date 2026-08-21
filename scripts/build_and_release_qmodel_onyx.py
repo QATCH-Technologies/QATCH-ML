@@ -128,8 +128,10 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="Path to the local Dropbox sync folder holding raw run captures. "
-        "Falls back to the QMODEL_DROPBOX_SOURCE env var. Omit (or pass "
-        "--skip-fetch) to reuse whatever is already under data/raw.",
+        "Falls back to the QMODEL_DROPBOX_SOURCE env var, then to "
+        f"{paths.DROPBOX_SOURCE} (this machine's home directory + the "
+        "QATCH Dropbox team folder). Pass --skip-fetch to reuse whatever is "
+        "already under data/raw instead.",
     )
     fetch.add_argument("--skip-fetch", action="store_true", help="Never contact Dropbox.")
     fetch.add_argument(
@@ -192,16 +194,22 @@ def parse_args() -> argparse.Namespace:
 def stage_fetch(args: argparse.Namespace, workspace: Workspace) -> Optional[int]:
     """Copies new runs from Dropbox into ``workspace.data_root``. Returns the
     number of new run directories retained, or None if the stage was skipped."""
-    import os
+    if args.skip_fetch:
+        LOG.info("[1/5] Fetch: skipped (--skip-fetch).")
+        return None
 
-    source = args.dropbox_source or os.environ.get("QMODEL_DROPBOX_SOURCE")
-    if args.skip_fetch or not source:
-        LOG.info("[1/5] Fetch: skipped (no --dropbox-source given).")
+    source = Path(args.dropbox_source) if args.dropbox_source else paths.DROPBOX_SOURCE
+    if not source.exists():
+        LOG.info(
+            "[1/5] Fetch: skipped (Dropbox source not found on this machine: {}). "
+            "Pass --dropbox-source or set QMODEL_DROPBOX_SOURCE if it lives elsewhere.",
+            source,
+        )
         return None
 
     LOG.info("[1/5] Fetch: copying new runs from {} -> {}", source, workspace.data_root)
     fetcher = DatasetFetcher(
-        source_dir=source,
+        source_dir=str(source),
         target_dir=str(workspace.data_root),
         num_files=args.num_files,
     )
