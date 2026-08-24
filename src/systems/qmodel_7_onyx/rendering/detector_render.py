@@ -103,7 +103,9 @@ def derivative_energy(df: pd.DataFrame) -> np.ndarray:
     e = np.log1p(sal)
     k = max(3, int(round(DERIV_SMOOTH_S / dt)) | 1)
     if n > k:
-        e = np.convolve(e, np.ones(k) / k, mode="same")
+        pad_w = k // 2
+        e_padded = np.pad(e, (pad_w, pad_w), mode="edge")
+        e = np.convolve(e_padded, np.ones(k) / k, mode="valid")
     return e
 
 
