@@ -4,7 +4,7 @@ This module evaluates combinations of decode parameters (such as lambda,
 margin, and fraction blend) over pre-dumped candidate pools to optimize
 decoding performance. By re-decoding each run and applying the same
 accept-margin rule used by the production controller, it scores configurations
-against ground truth without requiring expensive re-harvesting[cite: 2].
+against ground truth without requiring expensive re-harvesting.
 
 The ranking objective defaults to a regression-averse posture:
     1. Minimize gross failures introduced vs. the cascade baseline.
@@ -12,7 +12,7 @@ The ranking objective defaults to a regression-averse posture:
     3. Minimize total decoded Mean Absolute Error (MAE).
 
 Outputs include a printed ranked table of the top settings for various
-objectives and a CSV file containing the full sweep grid[cite: 2].
+objectives and a CSV file containing the full sweep grid.
 """
 
 from __future__ import annotations
@@ -38,14 +38,14 @@ def load_dump(path: Path) -> List[Dict[str, Any]]:
     """Load candidate pools dumped from a JSONL file.
 
     Reads line-delimited JSON objects representing pre-computed candidate
-    pools into a list[cite: 2].
+    pools into a list.
 
     Args:
         path (Path): Path to the JSONL dump file.
 
     Returns:
         List[Dict[str, Any]]: A list of dictionaries, where each dictionary
-        represents a run configuration and its candidate pools[cite: 2].
+        represents a run configuration and its candidate pools.
     """
     import json
 
@@ -65,11 +65,11 @@ def _tier_of(cp, edges) -> int:
     """Determine the tier index for a given continuous value based on boundary edges.
 
     Args:
-        cp (float): The value (e.g., viscosity) to categorize[cite: 2].
-        edges (List[float]): A strictly ascending list of tier boundary edges[cite: 2].
+        cp (float): The value (e.g., viscosity) to categorize.
+        edges (List[float]): A strictly ascending list of tier boundary edges.
 
     Returns:
-        int: The integer index of the tier the value falls into[cite: 2].
+        int: The integer index of the tier the value falls into.
     """
     if cp is None or not np.isfinite(cp):
         return len(edges) + 1
@@ -85,16 +85,16 @@ def tier_weights(rows: List[Dict[str, Any]], edges) -> Dict[int, float]:
     An unweighted objective is often dominated by the easily decoded bulk
     majority and might trade performance on rare, difficult cases for marginal
     bulk gains. Tier weighting forces each tier to count equally by mean-normalizing
-    the inverse-frequency weights to 1[cite: 2].
+    the inverse-frequency weights to 1.
 
     Args:
         rows (List[Dict[str, Any]]): A list of dictionaries representing
-            the dumped run configurations containing tier-defining metrics[cite: 2].
-        edges (List[float]): A list of tier boundary edges[cite: 2].
+            the dumped run configurations containing tier-defining metrics.
+        edges (List[float]): A list of tier boundary edges.
 
     Returns:
         Dict[int, float]: A dictionary mapping tier indices to their
-        calculated inverse-frequency weights[cite: 2].
+        calculated inverse-frequency weights.
     """
     from collections import Counter
 
@@ -117,27 +117,27 @@ def evaluate(
 
     Decodes every run at the specified parameters using :meth:`.dp_decode` and aggregates
     paired statistics against the baseline picks recorded in the dump. When `weights`
-    is given, it also accumulates tier-weighted gross error counts and MAE[cite: 2].
+    is given, it also accumulates tier-weighted gross error counts and MAE.
 
     Args:
         rows (List[Dict[str, Any]]): A list of run dictionaries containing
-            ground truth, present POIs, and candidate pools[cite: 2].
+            ground truth, present POIs, and candidate pools.
         prior (SpacingPrior): The :class:`SpacingPrior` used to score
-            candidate configurations[cite: 2].
+            candidate configurations.
         lam (float | Dict[str, float]): The decode lambda parameter(s)
-            to apply during dynamic programming decoding[cite: 2].
+            to apply during dynamic programming decoding.
         margin (float): The accept-margin rule applied to optionally override
-            the baseline picks[cite: 2].
+            the baseline picks.
         gross_threshold (float): The absolute error threshold in seconds
-            beyond which a decoded POI is considered a gross failure[cite: 2].
+            beyond which a decoded POI is considered a gross failure.
         weights (Dict[int, float], optional): Tier weights keyed by tier
-            index. Defaults to None[cite: 2].
+            index. Defaults to None.
         edges (List[float], optional): A list of tier boundary edges used
-            if tier weights are applied. Defaults to None[cite: 2].
+            if tier weights are applied. Defaults to None.
 
     Returns:
         Dict[str, Any]: A dictionary containing aggregated evaluation metrics
-        such as MAE, gross failures, fixed failures, and net improvements[cite: 2].
+        such as MAE, gross failures, fixed failures, and net improvements.
     """
     abs_errs: List[float] = []
     n_gross_decoded = n_gross_cascade = fixed = introduced = 0
@@ -210,10 +210,10 @@ def main() -> None:
     """Execute the offline decode-hyperparameter sweep.
 
     Parses command-line arguments to sweep over combinations of decode lambda,
-    margins, and blend fractions[cite: 2]. Evaluates configurations using :class:`SpacingPrior`
+    margins, and blend fractions. Evaluates configurations using :class:`SpacingPrior`
     and outputs a ranked table of top settings based on multiple ranking objectives
     (e.g., conservative, gross failures, MAE, tier-weighted) while saving the full grid
-    of results to a CSV file[cite: 2].
+    of results to a CSV file.
     """
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(

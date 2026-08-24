@@ -428,11 +428,10 @@ def dp_decode(
         )
 
     if chosen1 is None and require_feasible:
-        # Relax feasibility (keep only strict ordering) and decode once more.
+        # Relax feasibility
         relaxed = _dp_pass(cand, placeable, prior, lam, conf_weight, 1e9, False, span_for_frac=0.0)
         if relaxed is None or len(relaxed) < len(placeable):
-            # Even strict ordering has no complete path -> production-safe
-            # floor: per-POI greedy, never worse than current behaviour.
+            # Even strict ordering has no complete path
             return _greedy_result(cand, placeable, prior, lam, conf_weight)
         total, sll, csum = _score_config(relaxed, placeable, prior, lam, conf_weight, use_frac)
         return DecodeResult(relaxed, total, sll, csum, False, True)
