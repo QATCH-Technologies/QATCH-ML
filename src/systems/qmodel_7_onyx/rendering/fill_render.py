@@ -11,8 +11,8 @@ detectors did
 -------------------------------------------------------------------------
 The fill classifier's job is literally COUNTING transitions: the class IS
 the number of fill events visible so far. Its current third strip is the
-Difference curve — a linear combination of the two value strips that
-carries almost no independent information — and all three strips share the
+Difference curve - a linear combination of the two value strips that
+carries almost no independent information - and all three strips share the
 v1 percentile-value normalization whose failure mode the detector work
 exposed: in a long viscous run the early fill step owns the entire dynamic
 range, so the late transitions that distinguish 2ch from 3ch flatten into
@@ -22,15 +22,15 @@ counter cannot afford to lose.
 The v2 classification render therefore mirrors detector_render:
 
   * Strips 0/1 (dissipation red, resonance green) are kept EXACTLY as the
-    v1 classifier render draws them — same percentile normalization, color
-    fill, +50 edge highlight — preserving the global fill-context cues
+    v1 classifier render draws them - same percentile normalization, color
+    fill, +50 edge highlight - preserving the global fill-context cues
     (step position, plateau levels, fill fraction of frame) the current
     model already exploits. Those cues are what separate no_fill /
     initial_fill, where value shape matters more than transition count.
   * Strip 2 replaces the Difference curve with the DERIVATIVE-ENERGY trace
     from detector_render: multi-scale, per-scale-MAD-normalized,
-    log-compressed curvature salience. Every transition — millisecond init
-    events and minute-scale viscous channel fills alike — appears as a
+    log-compressed curvature salience. Every transition - millisecond init
+    events and minute-scale viscous channel fills alike - appears as a
     ridge of comparable height regardless of where in the run it occurs.
     Counting ridges is amplitude- and position-invariant in precisely the
     way the class label is.
@@ -41,10 +41,10 @@ Train/deploy contract (the detector lesson, applied)
 dataframe into the 224x224 tensor-ready image. build_fill_dataset.py saves
 its exact output; QModelV7 inference feeds its exact output. The 640->224
 INTER_AREA resize lives inside it, so training images and inference images
-are bit-identical by construction — no "same-ish render" drift.
+are bit-identical by construction - no "same-ish render" drift.
 
 ``FILL_RENDER_VERSION`` dispatches v1 (legacy weights) vs v2, the same
-roll-out mechanism as QModelV6Config.RENDER_VERSION on the detector side.
+roll-out mechanism as QModelOnyxConfig.RENDER_VERSION on the detector side.
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ import pandas as pd
 
 from ._common import PADDING, _robust_mad, _strip_points
 from .detector_render import DERIV_UPPER_PCT, derivative_energy
-from .legacy_dataprocessor import QModelV6YOLO_DataProcessor as DP
+from .legacy_dataprocessor import QModelOnyx_DataProcessor as DP
 
 COL_TIME = "Relative_time"
 COL_DISS = "Dissipation"
@@ -63,8 +63,8 @@ COL_FREQ = "Resonance_Frequency"
 
 IMG_CHANNELS = 3
 
-# Generation and inference geometry — identical to the current classifier
-# path (QModelV6Config.FILL_GEN_* / FILL_INFERENCE_*), restated here so the
+# Generation and inference geometry - identical to the current classifier
+# path (QModelOnyxConfig.FILL_GEN_* / FILL_INFERENCE_*), restated here so the
 # contract is self-contained.
 FILL_GEN_W = 640
 FILL_GEN_H = 640
@@ -132,7 +132,7 @@ def generate_fill_image(df: pd.DataFrame, version: int = 2) -> np.ndarray:
     """Version dispatch. version=1 reproduces the legacy classifier render
     (diss/freq/Difference at FILL_GEN geometry) so old type_cls weights keep
     working; version=2 is the derivative-energy render; version=3 swaps in
-    the step-coincidence energy (retrain required — weights and version
+    the step-coincidence energy (retrain required - weights and version
     travel together)."""
     if version == 1:
         # v1 generate_fill_cls takes PER-STRIP height.
@@ -157,23 +157,23 @@ def prepare_cls_input(df: pd.DataFrame, version: int = 2) -> np.ndarray:
 #
 # What the first v7 training run's offender triage established: the v2
 # derivative-energy strip fails on slow LATE transitions, and not for lack
-# of trying harder — for two structural reasons the triage quantified
+# of trying harder - for two structural reasons the triage quantified
 # (POI1/2 salience ~4.2x trace median vs POI4/5 at ~1.6x, with measured
 # transition extents of 12-67 s against a longest curvature scale of 4 s):
 #
 #   1. WRONG MATCHED FILTER. The windowed second difference samples three
 #      POINTS, so per-sample noise never averages down as the window grows,
 #      and at long windows the drifting background's own curvature (random
-#      walk: ~sqrt(w)) inflates the per-scale MAD normalizer — the scales
+#      walk: ~sqrt(w)) inflates the per-scale MAD normalizer - the scales
 #      that should catch slow transitions normalize themselves away.
 #      Synthetic verification: adding long scales + pre-smoothing to the
 #      curvature moved worst-event/phantom separation 0.97 -> 0.96 (nothing).
-#      A STEP filter — difference of adjacent window MEANS — carries the
+#      A STEP filter - difference of adjacent window MEANS - carries the
 #      full step amplitude as signal while noise shrinks ~sqrt(w/dt):
 #      separation 0.97 -> 1.18, POI5 salience 1.29x -> 2.43x median.
 #
 #   2. WRONG COMBINE. Taking the max across signals lets a single-channel
-#      drift excursion or noise burst masquerade as an event — the phantom
+#      drift excursion or noise burst masquerade as an event - the phantom
 #      fuel behind the 2ch->3ch over-counts. Physics says a genuine fill
 #      transition moves dissipation AND resonance frequency together; the
 #      per-scale GEOMETRIC MEAN of the two normalized step responses keeps
@@ -189,7 +189,7 @@ def prepare_cls_input(df: pd.DataFrame, version: int = 2) -> np.ndarray:
 #
 # Version 3 = v2's value strips unchanged, B strip = this energy.
 # v3-trained weights ship with FILL_RENDER_VERSION=3; the shared detector
-# render (detector_render) is NOT touched — its weights contract stands.
+# render (detector_render) is NOT touched - its weights contract stands.
 
 STEP_ABS_SCALES_S = (0.5, 2.0, 8.0)
 STEP_REL_SCALES = (1.0 / 32.0, 1.0 / 12.0)
@@ -198,7 +198,7 @@ STEP_SMOOTH_S = 0.15
 
 def _step_response(x: np.ndarray, w: int) -> np.ndarray:
     """|mean(x[i+1..i+w]) - mean(x[i-w..i])|, normalized by the interior
-    MAD of its own response — a matched filter for level shifts at scale
+    MAD of its own response - a matched filter for level shifts at scale
     ~w samples. O(n) via cumulative sums."""
     n = len(x)
     cs = np.concatenate([[0.0], np.cumsum(np.nan_to_num(x, nan=float(np.nanmedian(x))))])

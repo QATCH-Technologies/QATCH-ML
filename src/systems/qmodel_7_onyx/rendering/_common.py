@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .legacy_dataprocessor import QModelV6YOLO_DataProcessor as DP
+from .legacy_dataprocessor import QModelOnyx_DataProcessor as DP
 
 PADDING = DP.PADDING
 

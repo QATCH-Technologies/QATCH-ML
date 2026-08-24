@@ -1,51 +1,51 @@
-"""
-dataset/build_detectors.py
-===========================
+"""Builds the per-stage YOLO detection datasets for the cascade detectors.
 
-Builds the per-stage YOLO detection datasets for the v6 cascade detectors
-(init / ch1 / ch2 / ch3) with the training fixes the tier benchmark
-demanded:
+Renders one detection dataset per cascade stage (init / ch1 / ch2 / ch3,
+plus zoom-refinement variants) from discovered runs, with the following
+properties:
 
-  1. LEAKAGE-PROOF SPLIT. Train/val is split by RUN (group split): every
-     rendered variant — augmented or not, every stage frame — of a run lands
-     on one side only. The split is stratified by (viscosity tier x fill
-     count) so rare tiers are present in BOTH splits. Validation images are
-     rendered from UN-augmented signal only: val measures the model, not the
-     augmentation pipeline. (The previous model's val split was contaminated
-     by augmented and partial-fill variants of training runs; every metric
-     used for model selection was optimistic.)
+  1. LEAKAGE-PROOF SPLIT. Train/val is split by run (group split, via
+     :func:`.splitting.stratified_group_split`): every rendered variant -
+     augmented or not, every stage frame - of a run lands on one side only.
+     The split is stratified by (viscosity tier x fill count) so rare tiers
+     are present in BOTH splits. Validation images are rendered from
+     UN-augmented signal only: val measures the model, not the augmentation
+     pipeline. A split that lets augmented or partial-fill variants of a
+     training run leak into val makes every metric used for model selection
+     optimistic.
 
-  2. SIGNAL-DOMAIN AUGMENTATION (v7_augment): monotone time-warp (the
-     high-viscosity synthesizer), noise injection, amplitude jitter. POI
+  2. SIGNAL-DOMAIN AUGMENTATION (:mod:`..augmentation`): monotone time-warp
+     (the high-viscosity synthesizer), noise injection, amplitude jitter. POI
      labels are warped exactly with the signal.
 
-  3. PER-TIER UPSAMPLING. Each training run is rendered ``base_variants`` x
-     ``repeat(tier)`` times, repeat = clip(sqrt(n_max/n_tier), 1, cap). Each
-     repeat draws FRESH augmentation, so upsampling adds geometry diversity
-     rather than duplicating pixels — duplication alone cannot fix a tier
-     with 15 runs, but 15 runs x stretch-warps spanning x0.5..x4 covers the
-     slow-fill manifold.
+  3. PER-TIER UPSAMPLING (:func:`.splitting.repeat_factor`). Each training
+     run is rendered ``base_variants`` x ``repeat(tier)`` times. Each repeat
+     draws FRESH augmentation, so upsampling adds geometry diversity rather
+     than duplicating pixels - duplication alone cannot fix a sparsely
+     populated tier, but a handful of runs stretch-warped across a wide
+     scale range covers the slow-fill manifold that raw duplication cannot.
 
   4. CASCADE-MATCHED SLICING + NEGATIVES. Each stage's frames are sliced the
      way inference slices them: canonical cuts (between the target POI and
-     the next), WIDE cuts (anywhere after the target — matching the decode
+     the next), WIDE cuts (anywhere after the target - matching the decode
      layer's conservative harvest slices), and NEGATIVE cuts (before the
      target, or from partial fills): the target POI is absent and the label
-     file is empty. The current model never saw its target absent, so it
-     hallucinates a box on every frame and relies entirely on the fill
-     classifier being right.
+     file is empty. A detector that never sees its target absent during
+     training hallucinates a box on every frame at inference and relies
+     entirely on the fill classifier being right.
 
   5. DYNAMIC BOXES. Box width = measured temporal extent of the transition
-     (v7_augment.dynamic_box_width_sec), clamped in pixels — so stretched
-     slow-fill events keep IoU-trainable boxes instead of the fixed pixel
-     size that starved them.
+     (:func:`..augmentation.dynamic_box_width_sec`), clamped in pixels - so
+     stretched slow-fill events keep IoU-trainable boxes instead of a fixed
+     pixel size that starves them.
 
-Rendering uses the SAME ``generate_channel_det`` as inference, at the same
-2560x384 geometry, so train and deploy distributions match by construction.
+Rendering uses the same :func:`..rendering.detector_render.generate_det_image`
+as inference, at the same 2560x384 geometry, so train and deploy
+distributions match by construction.
 
-Split and per-tier upsampling logic (``stratified_group_split``,
-``repeat_factor``) lives in :mod:`.splitting`, shared with
-``dataset/build_fill_classifier.py``.
+Split and per-tier upsampling logic (:func:`.splitting.stratified_group_split`,
+:func:`.splitting.repeat_factor`) lives in :mod:`.splitting`, shared with
+:mod:`.build_fill_classifier`.
 
 Usage
 -----
@@ -72,20 +72,20 @@ from src.utils.logger import get_logger
 from .. import paths
 from ..augmentation import COL_TIME, augment_run, dynamic_box_width_sec
 from ..corpus import dedupe_runs, discover_runs
-from ..rendering.legacy_dataprocessor import QModelV6YOLO_DataProcessor as DP
+from ..rendering.legacy_dataprocessor import QModelOnyx_DataProcessor as DP
 from ..tiers import TierScheme
 from .splitting import repeat_factor, stratified_group_split
 
 LOG = get_logger("qmodel_7_onyx.dataset.build_detectors")
 
 IMG_W, IMG_H = 2560, 384
-RENDER_VERSION = 3  # must match QModelV6Config.RENDER_VERSION at inference
+RENDER_VERSION = 3  # must match QModelOnyxConfig.RENDER_VERSION at inference
 
 # Per-stage box geometry. Boxes are FULL HEIGHT (h=1.0): on these renders
 # the vertical dimension carries no localization information (this is a 1D
 # time-interval detection task drawn as 2D), and the previous 0.85-height
 # centered boxes clipped the dissipation trace near strip tops and the
-# difference trace near strip bottoms — only the middle strip was reliably
+# difference trace near strip bottoms - only the middle strip was reliably
 # inside the box, making the visual evidence inconsistent across samples.
 # init boxes are TIGHT: POI1/POI2 are millisecond-scale events that can sit
 # a few pixels apart; a wide box covering both events teaches the model
@@ -125,7 +125,7 @@ STAGES: Dict[str, Dict] = {
 # the frame. These detectors serve the post-decode refinement pass in
 # v6_yolo (REFINE settings), which targets the 1-5 s error band where
 # oracle@5s exceeds oracle@1s. Windows deliberately do NOT start at the run
-# head — that is their distribution, unlike the cascade stages.
+# head - that is their distribution, unlike the cascade stages.
 ZOOM_STAGES: Dict[str, Dict] = {
     "ch1_zoom": {"targets": {"POI3": 0}, "nc": 1, "names": {0: "ch1z"}},
     "ch2_zoom": {"targets": {"POI4": 0}, "nc": 1, "names": {0: "ch2z"}},
@@ -153,7 +153,26 @@ def _sample_cut(
     t0: float,
     t1: float,
 ) -> Tuple[Optional[float], bool]:
-    """Returns (cut_time, is_negative). cut_time None => unusable."""
+    """Pick a cut time for one stage sample, matching inference's slicing.
+
+    Samples a canonical cut (between the anchor POI and the next one), a
+    wide cut (anywhere after the anchor, matching the decode layer's
+    conservative harvest slices), or a negative cut (before the anchor, so
+    the target is absent from the frame) according to the module-level
+    ``P_CANONICAL`` / ``P_WIDE`` / ``P_NEGATIVE`` probabilities.
+
+    Args:
+        rng (numpy.random.Generator): Source of randomness for the cut draw.
+        anchor_t (float, optional): Time of the stage's target POI, or
+            ``None`` for a partial fill where the target never happened.
+        next_t (float, optional): Time of the following stage's POI, if any.
+        t0 (float): Start time of the run's usable signal.
+        t1 (float): End time of the run's usable signal.
+
+    Returns:
+        Tuple[float, bool]: ``(cut_time, is_negative)``. ``cut_time`` is
+        ``None`` when no usable cut exists for this run/stage combination.
+    """
     if anchor_t is None:
         # partial fill: the stage's target never happened -> negative frame,
         # cut anywhere that leaves a sane slice.
@@ -186,9 +205,24 @@ def _render_and_label(
     is_negative: bool,
     t_start: Optional[float] = None,
 ) -> Optional[Tuple[np.ndarray, List[str]]]:
-    """Slice, render with the production renderer, emit YOLO label lines.
-    t_start=None gives the cascade's prefix slice; a value gives a zoom
-    window [t_start, cut_t)."""
+    """Slice a run, render it, and emit the stage's YOLO label lines.
+
+    Args:
+        df_p (pandas.DataFrame): Preprocessed run signal.
+        cut_t (float): End of the slice (exclusive).
+        stage (str): Stage key into :data:`ALL_STAGES` / :data:`BOX_SPEC`.
+        poi_times (Dict[str, float]): POI name -> time, for this run/variant.
+        is_negative (bool): Whether this sample should carry no label boxes
+            (the target POI is outside the slice).
+        t_start (float, optional): Start of the slice. ``None`` gives the
+            cascade's prefix slice ``[..., cut_t)``; a value gives a zoom
+            window ``[t_start, cut_t)``.
+
+    Returns:
+        Tuple[numpy.ndarray, List[str]]: The rendered image and its YOLO
+        label lines (empty list for a negative sample), or ``None`` when the
+        slice is too short to render.
+    """
     if t_start is None:
         sl = df_p[df_p[COL_TIME] < cut_t]
     else:
@@ -243,6 +277,32 @@ def build(
     seed: int = 7,
     limit: Optional[int] = None,
 ) -> None:
+    """Discover runs, split them, and render the per-stage YOLO datasets.
+
+    Writes an ``images/`` + ``labels/`` tree and a ``data.yaml`` per stage
+    under ``out_root``, plus a top-level ``manifest.json`` recording the
+    split, tier counts, and per-stage/split sample counts. ``out_root`` is
+    replaced if it already exists.
+
+    Args:
+        raw_root (Path): Root directory of raw per-run data.
+        tiers_path (Path): Path to a saved :class:`.TierScheme` (see
+            :mod:`..tiers`).
+        out_root (Path): Destination directory for the rendered dataset.
+        base_variants (int, optional): Base number of rendered variants per
+            training run, before per-tier upsampling. Defaults to 2.
+        val_frac (float, optional): Target validation fraction per stratum.
+            Defaults to 0.15.
+        repeat_cap (int, optional): Maximum per-tier upsampling repeat
+            factor (see :func:`.splitting.repeat_factor`). Defaults to 8.
+        seed (int, optional): Seed for the split and all sampling. Defaults
+            to 7.
+        limit (int, optional): If set, only the first ``limit`` discovered
+            runs are used. Defaults to None.
+
+    Raises:
+        SystemExit: If no runs are discovered under ``raw_root``.
+    """
     rng = np.random.default_rng(seed)
     tiers = TierScheme.load(tiers_path)
     # Dedupe BEFORE splitting: the same physical run under two directory
@@ -388,6 +448,7 @@ def build(
 
 
 def main() -> None:
+    """CLI entry point: parse arguments and run :func:`build`."""
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--raw-root", type=Path, default=paths.DATA_ROOT)
     ap.add_argument("--tiers", type=Path, default=paths.TIERS_JSON)

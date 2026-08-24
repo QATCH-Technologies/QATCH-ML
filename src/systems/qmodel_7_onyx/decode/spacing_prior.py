@@ -1,30 +1,26 @@
-"""
-spacing_prior.py
-================
+"""Learned pairwise spacing prior over POI positions.
 
-A flat, pairwise configuration prior over POI positions, learned from
-complete-fill ground-truth configurations. This is the model the EDA selected:
-flat (not run-conditional) and pairwise (not autoregressive), because on the
-real data those additions hurt rather than helped.
+:class:`SpacingPrior` models the distribution of the time gap between each
+consecutive POI pair (POI_k -> POI_{k+1}), fit from complete-fill
+ground-truth configurations. The model is deliberately flat (not
+run-conditional) and pairwise (not autoregressive): exploratory analysis of
+the real data found that conditioning on run-level covariates or modelling
+longer-range dependencies did not improve on this simpler form.
 
-What it encodes
----------------
-For each consecutive POI pair (POI_k -> POI_{k+1}) it learns the distribution
-of the GAP between them, in a scale that the EDA showed is stable. Two gap
-parameterisations are supported and blended:
+Two gap parameterisations are supported and blended:
 
-  * absolute gap in seconds (good where event timing is physically anchored)
-  * gap as a fraction of the run's total POI span (scale-free; helps across
-    runs of very different duration)
+* absolute gap in seconds (good where event timing is physically anchored)
+* gap as a fraction of the run's total POI span (scale-free; helps across
+  runs of different duration)
 
 At decode time the prior scores a candidate configuration by the summed
 log-likelihood of its gaps, plus hard feasibility (monotonic order, learned
-min/max gap bounds). The score combines with YOLO detection confidence in the
-DP decoder (see dp_decode.py).
+min/max gap bounds). The score combines with detection confidence in the
+DP decoder; see :mod:`.dp_decode`.
 
-It is deliberately simple and interpretable: each gap is modelled as a
-log-normal (gaps are positive and right-skewed), which the DP turns into an
-additive quadratic-in-log penalty. Nothing here needs the raw signal.
+Each gap is modelled as a log-normal (gaps are positive and right-skewed),
+which the DP turns into an additive quadratic-in-log penalty. Nothing here
+needs the raw sensor signal.
 """
 
 from __future__ import annotations
@@ -42,15 +38,26 @@ POI_ORDER = ["POI1", "POI2", "POI3", "POI4", "POI5"]
 
 @dataclass
 class GapStat:
-    """Log-normal stats for one consecutive-gap, in seconds and span-fraction."""
+    """Log-normal statistics for one consecutive-gap distribution.
 
-    # log-seconds
+    Attributes:
+        log_mu_sec (float): Mean of the log gap, in seconds.
+        log_sd_sec (float): Standard deviation of the log gap, in seconds.
+        log_mu_frac (float): Mean of the log gap expressed as a fraction of
+            the run's POI span.
+        log_sd_frac (float): Standard deviation of the log gap expressed as
+            a fraction of the run's POI span.
+        min_gap_sec (float): Lower feasibility bound on the gap, in
+            seconds, from a robust percentile of the fitted data.
+        max_gap_sec (float): Upper feasibility bound on the gap, in
+            seconds, from a robust percentile of the fitted data.
+        n (int): Number of samples the statistics were fit from.
+    """
+
     log_mu_sec: float
     log_sd_sec: float
-    # log-fraction-of-span
     log_mu_frac: float
     log_sd_frac: float
-    # hard feasibility bounds (seconds), from robust percentiles
     min_gap_sec: float
     max_gap_sec: float
     n: int
@@ -58,12 +65,28 @@ class GapStat:
 
 @dataclass
 class SpacingPrior:
-    pairs: List[str]  # e.g. ["POI1->POI2", ...]
+    """Flat, pairwise spacing prior over an ordered sequence of POIs.
+
+    Holds one :class:`GapStat` per consecutive POI pair, plus the settings
+    used to fit and score them.
+
+    Attributes:
+        pairs (List[str]): Consecutive POI pair names in POI_ORDER order,
+            e.g. ``["POI1->POI2", ...]``.
+        gap (Dict[str, GapStat]): Fitted :class:`GapStat` for each pair
+            name in `pairs`.
+        frac_blend (float): Blend weight between the seconds-based and
+            span-fraction-based log-likelihood, in [0, 1]. 0 uses seconds
+            only, 1 uses span-fraction only; the default mixes both.
+        bound_lo_pct (float): Lower percentile used to set each gap's
+            feasibility bound when fitting.
+        bound_hi_pct (float): Upper percentile used to set each gap's
+            feasibility bound when fitting.
+    """
+
+    pairs: List[str]
     gap: Dict[str, GapStat] = field(default_factory=dict)
-    # blend weight between seconds-based and fraction-based log-likelihood.
-    # 0 = pure seconds, 1 = pure span-fraction. Default mixes both.
     frac_blend: float = 0.5
-    # feasibility bound percentiles used when fitting.
     bound_lo_pct: float = 0.5
     bound_hi_pct: float = 99.5
 
@@ -75,10 +98,26 @@ class SpacingPrior:
         bound_lo_pct: float = 0.5,
         bound_hi_pct: float = 99.5,
     ) -> "SpacingPrior":
-        """Fit from complete configurations.
+        """Fit a spacing prior from complete POI configurations.
 
-        configs_sec: (N, P) array of POI times in seconds, strictly ascending
-        rows (complete fills only). P must equal len(POI_ORDER).
+        Args:
+            configs_sec (np.ndarray): Array of shape (N, P) giving POI
+                times in seconds, one strictly ascending row per
+                complete-fill run. P must equal ``len(POI_ORDER)``.
+            frac_blend (float, optional): Blend weight passed through to
+                the resulting :class:`SpacingPrior`. Defaults to 0.5.
+            bound_lo_pct (float, optional): Lower percentile used to set
+                each gap's feasibility bound. Defaults to 0.5.
+            bound_hi_pct (float, optional): Upper percentile used to set
+                each gap's feasibility bound. Defaults to 99.5.
+
+        Returns:
+            SpacingPrior: The fitted prior, with one :class:`GapStat` per
+            consecutive POI pair.
+
+        Raises:
+            AssertionError: If `configs_sec` does not have exactly
+                ``len(POI_ORDER)`` columns.
         """
         N, P = configs_sec.shape
         assert P == len(POI_ORDER), f"expected {len(POI_ORDER)} POIs, got {P}"
@@ -108,15 +147,29 @@ class SpacingPrior:
 
     # ----------------------------------------------------- composed gaps
     def composed_stat(self, i: int, j: int) -> GapStat:
-        """Stats for the composed gap POI_ORDER[i] -> POI_ORDER[j] (j > i),
-        built by composing the consecutive-gap log-normals: medians add in
-        linear space, variances add in log space (a standard log-normal-sum
-        approximation). Exact (the fitted stat) for j == i + 1.
+        """Return statistics for the composed gap POI_ORDER[i] -> POI_ORDER[j].
+
+        Built by composing the consecutive-gap log-normals: medians add in
+        linear space and variances add in log space (a standard
+        log-normal-sum approximation). Exact (the fitted stat) when
+        ``j == i + 1``.
 
         Used when two *present* POIs are not globally adjacent, so the gap
-        between them spans one or more absent POIs and must be scored against
-        the composition of the intervening fitted gaps, not against the first
-        gap's stats alone.
+        between them spans one or more absent POIs and must be scored
+        against the composition of the intervening fitted gaps, not
+        against the first gap's stats alone.
+
+        Args:
+            i (int): Global index of the earlier POI in POI_ORDER.
+            j (int): Global index of the later POI in POI_ORDER; must be
+                greater than `i`.
+
+        Returns:
+            GapStat: Composed (or, if adjacent, fitted) statistics for the
+            gap.
+
+        Raises:
+            ValueError: If ``j <= i``.
         """
         if j <= i:
             raise ValueError(f"composed_stat requires j > i, got ({i}, {j})")
@@ -148,6 +201,19 @@ class SpacingPrior:
 
     # -------------------------------------------------------------- scoring
     def _stat_loglik(self, gs: GapStat, gap_sec: float, span_sec: float) -> float:
+        """Blend the seconds and span-fraction log-normal log-densities for one gap statistic.
+
+        Args:
+            gs (GapStat): Statistics to score against.
+            gap_sec (float): Observed gap, in seconds.
+            span_sec (float): Reference span for the fraction component,
+                in seconds; non-positive falls back to the seconds density
+                alone.
+
+        Returns:
+            float: Blended log-likelihood (unnormalized; additive
+            constants are dropped since only relative scores matter).
+        """
         if gap_sec <= 0:
             return -1e9
         # seconds log-normal log-density (drop constants; keep shape)
@@ -166,43 +232,85 @@ class SpacingPrior:
         return float((1 - self.frac_blend) * ll_sec + self.frac_blend * ll_frac)
 
     def gap_loglik(self, pair_idx: int, gap_sec: float, span_sec: float) -> float:
-        """Log-likelihood of one consecutive gap (higher = more plausible).
-        Blends the seconds and span-fraction log-normal densities. Pass
-        span_sec <= 0 to disable the fraction component (falls back to the
-        seconds density), e.g. on partial fills where the fitted span
-        semantics (POI1..POI5 of complete fills) do not apply."""
+        """Compute the log-likelihood of one consecutive gap.
+
+        Blends the seconds and span-fraction log-normal densities via
+        `frac_blend`. Higher is more plausible.
+
+        Args:
+            pair_idx (int): Index into `pairs` identifying the consecutive
+                gap.
+            gap_sec (float): Observed gap, in seconds.
+            span_sec (float): Reference span for the fraction component, in
+                seconds. Pass <= 0 to disable the fraction component
+                (falls back to the seconds density only), e.g. on partial
+                fills where the fitted span semantics (POI1..POI5 of
+                complete fills) do not apply.
+
+        Returns:
+            float: Log-likelihood of the gap.
+        """
         return self._stat_loglik(self.gap[self.pairs[pair_idx]], gap_sec, span_sec)
 
     def gap_loglik_between(self, i: int, j: int, gap_sec: float, span_sec: float) -> float:
-        """Log-likelihood of the gap between global POI indices i and j
-        (j > i). Uses the fitted stat when adjacent, the composed stat when
-        the pair spans absent POIs."""
+        """Compute the log-likelihood of the gap between two global POI indices.
+
+        Uses the fitted statistic when POIs `i` and `j` are adjacent, and
+        the composed statistic (see :meth:`composed_stat`) when the pair
+        spans absent POIs.
+
+        Args:
+            i (int): Global index of the earlier POI in POI_ORDER.
+            j (int): Global index of the later POI in POI_ORDER; must be
+                greater than `i`.
+            gap_sec (float): Observed gap, in seconds.
+            span_sec (float): Reference span for the fraction component, in
+                seconds.
+
+        Returns:
+            float: Log-likelihood of the gap.
+        """
         return self._stat_loglik(self.composed_stat(i, j), gap_sec, span_sec)
 
     def gap_loglik_scoped(
         self, i: int, j: int, gap_sec: float, span_sec: float, span_lo: int, span_hi: int
     ) -> float:
-        """Log-likelihood of the gap POI_ORDER[i] -> POI_ORDER[j], with the
-        span-fraction component re-referenced to the span between global POI
-        indices span_lo .. span_hi (the first/last *placed* POIs at decode
-        time).
+        """Compute the log-likelihood of a gap with the span-fraction component re-referenced to a partial-fill span.
 
-        The fitted frac stats assume span = t(POI_last) - t(POI_first) of a
-        COMPLETE fill. On a prefix (partial) fill the decode-time span covers
-        fewer gaps, so the fitted frac medians are systematically too small.
-        This method re-derives the frac location from the seconds medians:
+        The fitted fraction statistics assume ``span = t(POI_last) -
+        t(POI_first)`` of a COMPLETE fill. On a prefix (partial) fill the
+        decode-time span covers fewer gaps, so the fitted fraction medians
+        would otherwise be systematically too small. This method
+        re-derives the fraction location from the seconds medians::
 
             log_mu_frac(i->j | span_lo..span_hi)
-                = log( median_sec(i->j) / sum_k median_sec(k),  k in [span_lo, span_hi) )
+                = log( median_sec(i->j) / sum_k median_sec(k) ),  k in [span_lo, span_hi)
 
-        and keeps the fitted frac dispersion (the best available estimate of
-        relative-scale spread). When the scope IS the full chain, the fitted
-        frac stats are used unchanged. This is what lets the prior reason
-        about viscosity: the observed early gaps anchor the run's scale, and
-        every other gap must be proportionate to that scale — a compressed
-        (fast-fill-shaped) decoy configuration makes the fixed early gaps an
-        implausibly large fraction of the span and is heavily penalised,
-        without making the prior run-conditional.
+        and keeps the fitted fraction dispersion (the best available
+        estimate of relative-scale spread). When the scope IS the full
+        chain, the fitted fraction statistics are used unchanged.
+
+        This is what lets the prior reason about viscosity: the observed
+        early gaps anchor the run's scale, and every other gap must be
+        proportionate to that scale - a compressed (fast-fill-shaped)
+        decoy configuration makes the fixed early gaps an implausibly
+        large fraction of the span and is heavily penalised, without
+        making the prior run-conditional.
+
+        Args:
+            i (int): Global index of the earlier POI in POI_ORDER.
+            j (int): Global index of the later POI in POI_ORDER; must be
+                greater than `i`.
+            gap_sec (float): Observed gap, in seconds.
+            span_sec (float): Reference span for the fraction component, in
+                seconds.
+            span_lo (int): Global index of the first placed POI at decode
+                time.
+            span_hi (int): Global index of the last placed POI at decode
+                time.
+
+        Returns:
+            float: Log-likelihood of the gap.
         """
         full = span_lo == 0 and span_hi == len(POI_ORDER) - 1
         base = self.composed_stat(i, j)
@@ -225,16 +333,44 @@ class SpacingPrior:
         return self._stat_loglik(scoped, gap_sec, span_sec)
 
     def gap_feasible(self, pair_idx: int, gap_sec: float, slack: float = 1.5) -> bool:
-        """Hard feasibility: gap within learned [min,max] bounds, with slack
-        (multiplicative) so we don't reject borderline-but-valid gaps."""
+        """Check hard feasibility of one consecutive gap.
+
+        The gap must fall within the learned [min, max] bounds, expanded
+        by a multiplicative slack so borderline-but-valid gaps are not
+        rejected.
+
+        Args:
+            pair_idx (int): Index into `pairs` identifying the consecutive
+                gap.
+            gap_sec (float): Observed gap, in seconds.
+            slack (float, optional): Multiplicative slack applied to the
+                learned bounds. Defaults to 1.5.
+
+        Returns:
+            bool: True if the gap is feasible.
+        """
         gs = self.gap[self.pairs[pair_idx]]
         return (
             gap_sec > 0 and gap_sec >= gs.min_gap_sec / slack and gap_sec <= gs.max_gap_sec * slack
         )
 
     def gap_feasible_between(self, i: int, j: int, gap_sec: float, slack: float = 1.5) -> bool:
-        """Hard feasibility between global POI indices i and j (j > i),
-        composing the intervening bounds when the pair is non-adjacent."""
+        """Check hard feasibility of the gap between two global POI indices.
+
+        Composes the intervening bounds (see :meth:`composed_stat`) when
+        the pair is non-adjacent.
+
+        Args:
+            i (int): Global index of the earlier POI in POI_ORDER.
+            j (int): Global index of the later POI in POI_ORDER; must be
+                greater than `i`.
+            gap_sec (float): Observed gap, in seconds.
+            slack (float, optional): Multiplicative slack applied to the
+                learned bounds. Defaults to 1.5.
+
+        Returns:
+            bool: True if the gap is feasible.
+        """
         gs = self.composed_stat(i, j)
         return (
             gap_sec > 0 and gap_sec >= gs.min_gap_sec / slack and gap_sec <= gs.max_gap_sec * slack
@@ -242,7 +378,15 @@ class SpacingPrior:
 
     # ----------------------------------------------------------- whole config
     def config_loglik(self, times_sec: List[float]) -> float:
-        """Total spacing log-likelihood of a full ordered configuration."""
+        """Compute the total spacing log-likelihood of a full ordered configuration.
+
+        Args:
+            times_sec (List[float]): Strictly ascending POI times, in
+                seconds, for every POI in the configuration.
+
+        Returns:
+            float: Sum of the consecutive-gap log-likelihoods.
+        """
         span = times_sec[-1] - times_sec[0]
         total = 0.0
         for i in range(len(times_sec) - 1):
@@ -251,6 +395,11 @@ class SpacingPrior:
 
     # --------------------------------------------------------------- persist
     def save(self, path: Path) -> None:
+        """Serialize this prior to a JSON file.
+
+        Args:
+            path (Path): Destination file path.
+        """
         d = {
             "pairs": self.pairs,
             "frac_blend": self.frac_blend,
@@ -262,6 +411,14 @@ class SpacingPrior:
 
     @staticmethod
     def load(path: Path) -> "SpacingPrior":
+        """Load a prior previously written by :meth:`save`.
+
+        Args:
+            path (Path): Source file path.
+
+        Returns:
+            SpacingPrior: The loaded prior.
+        """
         d = json.loads(Path(path).read_text())
         p = SpacingPrior(
             pairs=d["pairs"],

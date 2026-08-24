@@ -1,11 +1,9 @@
-"""
-audit_fill_val.py
-=================
+"""Post-training triage for the fill classifier's validation misses.
 
-Post-training triage for the fill classifier: the confusion matrix says
-~2% of val frames miss, all on adjacent ordinal boundaries — this script
-answers the question that decides what (if anything) to do about it:
-WHICH frames are missing?
+Val-split misses concentrate on adjacent ordinal boundaries; this script
+answers the question that decides what (if anything) to do about them:
+WHICH frames are missing, and from which population. It runs inference
+over the val split and writes per-miss detail for offline review.
 
 The three populations have very different costs:
 
@@ -16,15 +14,15 @@ The three populations have very different costs:
     and cheap: they are the frames the live evidence layer exists to
     ride out, and the ridge is by construction barely formed.
   * 'u' (uniform prefix) misses in the middle of a state interval are the
-    interesting residual — if they cluster on specific runs/tiers (e.g.
+    interesting residual - if they cluster on specific runs/tiers (e.g.
     high-viscosity late flattening), that is a data/augmentation lever,
     not a model lever.
 
-Also fits the probability TEMPERATURE the live evidence layer needs: the
-model trained to saturation (val predictions are wall-to-wall 1.0), so raw
-probabilities carry no marginal-vs-certain signal. T is fit by minimizing
-NLL of p^(1/T) on the val split; write the result into
-live.fill_live.PROB_TEMPERATURE.
+Also fits the probability TEMPERATURE the live evidence layer needs: a
+classifier trained to saturation produces raw probabilities that carry
+no marginal-vs-certain signal (everything reads near-1.0 confident), so
+T is fit by minimizing NLL of p^(1/T) on the val split; write the
+result into ``live.fill_live.PROB_TEMPERATURE``.
 
 Outputs
 -------
@@ -61,7 +59,7 @@ LOG = get_logger("qmodel_7_onyx.qa.audit_fill_val")
 CLASS_NAMES = ["no_fill", "initial_fill", "1ch", "2ch", "3ch"]
 ORD = {c: i for i, c in enumerate(CLASS_NAMES)}
 
-# {hash}_{rid}_v{v}_{tag}{k}.png — rid may itself contain underscores.
+# {hash}_{rid}_v{v}_{tag}{k}.png - rid may itself contain underscores.
 NAME_RE = re.compile(r"^[0-9a-f]{8}_(?P<rid>.+)_v(?P<var>\d+)_(?P<tag>[uhf])(?P<k>\d+)$")
 
 TAG_LABEL = {
@@ -72,6 +70,15 @@ TAG_LABEL = {
 
 
 def parse_name(stem: str):
+    """Split a dataset image stem into (run id, variant, cut tag).
+
+    Args:
+        stem (str): filename stem in ``{hash}_{rid}_v{v}_{tag}{k}`` form.
+
+    Returns:
+        tuple: ``(run_id, variant, tag)``, or ``(stem, "?", "?")`` if the
+            stem does not match the expected naming convention.
+    """
     m = NAME_RE.match(stem)
     if not m:
         return stem, "?", "?"
@@ -79,10 +86,23 @@ def parse_name(stem: str):
 
 
 def fit_temperature(prob_rows: np.ndarray, true_idx: np.ndarray) -> float:
-    """1-D NLL minimization of p^(1/T) (renormalized) over a log-spaced
-    grid + local refinement. Operates on probabilities (logits are not
-    exposed uniformly across ultralytics versions), which is exactly the
-    space PROB_TEMPERATURE acts in."""
+    """Fit a scalar probability temperature by 1-D NLL minimization.
+
+    Minimizes the NLL of ``p^(1/T)`` (renormalized) over a log-spaced
+    grid followed by local refinement. Operates on probabilities rather
+    than logits, since logits are not exposed uniformly across model
+    backends - this is exactly the space ``PROB_TEMPERATURE`` acts in.
+
+    Args:
+        prob_rows (np.ndarray): per-sample class-probability rows,
+            shape ``(n, n_classes)``.
+        true_idx (np.ndarray): true class index per sample, shape
+            ``(n,)``.
+
+    Returns:
+        tuple[float, float, float]: fitted temperature ``T``, the NLL at
+            ``T=1.0``, and the NLL at the fitted ``T``.
+    """
     p = np.clip(prob_rows, 1e-12, 1.0)
 
     def nll(T: float) -> float:
@@ -98,6 +118,11 @@ def fit_temperature(prob_rows: np.ndarray, true_idx: np.ndarray) -> float:
 
 
 def main() -> None:
+    """CLI entry point: run inference over the val split, print the
+    tag/class/direction/offender-run breakdown, fit the probability
+    temperature, and write ``misses.csv`` / ``val_probs.npz`` / the
+    copied miss images to the output directory.
+    """
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--data-root", type=Path, default=paths.DATASETS_ROOT / "v7_fill")
     ap.add_argument(

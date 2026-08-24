@@ -28,7 +28,7 @@ jobs:
         run: pip install ruff
 
       # Rule set and line length are read from [tool.ruff]/[tool.ruff.lint]
-      # in pyproject.toml — the same config `ruff check`/`ruff format` use
+      # in pyproject.toml - the same config `ruff check`/`ruff format` use
       # locally, so a clean run here means a clean run on your machine too.
       - name: Lint
         run: ruff check --output-format=github .

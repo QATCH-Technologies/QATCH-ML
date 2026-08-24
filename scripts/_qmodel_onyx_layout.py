@@ -2,10 +2,10 @@
 _qmodel_onyx_layout.py
 =======================
 
-Shared helper for the two scripts that need to agree on where a deployed
-qmodel_onyx package's files live: ``build_and_release_qmodel_onyx.py``
-(writes the layout) and ``eval_onyx_deployment.py`` (reads it back to build
-a ``QModelOnyx`` ``model_assets`` dict). Both derive the layout from
+Shared helper for where a deployed qmodel_onyx package's files live, used by
+both roles ``build_and_release_qmodel_onyx.py`` plays: writing the layout
+(its Release stage) and reading it back to build a ``QModelOnyx``
+``model_assets`` dict (its Eval stage). Derives the layout from
 ``assets_paths.json`` rather than hard-coding it twice, so it can never
 drift out of sync with what the production controller expects.
 """
@@ -35,7 +35,7 @@ def deploy_subpath(assets_map: Dict[str, Any], stage: str) -> Path:
 
 def build_model_assets(assets_map: Dict[str, Any], root: Path) -> Dict[str, Any]:
     """Builds a ``QModelOnyx.__init__``-ready ``model_assets`` dict pointing
-    every stage at ``root / deploy_subpath(...)``. Does not check existence —
+    every stage at ``root / deploy_subpath(...)``. Does not check existence -
     callers loading a partially-deployed package (e.g. detectors only) get a
     dict with those paths regardless; ``QModelOnyx`` lazy-loads each asset
     and only fails when a requested stage is actually used."""

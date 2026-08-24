@@ -2,22 +2,22 @@
 replay.py
 =========
 
-Streaming replay benchmark for the fill classifier — the shipping gate the
+Streaming replay benchmark for the fill classifier - the shipping gate the
 static confusion matrix cannot provide. 97.8% frame accuracy says nothing
 about the two quantities the live classifier is actually judged on:
 
-  * CONFIRMATION LATENCY — seconds from each ground-truth transition
+  * CONFIRMATION LATENCY - seconds from each ground-truth transition
     (POI1/3/4/5) to the moment the state machine confirms the new state.
     Every second here is a second of delayed operator feedback, and the
     duration-threshold messages ("Data Ready, You Can Stop") key off it.
-  * STABILITY — false forward confirmations (a state whose boundary never
+  * STABILITY - false forward confirmations (a state whose boundary never
     happened), backward flickers, and final-state correctness (the verdict
     that steers the detector cascade at analysis time).
 
 Held-out VAL runs (from the dataset manifest, so the split is identical to
 training) are replayed chunk-by-chunk through the exact live decision
-stack — preprocess_for_cls -> QModelV7FillClassifier.predict_probs (with
-PROB_TEMPERATURE) -> OrdinalEvidence — without the QATCH process plumbing.
+stack - preprocess_for_cls -> QModelV7FillClassifier.predict_probs (with
+PROB_TEMPERATURE) -> OrdinalEvidence - without the QATCH process plumbing.
 Drop gating is emulated with the drop signal at POI1 (the UI fires it at
 drop application; POI1 is the closest ground-truth proxy).
 
@@ -27,7 +27,7 @@ layer's contribution is isolated from the model's: same model, same
 frames, two state machines, one table.
 
 Per-inference wall time is reported for the first vs last quartile of each
-run — the flat-cost claim of preprocess_for_cls, verified on real lengths.
+run - the flat-cost claim of preprocess_for_cls, verified on real lengths.
 
 Usage
 -----

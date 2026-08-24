@@ -20,10 +20,15 @@ pip install -e ".[dev]"
 `requires-python >= 3.10`. Core dependencies (numpy, pandas, opencv-python,
 scipy, matplotlib, ultralytics, tqdm) are declared in `pyproject.toml`; the
 `dev` extra adds `pytest`/`pytest-cov`, and the `tier-discovery` extra adds
-optional `scikit-learn` support for GMM-based viscosity tiering (falls back
-to quantile binning without it).
+optional `scikit-learn` support for GMM-based viscosity tiering. The default
+tiering method (`log_uniform`) needs no extra dependency - it bins in
+equal-width log10(cP) steps spanning the corpus's actual min..max, which is
+what keeps a high-viscosity tail visible instead of collapsing into one
+"N+" bucket the way equal-*count* binning (`quantile`, or `gmm`'s BIC
+model selection) does on this corpus's right-skewed distribution. Pick a
+different method with `--method {gmm,quantile}` on `tiers.py`'s CLI.
 
-Model weights (`*.pt`) are not committed — `assets_paths.json` in the
+Model weights (`*.pt`) are not committed - `assets_paths.json` in the
 package describes where the controller expects them, relative to
 `src/systems/qmodel_7_onyx/assets/` (gitignored).
 
@@ -39,7 +44,7 @@ each stage wrote its output:
 ```python
 from src.systems.qmodel_7_onyx import Workspace, Pipeline
 
-# Workspace defaults to this repo's data/, datasets/, runs/, configs/ roots —
+# Workspace defaults to this repo's data/, datasets/, runs/, configs/ roots -
 # override any of them to point at a different raw-data folder or output location.
 pipeline = Pipeline(Workspace(data_root="path/to/raw"))
 
@@ -86,30 +91,62 @@ pytest
 
 The same commands are also registered as console scripts after install
 (`qmodel-build-detectors`, `qmodel-train-detectors`, `qmodel-benchmark`,
-etc. — see `pyproject.toml` for the full list).
+etc. - see `pyproject.toml` for the full list).
+
+### One-command release pipeline
+
+`scripts/build_and_release_qmodel_onyx.py` chains fetch → prepare → build →
+train → release → cleanup → eval into a single command - pulls fresh runs
+from Dropbox, rebuilds the datasets, trains the requested models, copies
+the best checkpoints into a ready-to-ship `qmodel_onyx/` folder, purges
+each trained stage's now-redundant Ultralytics run directory, and scores
+the deployed package's predicted POI positions against `*_poi.csv` ground
+truth (not a YOLO-metrics benchmark - see the script's module docstring).
+There is no separate eval script; this one command replaces the old
+`build_and_release_qmodel_onyx.py` + `eval_onyx_deployment.py` pair.
+
+```
+python scripts/build_and_release_qmodel_onyx.py --dropbox-source "D:/Dropbox/QATCH runs"
+
+# skip Dropbox + the post-release eval, retrain one detector stage
+python scripts/build_and_release_qmodel_onyx.py \
+    --skip-fetch --skip-eval --targets detectors --detector-stages ch2_zoom
+```
+
+Any stage can be skipped or reconfigured - see `--help` for the full set
+of `--eval-*`/`--keep-runs`/per-stage flags.
 
 ## Directory map
 
 ```
 src/systems/qmodel_7_onyx/
-  pipeline.py          Workspace + Pipeline — the public API (see Quickstart above);
+  pipeline.py          Workspace + Pipeline - the public API (see Quickstart above);
                        re-exported from the package's __init__.py
   paths.py            canonical filesystem roots (data/datasets/runs/configs/artifacts),
-                       env-var overridable — every module imports its path defaults from here
+                       env-var overridable - every module imports its path defaults from here
   corpus.py            run discovery, ground-truth POI parsing, dedup, viscosity tiering (fixed scheme)
-  tiers.py              data-driven viscosity TierScheme (GMM or quantile fit)
+  tiers.py              data-driven viscosity TierScheme (log_uniform by default; GMM/quantile opt-in)
   augmentation.py        signal-domain augmentation (time warp, noise, amplitude jitter) + dynamic box sizing
 
   rendering/            df -> image render contracts (detector cascade + fill classifier)
   decode/                spacing-prior model + DP joint decode over YOLO candidates
   dataset/                YOLO dataset builders (cascade detectors, fill classifier) + shared split/upsample logic
   training/               YOLO training CLIs
-  inference/              the production controller (QModelV6YOLO), config, and the zoom-detector crosscheck
+  inference/              the production controller (QModelOnyx), config, and the zoom-detector crosscheck
+  deployment/             standalone, self-contained QModelOnyx controller (onyx.py + siblings) shipped
+                          under the QATCH.QModel.models.qmodel_onyx.* dotted-import contract - a separate
+                          copy from inference/, since this one is loaded exactly as a downstream consumer
+                          loads it (see scripts/build_and_release_qmodel_onyx.py's Eval stage)
   live/                   streaming inference (base live class, v7 fill-live upgrade, replay benchmark)
   qa/                     offline QA: A/B decode benchmark, val-set audit, offender triage, label review, replay analysis
 
 src/utils/dataset_fetcher.py   Dropbox -> data/raw ingestion CLI (unrelated to qmodel_7_onyx internals)
-configs/                        fitted config artifacts (spacing_prior.json, tiers.json) — versioned, not generated-per-run
+scripts/
+  build_and_release_qmodel_onyx.py   one-command fetch->prepare->build->train->release->cleanup->eval
+                                     pipeline (see "One-command release pipeline" above); also holds the
+                                     deployed-package eval that used to be a separate eval_onyx_deployment.py
+  _qmodel_onyx_layout.py             shared assets_paths.json-derived deploy-layout helper
+configs/                        fitted config artifacts (spacing_prior.json, tiers.json) - versioned, not generated-per-run
 tests/                          pytest suite, mirrors the package layout above
 ```
 
@@ -119,37 +156,37 @@ responsibilities, and path/config conventions in more depth, and
 
 ## Pipeline stages
 
-1. **Corpus** (`corpus.py`) — walks `data/raw/<run_id>/` directories, parses
+1. **Corpus** (`corpus.py`) - walks `data/raw/<run_id>/` directories, parses
    the `*_poi.csv` ground truth into chain-space POI times, reads viscosity
    from the run's analyze output, dedupes runs with identical POI content
    (directory-name duplicates would otherwise leak across train/val splits).
-2. **Rendering** (`rendering/`) — turns a preprocessed run DataFrame into
+2. **Rendering** (`rendering/`) - turns a preprocessed run DataFrame into
    the RGB strip images the detector cascade and fill classifier consume.
    Two salience families: v2 (curvature-based `derivative_energy`) and v3
    (step-coincidence), plus the legacy v1 preprocessing/rendering path.
-3. **Dataset building** (`dataset/`) — renders labeled YOLO datasets (4
+3. **Dataset building** (`dataset/`) - renders labeled YOLO datasets (4
    cascade + 3 zoom-refinement detector sets, and the 5-class ordinal fill
    classifier set), with leakage-proof run-level stratified splitting and
    per-tier upsampling (`dataset/splitting.py`, shared by both builders).
-4. **Training** (`training/`) — thin CLIs around Ultralytics YOLO training,
+4. **Training** (`training/`) - thin CLIs around Ultralytics YOLO training,
    with all pixel-space augmentation disabled (it happens upstream, in the
    signal domain, via `augmentation.py`) and a documented rect-training
    workaround for an Ultralytics memory-blowup bug.
-5. **Decode** (`decode/`) — `SpacingPrior` (a learned log-normal model of
+5. **Decode** (`decode/`) - `SpacingPrior` (a learned log-normal model of
    gaps between consecutive POIs) and `dp_decode` (an exact DP that picks
    one YOLO candidate per POI, jointly, instead of the greedy per-POI
    argmax the cascade uses by default).
-6. **Inference** (`inference/`) — `QModelV6YOLO`, the production controller:
+6. **Inference** (`inference/`) - `QModelOnyx`, the production controller:
    loads the fill classifier + cascade/zoom detectors, runs the reverse
    cascade, optionally cross-checks the fill-count verdict against the zoom
    detectors (`inference/crosscheck.py`), optionally joint-decodes against
    the spacing prior, optionally refines placements with the zoom detectors.
-7. **Live** (`live/`) — streaming variants of the classifier for use during
+7. **Live** (`live/`) - streaming variants of the classifier for use during
    data capture: bounded-cost preprocessing, full probability output, and
    an ordinal monotone evidence state machine in place of a simple debounce
    counter. `live/replay.py` replays held-out runs through the exact live
    decision stack for a shipping-quality latency/stability benchmark.
-8. **QA** (`qa/`) — the paired A/B benchmark comparing the decode layer to
+8. **QA** (`qa/`) - the paired A/B benchmark comparing the decode layer to
    the production cascade, post-training confusion/temperature audits,
    second-stage offender triage (faint-ridge vs suspect-label vs
    model-blind), human label-review packet generation, and live-replay

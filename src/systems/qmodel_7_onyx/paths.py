@@ -44,7 +44,7 @@ DROPBOX_SOURCE = _env_path(
     Path.home() / "QATCH Dropbox" / "QATCH Team Folder" / "Production Notes",
 )
 
-# Fitted/derived config artifacts (single canonical location — replaces the
+# Fitted/derived config artifacts (single canonical location - replaces the
 # old ambiguity between a CWD-relative default and a copy inside the package).
 TIERS_JSON = CONFIGS_ROOT / "tiers.json"
 SPACING_PRIOR_JSON = CONFIGS_ROOT / "spacing_prior.json"

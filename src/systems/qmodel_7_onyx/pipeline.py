@@ -7,7 +7,7 @@ The public entry point for this system: ``Workspace`` + ``Pipeline``.
 Today, going from "a folder of raw data" to "trained model weights" means
 running six CLI scripts by hand in a specific order, with path-wiring
 enforced only by convention (every stage happens to default to the same
-``paths.py`` constants — override one flag and the chain silently breaks
+``paths.py`` constants - override one flag and the chain silently breaks
 until a downstream ``FileNotFoundError``):
 
     decode.fit_prior -> tiers -> dataset.build_detectors ->
@@ -16,9 +16,9 @@ until a downstream ``FileNotFoundError``):
 
 ``Workspace`` is the single source of truth for every path a pipeline stage
 reads or writes (no ``"v7"``/``"v7_fill"`` literals repeated at the call
-site). ``Pipeline`` wraps the underlying stage functions — none of which are
+site). ``Pipeline`` wraps the underlying stage functions - none of which are
 renamed or altered in behavior beyond now returning their results instead of
-``None`` — behind three methods (``prepare``, ``build_datasets``, ``train``)
+``None`` - behind three methods (``prepare``, ``build_datasets``, ``train``)
 plus a ``run()`` convenience that chains all three:
 
     from src.systems.qmodel_7_onyx import Workspace, Pipeline
@@ -33,7 +33,7 @@ Each stage is also usable on its own (``pipeline.prepare()``,
 control than the one-shot ``run()``.
 
 ``fit_tiers()``/``collect_complete_configs()``/the dataset builders raise
-bare ``SystemExit`` today (correct for a CLI, wrong for a library call) —
+bare ``SystemExit`` today (correct for a CLI, wrong for a library call) -
 ``Pipeline`` converts those into :class:`PipelineError` so a programmatic
 caller gets a normal, catchable exception instead of its process being
 killed.
@@ -72,7 +72,7 @@ _DEFAULT_DETECTOR_IMGSZ = 1536
 class PipelineError(RuntimeError):
     """Raised for any pipeline-stage failure that would otherwise surface as
     a bare ``SystemExit`` (insufficient/missing data, an unknown target
-    name, etc.) — always catchable, never kills the caller's process."""
+    name, etc.) - always catchable, never kills the caller's process."""
 
 
 def _normalize_targets(targets: Union[str, Sequence[str]], valid: frozenset) -> Set[str]:
@@ -99,7 +99,7 @@ class Workspace:
     Defaults to this repo's :mod:`paths` constants; override any field to
     point a :class:`Pipeline` at a different data/output location entirely
     (not just via the ``QMODEL_*`` environment variables ``paths.py``
-    supports) — e.g. a fresh project working with its own raw-data folder.
+    supports) - e.g. a fresh project working with its own raw-data folder.
     """
 
     data_root: Path = field(default_factory=lambda: paths.DATA_ROOT)

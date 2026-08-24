@@ -32,8 +32,8 @@ span = t(POI5) - t(POI1). Two consequences honoured here:
   * On partial (prefix) fills the fraction component is RE-REFERENCED to
     the span of the present prefix via SpacingPrior.gap_loglik_scoped (the
     fitted frac medians assume the complete-fill span and would otherwise be
-    systematically biased). This keeps the scale-coupling — the observed
-    early gaps anchor the run's scale and later gaps must be proportionate —
+    systematically biased). This keeps the scale-coupling - the observed
+    early gaps anchor the run's scale and later gaps must be proportionate -
     active on partial fills, where it is the main defence against
     fast-fill-shaped decoy configurations on slow (high-viscosity) runs.
     With fewer than three placed POIs there is no ratio information and the
@@ -44,7 +44,7 @@ span = t(POI5) - t(POI1). Two consequences honoured here:
     conditions on that pair: for each (first, last) candidate combination it
     runs an exact DP with the span fixed, and keeps the best consistently
     re-scored configuration. With the per-POI candidate cap this is at most
-    K^2 small DPs and yields the exact argmax of the blended objective —
+    K^2 small DPs and yields the exact argmax of the blended objective -
     no fixed-point approximation that could converge to the wrong basin
     (e.g. a compressed fast-fill-shaped decoy on a slow run).
 
@@ -54,7 +54,7 @@ SpacingPrior.composed_stat, not against the first gap's stats.
 
 It only decodes the POIs that are actually present (the fill-count gate /
 type_cls has already decided how many channels exist), so partial fills are
-handled by passing fewer POIs — no spurious late POIs are introduced.
+handled by passing fewer POIs - no spurious late POIs are introduced.
 
 Inputs / outputs are plain dicts so this drops in alongside the existing
 predictor without depending on its internals.
@@ -99,7 +99,7 @@ def _lam_between(lam, i: int, j: int) -> float:
     Per-edge weights exist because the prior's value is not uniform: on
     sharp, well-detected events (ch1/POI3) a broad gap prior mostly drags
     correct detections, while on ambiguous events (POI4/POI5) it is the
-    main defence — one scalar cannot serve both."""
+    main defence - one scalar cannot serve both."""
     if not isinstance(lam, dict):
         return float(lam)
     names = [f"{POI_ORDER[k]}->{POI_ORDER[k + 1]}" for k in range(i, j)]

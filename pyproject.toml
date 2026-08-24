@@ -57,4 +57,4 @@ select = ["E", "F", "W", "I", "B"]
 # CLI scripts intentionally re-import a name inside main() to keep a heavy
 # dependency (e.g. ultralytics) import deferred; that pattern trips F401 on
 # the outer scope in a few places. Nothing currently needs a blanket
-# per-file ignore here — kept as a documented extension point.
+# per-file ignore here - kept as a documented extension point.

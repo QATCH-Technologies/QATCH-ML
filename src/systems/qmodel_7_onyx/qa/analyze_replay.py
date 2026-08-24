@@ -1,24 +1,22 @@
-"""
-analyze_replay.py
-=================
+"""Decompose a replay run into model-loss vs machinery-loss failures.
 
-Decomposes replay_fill.json to answer the question the first replay
-raised: live final-state correctness (89.9%) sits ~7 points below the
-model's own static full-run accuracy (~96.9%) — WHERE do the extra ~38
-runs go? The split that matters:
+Live final-state correctness on a replay is typically lower than the
+underlying model's own static full-run accuracy on the same runs; this
+module answers WHERE that gap goes by splitting failing runs into two
+populations with different fixes:
 
   * MODEL-LOSS: runs whose full-run frame the model gets wrong statically
     (the persistent offender set). No evidence config recovers these.
   * MACHINERY-LOSS: runs the model gets right statically but the evidence
-    layer never confirms — missed confirmations from bars tuned too
-    conservative (48 missed vs 11 false forwards is a conservative
-    machine's signature). These are free to recover with a threshold
-    change, which is what `live/replay.py --sweep` quantifies.
+    layer never confirms - missed confirmations from thresholds/bars
+    tuned too conservative. These are recoverable with a threshold
+    change alone, which is what ``live/replay.py --sweep`` quantifies.
 
-Reads one or more machine configs from the replay JSON (run with --sweep
-and/or --legacy for a comparison table), optionally cross-references the
-static audit's misses.csv to tag failing runs as known-static-offenders
-vs machinery-only.
+Reads one or more machine configs from a replay JSON (produced by
+``live/replay.py``, optionally with ``--sweep`` and/or ``--legacy`` for a
+comparison table), and optionally cross-references a static audit's
+``misses.csv`` (see :mod:`.audit_fill_val`) to tag failing runs as
+known-static-offenders vs machinery-only.
 
 Usage
 -----
@@ -43,6 +41,21 @@ CLASS_NAMES = ["no_fill", "initial_fill", "1ch", "2ch", "3ch"]
 
 
 def summarize_machine(name: str, per_run: dict) -> dict:
+    """Aggregate one evidence-machine's per-run scores into summary stats.
+
+    Args:
+        name (str): key of the machine config within each run's
+            ``scores`` mapping.
+        per_run (dict): replay JSON's ``per_run`` mapping of run id ->
+            record, each holding a ``scores`` dict keyed by machine name.
+
+    Returns:
+        dict: aggregate stats for this machine - ``missed_by_state``
+            (Counter of unconfirmed classes), ``failing``,
+            ``false_fwd_runs``, and ``backward_runs`` (sorted run-id
+            lists), and ``lat_by_state`` (confirmation latencies as
+            ``np.ndarray`` per class).
+    """
     missed_by_state = Counter()
     failing, false_fwd_runs, backward_runs = [], [], []
     lat_by_state = defaultdict(list)
@@ -71,6 +84,10 @@ def summarize_machine(name: str, per_run: dict) -> dict:
 
 
 def main() -> None:
+    """CLI entry point: print the sweep comparison table and a deep-dive
+    decomposition (model-loss vs machinery-loss, false-forwards, backward
+    revisions, slow confirmations) for one chosen machine.
+    """
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
         "--replay", type=Path, default=paths.ARTIFACTS_ROOT / "replay" / "replay_fill.json"
@@ -121,7 +138,7 @@ def main() -> None:
     if s["false_fwd_runs"]:
         print(
             f"false-forward runs ({len(s['false_fwd_runs'])}): {s['false_fwd_runs']}\n"
-            "  (cross-reference with the static over-count offenders — if they match,\n"
+            "  (cross-reference with the static over-count offenders - if they match,\n"
             "   these are model errors for the label-review pile, not machinery errors)"
         )
     if s["backward_runs"]:
@@ -138,7 +155,7 @@ def main() -> None:
         print(f"  MACHINERY-LOSS (statically clean, never confirmed): {len(machinery_loss)}")
         print(f"    {machinery_loss}")
         print(
-            "\nMACHINERY-LOSS runs are recoverable by threshold alone — compare their count "
+            "\nMACHINERY-LOSS runs are recoverable by threshold alone - compare their count "
             "across the sweep rows above; the config that zeroes them without inflating "
             "falseF is the shipping config."
         )
@@ -146,7 +163,7 @@ def main() -> None:
         print(f"\nfailing runs ({len(fail)}): {sorted(fail)}")
         print("(pass --misses to split model-loss vs machinery-loss)")
 
-    # latency tails: which runs confirm absurdly late (the 30 s maxes)
+    # latency tails: which runs confirm absurdly late
     for cname in ("1ch", "2ch", "3ch"):
         arr = s["lat_by_state"].get(cname, np.array([]))
         if len(arr) and arr.max() > 10:

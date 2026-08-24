@@ -14,7 +14,7 @@ def _long_run_df(span_s=200.0, n=20000):
 
 
 class FakeZoomDetector:
-    """Duck-typed stand-in for QModelV6YOLO_Detector: always reports a hit
+    """Duck-typed stand-in for QModelOnyx_Detector: always reports a hit
     at a fixed confidence somewhere inside whatever window it's given."""
 
     def __init__(self, conf: float, time_frac: float = 0.5):

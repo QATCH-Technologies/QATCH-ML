@@ -1,68 +1,47 @@
-"""
-crosscheck.py
-=============
+"""Analysis-time fill-verdict cross-check using the zoom detectors.
 
-Analysis-time fill-verdict cross-check using the v7 ZOOM detectors —
-the no-retrain lever against the audit's costliest error population.
+Treats the fill classifier's channel count as a prior rather than a
+verdict - the same philosophy as the configuration-prior decode layer -
+and spends the zoom detectors (trained and shipped for post-decode
+refinement, otherwise idle at fill-classification time) to challenge that
+prior against evidence. Two checks:
 
-Migrated verbatim (as ``inference/crosscheck.py``) from the top-level
-``fill_crosscheck.py`` module as part of the ``inference/`` subpackage
-split. Logic, thresholds and docstrings are unchanged from the original;
-this module has no relative imports to fix (numpy/pandas + stdlib only).
+  * **Under-count rescue** (:func:`.verify_fill_count`): if the classifier
+    says k channels (k < 3), slide the ch(k+1)_zoom detector over the tail
+    after the last confirmed POI. A confident detection means the
+    (k+1)-th transition exists - upgrade the verdict, hand the detected
+    time to the cascade as a candidate anchor, and repeat (a low verdict
+    on a run with more channels can climb more than once).
+  * **Over-count veto** (:func:`.verify_claimed_poi`): the mirror check.
+    The cascade already produced a POI time for the claimed last channel;
+    re-render a zoom window around it and ask the zoom detector whether
+    anything is there. Silence at zoom scale is evidence the fill
+    classifier hallucinated the count. This function only reports
+    (verdict + zoom confidence); downgrading is a caller decision, since a
+    missing zoom detection can also mean a zoom-recall failure rather than
+    an absent transition.
 
-As of this migration, this module IS wired into
-``QModelV6YOLO.predict()`` — see ``controller.py``'s ``_crosscheck_fill``
-method and the ``crosscheck`` keyword argument on ``predict()``.
-
-Why this exists
----------------
-The offender triage established that the analysis-time under-counts
-(~13 val runs whose entire post-POI5 region reads 2ch) are runs where the
-late transition is nearly invisible AT FULL-RUN SCALE: measured extents of
-12-67 s render as a sub-percent slope change across a 640 px frame. That
-is exactly the failure mode the detector side already solved with zoom
-refinement — "at full-run scale a slow transition is a faint smear; in an
-8-40 s window it fills a large fraction of the frame." The zoom detectors
-(ch1_zoom/ch2_zoom/ch3_zoom) are trained, shipped, and idle at the moment
-the fill classifier renders its verdict.
-
-So: treat the classifier's channel count as a PRIOR, not a verdict — the
-same philosophy as the configuration-prior decode layer. Two checks:
-
-  * UNDER-COUNT RESCUE (``verify_fill_count``): if the classifier says k
-    channels (k < 3), slide the ch(k+1)_zoom detector over the tail after
-    the last confirmed POI. A confident detection means the (k+1)-th
-    transition exists — upgrade the verdict, hand the detected time to the
-    cascade as a candidate anchor, and repeat (a 1ch verdict on a true 3ch
-    run can climb twice).
-  * OVER-COUNT VETO (``verify_claimed_poi``): the mirror check for the
-    smaller over-count population (2ch->3ch full-run misses). The cascade
-    already produced a POI time for the claimed last channel; re-render a
-    zoom window around it and ask the zoom detector whether anything is
-    there. Silence at zoom scale is evidence the fill classifier
-    hallucinated the count. This function only REPORTS (verdict + zoom
-    confidence); downgrading is a controller decision because a missing
-    zoom detection can also mean a zoom-recall failure.
+The general failure mode both checks address: a slow, late channel
+transition can render as a faint, sub-percent slope change at full-run
+scale even though it fills a large fraction of a tightly zoomed window -
+the same asymmetry zoom refinement already exploits for POI localization.
 
 Asymmetry is deliberate: rescue is safe-by-construction (a confident
 positive detection is strong evidence; finding nothing changes nothing),
-veto is advisory.
+veto is advisory only.
 
-Cost: rescue runs only when the verdict is < 3ch. A worst case — long tail,
-three window widths, half-width stride, a two-step climb — measured ~70
-zoom inferences; typical single-step checks over a normal tail are ~10-30.
-At batch-1 YOLO-s latency this is well under a second of analysis time,
-and it is exactly zero on the 3ch verdicts that dominate. Trim windows_s
-or stride_frac if it matters.
+Cost scales with how many channels must be climbed and how many window
+widths get swept per candidate transition; rescue runs at all only when
+the verdict is under 3 channels, and is exactly zero once a run is fully
+resolved. Trim `windows_s` or `stride_frac` if scan cost matters.
 
-Integration point: QModelV6YOLO controller, immediately after the reverse
-cascade completes and before configuration-prior decode — see
-``controller.py``'s ``_crosscheck_fill``. The zoom detectors, thresholds,
-and window geometry all come from the existing QModelV6Config REFINE
-settings unless overridden.
+Integration point: the :class:`QModelOnyx` controller calls this module
+immediately after the reverse cascade completes and before
+configuration-prior decode (see :meth:`QModelOnyx._crosscheck_fill`).
+The zoom detectors, thresholds, and window geometry default to the
+:class:`QModelOnyxConfig` ``REFINE_*`` settings unless overridden.
 
-Usage sketch
-------------
+Example:
     from .crosscheck import verify_fill_count
 
     result = verify_fill_count(
@@ -72,8 +51,6 @@ Usage sketch
         zoom_detectors={2: ch2_zoom_det, 3: ch3_zoom_det},
     )
     if result.upgraded:
-        Log.i(TAG, f"fill verdict {fill_pred} -> {result.channels} "
-                   f"(zoom conf {result.evidence[-1].conf:.2f})")
         fill_pred = result.channels
 """
 
@@ -134,7 +111,7 @@ def _best_zoom_hit(
 ) -> Optional[dict]:
     """Slides zoom windows over [t_start, t_end], returns the single best
     detection {time, conf, window} across all windows/widths, or None.
-    Detector is a QModelV6YOLO_Detector wrapping a *_zoom model (single
+    Detector is a QModelOnyx_Detector wrapping a *_zoom model (single
     class -> predict_single returns {0: {time, conf}} when it fires)."""
     t = pd.to_numeric(df_p[COL_TIME], errors="coerce").to_numpy(dtype=float)
     best: Optional[dict] = None
@@ -178,11 +155,11 @@ def verify_fill_count(
     Args:
         df_p: full preprocessed run (the analysis-time frame).
         fill_channels: classifier verdict, -1..3 (values < 1 are returned
-            unchanged — POI1/2 existence is the init stage's business).
+            unchanged - POI1/2 existence is the init stage's business).
         poi_times: POI times known so far (cascade output or labels);
             detected upgrades are ADDED to a copy in the result evidence,
             not mutated in place.
-        zoom_detectors: {channel_index: QModelV6YOLO_Detector} for the
+        zoom_detectors: {channel_index: QModelOnyx_Detector} for the
             available zoom stages, e.g. {1: ch1_zoom, 2: ch2_zoom,
             3: ch3_zoom}. Missing entries stop the climb (no-op beyond).
     """
@@ -230,7 +207,7 @@ def verify_claimed_poi(
     Returns the best zoom confidence for a detection NEAR the claimed time
     (within tolerance, default 30% of the window); conf 0.0 means the zoom
     detector saw nothing where the count claims a transition. Advisory
-    only — the controller decides whether silence downgrades."""
+    only - the controller decides whether silence downgrades."""
     tol = tolerance_s if tolerance_s is not None else 0.3 * window_s
     t = pd.to_numeric(df_p[COL_TIME], errors="coerce").to_numpy(dtype=float)
     t0, t1 = float(np.nanmin(t)), float(np.nanmax(t))

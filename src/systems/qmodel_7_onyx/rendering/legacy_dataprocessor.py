@@ -55,7 +55,7 @@ except (ImportError, ModuleNotFoundError):
     Log.i(tag="[HEADLESS OPERATION]", msg="Running...")
 
 
-class QModelV6YOLO_DataProcessor:
+class QModelOnyx_DataProcessor:
     """
     A utility class for preprocessing sensor data and generating image inputs for YOLO.
 
@@ -80,7 +80,7 @@ class QModelV6YOLO_DataProcessor:
         IMG_CHANNELS (int): Number of image channels (3 for RGB/BGR).
     """
 
-    TAG = "[QModelV6YOLO_DataProcessor]"
+    TAG = "[QModelOnyx_DataProcessor]"
     # Column Names
     COL_TIME = "Relative_time"
     COL_DISS = "Dissipation"
@@ -157,9 +157,9 @@ class QModelV6YOLO_DataProcessor:
 
         df = pd.DataFrame(
             {
-                QModelV6YOLO_DataProcessor.COL_TIME: t_raw,
-                QModelV6YOLO_DataProcessor.COL_FREQ: freq_raw,
-                QModelV6YOLO_DataProcessor.COL_DISS: diss_raw,
+                QModelOnyx_DataProcessor.COL_TIME: t_raw,
+                QModelOnyx_DataProcessor.COL_FREQ: freq_raw,
+                QModelOnyx_DataProcessor.COL_DISS: diss_raw,
             }
         )
 

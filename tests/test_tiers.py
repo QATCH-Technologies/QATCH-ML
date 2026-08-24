@@ -33,9 +33,10 @@ def test_merge_small_bins_drops_underpopulated_edges():
     assert len(edges) <= 1
 
 
-def test_fit_tiers_quantile_fallback_without_sklearn(monkeypatch):
-    """Force the ImportError path so the quantile fallback is exercised even
-    though scikit-learn is installed in this environment."""
+def test_fit_tiers_auto_is_log_uniform_and_sklearn_independent(monkeypatch):
+    """"auto" must not depend on scikit-learn at all - it should use
+    log_uniform binning (the range-preserving default) whether or not
+    sklearn is importable."""
     real_import = builtins.__import__
 
     def fake_import(name, *args, **kwargs):
@@ -47,9 +48,26 @@ def test_fit_tiers_quantile_fallback_without_sklearn(monkeypatch):
     rng = np.random.default_rng(0)
     v = rng.lognormal(mean=1.0, sigma=1.0, size=500)
     scheme = fit_tiers(v, max_tiers=5, min_support=20, method="auto")
-    assert scheme.method == "quantile"
+    assert scheme.method == "log_uniform"
     assert len(scheme.edges_cp) >= 1
     assert all(a < b for a, b in zip(scheme.edges_cp[:-1], scheme.edges_cp[1:], strict=True))
+
+
+def test_fit_tiers_gmm_falls_back_to_log_uniform_without_sklearn(monkeypatch):
+    """Explicitly requesting "gmm" without scikit-learn installed should
+    fall back to log_uniform (range-preserving), not quantile."""
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "sklearn.mixture" or name.startswith("sklearn"):
+            raise ImportError("forced for test")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    rng = np.random.default_rng(0)
+    v = rng.lognormal(mean=1.0, sigma=1.0, size=500)
+    scheme = fit_tiers(v, max_tiers=5, min_support=20, method="gmm")
+    assert scheme.method == "log_uniform"
 
 
 def test_fit_tiers_raises_on_too_few_runs():
@@ -62,10 +80,10 @@ def test_fit_tiers_gmm_path_produces_ascending_edges(monkeypatch):
 
     fit_tiers() has a real, documented fallback: if the fitted GMM's
     decision-boundary scan comes up empty (e.g. one component dominates
-    predict() across the whole grid), it silently falls back to quantile
-    binning even though sklearn imported and ran fine — that's not a bug,
-    it's the "at least guarantees balanced support" contract described in
-    the module docstring. Asserting against a REAL GaussianMixture fit is
+    predict() across the whole grid), it silently falls back to log_uniform
+    binning even though sklearn imported and ran fine - that's not a bug,
+    it's the "always produce a range-preserving scheme" contract described
+    in the module docstring. Asserting against a REAL GaussianMixture fit is
     therefore flaky: whether that fallback triggers depends on scikit-learn's
     EM convergence, which varies across sklearn/BLAS versions and platforms
     (this is exactly what broke on a different platform's CI run). Mocking

@@ -14,18 +14,18 @@ breaks the time<->pixel map the cascade relies on. Instead we augment the
 raw signal before rendering, where every transform has a physical meaning
 and POI labels can be warped exactly along with the data:
 
-  * time_warp        — global log-uniform stretch x [0.5 .. 4] composed with
+  * time_warp        - global log-uniform stretch x [0.5 .. 4] composed with
                        a smooth piecewise-linear monotone jitter. This is the
                        high-viscosity synthesizer: stretching a fast run's
                        time axis manufactures the slow-fill geometry the
                        corpus barely contains (15 runs above 150 cP), instead
                        of merely re-weighting them. Monotonicity preserves
-                       event order and shape topology; only the time scale —
+                       event order and shape topology; only the time scale -
                        which the decode layer, not the detector, is
-                       responsible for — is changed.
-  * inject_noise     — white noise scaled to a robust (MAD) signal sigma,
+                       responsible for - is changed.
+  * inject_noise     - white noise scaled to a robust (MAD) signal sigma,
                        low-frequency baseline drift, and sparse spikes.
-  * amplitude_jitter — per-signal gain/offset jitter, breaking any
+  * amplitude_jitter - per-signal gain/offset jitter, breaking any
                        memorization of absolute signal levels.
 
 All transforms take and return (df_raw, poi_times) so labels stay exact.
@@ -68,7 +68,7 @@ def make_monotone_warp(
 
     w is a global stretch S = exp(U(log_stretch_range)) composed with a
     piecewise-linear jitter whose per-segment slopes are S * exp(N(0,
-    slope_sigma)) — i.e. locally faster/slower filling, globally scaled.
+    slope_sigma)) - i.e. locally faster/slower filling, globally scaled.
     """
     S = float(np.exp(rng.uniform(*log_stretch_range)))
     knots = np.linspace(t_min, t_max, n_knots + 1)
@@ -207,7 +207,7 @@ def dynamic_box_width_sec(
     """Temporal extent of the fill transition around poi_t, in seconds.
 
     Measures where the smoothed |d(dissipation)/dt| within a local window
-    exceeds ``active_frac`` of its local peak — i.e. the duration of the
+    exceeds ``active_frac`` of its local peak - i.e. the duration of the
     transition itself. Slow (high-viscosity) events therefore get wider
     boxes automatically; the fixed-pixel-size assumption the current model
     was trained with is what starved it of gradient on stretched events.

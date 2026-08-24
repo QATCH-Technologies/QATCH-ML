@@ -7,7 +7,7 @@ Offline decode-hyperparameter sweep over candidate pools dumped by
 
 The YOLO harvest is the expensive part; the decode is ~2 ms. So tuning
 DECODE_LAMBDA / DECODE_MIN_MARGIN / frac_blend by re-running the cascade is
-wasteful — dump the pools once, then sweep the whole corpus per setting in
+wasteful - dump the pools once, then sweep the whole corpus per setting in
 seconds here.
 
 For every (lambda, margin, frac_blend) combination this re-decodes each run,
@@ -79,7 +79,7 @@ def tier_weights(rows: List[Dict[str, Any]], edges) -> Dict[int, float]:
     """Inverse-frequency weights per viscosity tier, mean-normalized to 1.
     An unweighted objective is dominated by the easy low-viscosity bulk
     (~60% of the corpus under 6 cP) and will happily trade the rare
-    high-viscosity tier — the product's actual hard case — for marginal
+    high-viscosity tier - the product's actual hard case - for marginal
     bulk gains. Tier weighting makes each tier count equally."""
     from collections import Counter
 
@@ -126,7 +126,7 @@ def evaluate(
 
         result = dp_decode(pools, present, prior, lam=lam)
         chosen = result.chosen
-        # same accept-margin rule as QModelV6YOLO._decode_with_prior
+        # same accept-margin rule as QModelOnyx._decode_with_prior
         if margin > 0 and cascade and chosen and set(chosen.keys()) == set(cascade.keys()):
             if result.total_score < score_configuration(cascade, prior, lam=lam) + margin:
                 chosen = cascade
@@ -296,7 +296,7 @@ def main() -> None:
         ),
     }
     for label, rk in rankings.items():
-        print(f"\nTop settings — {label}:")
+        print(f"\nTop settings - {label}:")
         print(rk[cols].head(3).to_string(index=False))
         b = rk.iloc[0]
         print(

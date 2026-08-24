@@ -1,20 +1,14 @@
 #!/usr/bin/env python3
-"""
-dataset_fetcher.py
+"""Fetch and process QATCH dataset runs into a structured target directory.
 
-This module provides a class for fetching and processing dataset runs from a source
-directory into a structured target directory. It performs the following steps:
-  - Loads identifiers for previously processed runs.
-  - Walks through the source directory to find new runs that include a valid POI CSV file,
-    a valid XML file (checked against disallowed batch identifiers), and a capture.zip file.
-  - Copies the necessary files using an optimized copy function.
-  - Validates the POI CSV file for each run and purges invalid run directories.
-  - Extracts archives and cleans up extraneous files in the stored run directories.
-  - Supports parallel processing using a thread pool.
-  - Collects per-run failure records and emits a structured error report at the end.
-
-Author: Paul MacNichol (paul.macnichol@qatchtech.com)
-Date: 04-02-2025
+Discovers new runs under a source directory - each identified by a POI CSV
+file, an XML file that passes validation against a disallowed-batch
+denylist, and a capture.zip - and copies them into per-run target
+directories via :class:`DatasetFetcher`. Stored runs are then validated,
+archives are extracted, and extraneous files are cleaned up. Processing is
+parallelized with a thread pool, and per-run failures are collected as
+:class:`FailureRecord` objects and summarized in a structured report at the
+end of a run.
 
 Example:
     To run the dataset fetching procedure from the command line:
@@ -56,11 +50,11 @@ class FailureRecord:
     """Captures a single run failure for post-run reporting.
 
     Attributes:
-        run_id: Human-readable identifier for the run (POI filename or directory name).
-        stage: The processing stage at which the failure occurred
+        run_id (str): Human-readable identifier for the run (POI filename or directory name).
+        stage (str): The processing stage at which the failure occurred
             (e.g. "xml_check", "poi_validation", "file_copy", "extraction", "cleanup").
-        reason: A concise human-readable description of why the run failed.
-        timestamp: UTC wall-clock time when the failure was recorded.
+        reason (str): A concise human-readable description of why the run failed.
+        timestamp (datetime): UTC wall-clock time when the failure was recorded.
     """
 
     run_id: str
@@ -79,7 +73,7 @@ class FailureRecord:
 
 
 def fast_copy(src: Path, dst: Path, buffer_size: int = 1024 * 1024) -> None:
-    """Copies a file from src to dst using a larger buffer size to improve performance.
+    """Copy a file from src to dst using a larger buffer size to improve performance.
 
     Args:
         src (Path): Source file path.
@@ -120,12 +114,15 @@ class DatasetFetcher:
         run_dirs (List[Path]): List of target run directories created during processing.
         failures (List[FailureRecord]): Ordered list of failure records collected
             across all processing stages.
+        BAD_BATCHES (List[str]): Class-level default list of batch identifiers
+            rejected during XML validation, matched case-insensitively as a
+            substring against every line of a run's XML file. This is a
+            data-quality denylist, not a filesystem path - extend it here for
+            a permanent change, or override per-instance via the
+            ``bad_batches`` constructor argument (equivalently, per-invocation
+            via ``--exclude-batch`` on the CLI).
     """
 
-    # Batch identifiers to reject during XML validation (checked
-    # case-insensitively against every line of the run's XML file). This is
-    # a data-quality denylist, not a path — extend it here for a permanent
-    # change, or override per-invocation via `bad_batches` / `--exclude-batch`.
     BAD_BATCHES = ["MM240506", "DD240501"]
 
     def __init__(
@@ -136,7 +133,7 @@ class DatasetFetcher:
         max_workers: Optional[int] = None,
         bad_batches: Optional[List[str]] = None,
     ):
-        """Initializes the DatasetFetcher.
+        """Initialize the DatasetFetcher.
 
         Args:
             source_dir (str): Path to the source data directory.
@@ -168,7 +165,7 @@ class DatasetFetcher:
     # ------------------------------------------------------------------
 
     def _record_failure(self, run_id: str, stage: str, reason: str) -> None:
-        """Thread-safe helper that appends a :class:`FailureRecord` to ``self.failures``.
+        """Append a :class:`FailureRecord` to ``self.failures`` in a thread-safe manner.
 
         Args:
             run_id (str): Identifier for the failing run.
@@ -185,7 +182,7 @@ class DatasetFetcher:
     # ------------------------------------------------------------------
 
     def load_existing_files(self) -> None:
-        """Loads the identifiers of previously processed runs from the target directory.
+        """Load the identifiers of previously processed runs from the target directory.
 
         It looks for files ending with '_poi.csv' (omitting those starting with 'Dithered_')
         and stores their names in the ``existing_runs`` set.
@@ -198,7 +195,7 @@ class DatasetFetcher:
         LOG.debug("Successfully loaded {} previously processed runs.", len(self.existing_runs))
 
     def check_xml_validity(self, xml_path: Path) -> bool:
-        """Checks if an XML file is valid by ensuring it does not contain
+        """Check if an XML file is valid by ensuring it does not contain
         disallowed batch identifiers.
 
         Args:
@@ -223,9 +220,10 @@ class DatasetFetcher:
             return False
 
     def validate_poi_file(self, poi_path: Path) -> bool:
-        """Validates that a POI CSV file contains exactly six unique, positive integer values.
+        """Validate that a POI CSV file contains only positive integer values.
 
-        The CSV file is expected to have one column and no headers.
+        The CSV file is expected to have one column and no headers; every
+        non-empty row must parse as a positive integer.
 
         Args:
             poi_path (Path): Path to the POI CSV file.
@@ -274,7 +272,7 @@ class DatasetFetcher:
             return False
 
     def validate_and_purge_run_dir(self, run_dir: Path) -> bool:
-        """Validates a run directory by checking its POI CSV file and purges
+        """Validate a run directory by checking its POI CSV file and purge
         the directory if invalid.
 
         Failure details are recorded via :meth:`_record_failure`.
@@ -308,7 +306,7 @@ class DatasetFetcher:
         return True
 
     def process_source_files(self) -> None:
-        """Processes source files from the source directory to identify new runs for processing.
+        """Process source files from the source directory to identify new runs for processing.
 
         It walks through the source directory and, for each directory, checks for the presence of:
           - A POI CSV file.
@@ -407,7 +405,7 @@ class DatasetFetcher:
         run_index: int,
         analyze_file: Optional[str],
     ) -> None:
-        """Stores the run files from the source directory into a new run directory in the target.
+        """Store the run files from the source directory into a new run directory in the target.
 
         The method creates a new run directory (named with a zero-padded index) in the target
         directory, then copies the POI CSV, XML, and capture.zip files from the source directory
@@ -424,7 +422,6 @@ class DatasetFetcher:
         run_dir = self.target_dir / f"{run_index:05d}"
         run_dir.mkdir(parents=True, exist_ok=True)
 
-        # Thread-safe append to the shared run_dirs list.
         with self._run_dirs_lock:
             self.run_dirs.append(run_dir)
 
@@ -457,8 +454,8 @@ class DatasetFetcher:
                 self._record_failure(f"{run_index:05d}/{fname}", "file_copy", reason)
 
     def process_run_dir(self, run_dir: Path) -> None:
-        """Processes a stored run directory: validates it, extracts archives,
-        and cleans up extraneous files.
+        """Process a stored run directory: validate it, extract archives,
+        and clean up extraneous files.
 
         The method validates the run directory by checking its POI CSV file. If validation fails,
         the directory is purged. If a capture.zip file exists, it is unpacked and then removed
@@ -504,7 +501,7 @@ class DatasetFetcher:
                     self._record_failure(run_dir.name, "cleanup", reason)
 
     def process_stored_files(self) -> None:
-        """Processes all stored run directories in parallel.
+        """Process all stored run directories in parallel.
 
         Uses a thread pool to execute :meth:`process_run_dir` for each run directory
         in ``run_dirs``.
@@ -515,25 +512,25 @@ class DatasetFetcher:
                 task.result()
 
     def generate_report(self, report_path: Optional[Path] = None) -> None:
-        """Emits a structured error report for all failed runs.
+        """Emit a structured error report for all failed runs.
 
         Prints a summary table to the console. If *report_path* is provided the
         full failure list is also written as a CSV file with the columns:
         ``timestamp``, ``run_id``, ``stage``, ``reason``.
 
         Args:
-            report_path (Optional[Path]): Path to write the CSV report. If ``None``
-                only the console summary is printed.
+            report_path (Optional[Path], optional): Path to write the CSV report.
+                Defaults to None, in which case only the console summary is printed.
         """
         total = len(self.failures)
         if total == 0:
-            LOG.info("No failures recorded — all runs completed successfully.")
+            LOG.info("No failures recorded - all runs completed successfully.")
             return
 
         # Console summary
         sep = "-" * 90
         print(f"\n{'=' * 90}")
-        print(f"  FAILURE REPORT — {total} run(s) failed")
+        print(f"  FAILURE REPORT - {total} run(s) failed")
         print(f"{'=' * 90}")
         for rec in self.failures:
             print(sep)
@@ -576,14 +573,15 @@ class DatasetFetcher:
                 LOG.error("Could not write failure report to {}: {}", report_path, exc)
 
     def run(self, report_path: Optional[Path] = None) -> None:
-        """Executes the entire dataset fetching and processing procedure.
+        """Execute the entire dataset fetching and processing procedure.
 
         The method loads existing processed runs, processes source files to copy new runs,
         processes the stored run directories, and finally emits a failure report.
 
         Args:
-            report_path (Optional[Path]): If provided, the failure report is also saved
-                as a CSV at this path in addition to being printed to the console.
+            report_path (Optional[Path], optional): If provided, the failure report is
+                also saved as a CSV at this path in addition to being printed to the
+                console. Defaults to None.
         """
         self.load_existing_files()
         self.process_source_files()
@@ -597,7 +595,7 @@ class DatasetFetcher:
 
 
 def parse_arguments() -> argparse.Namespace:
-    """Parses command-line arguments for the dataset fetcher.
+    """Parse command-line arguments for the dataset fetcher.
 
     Returns:
         argparse.Namespace: Parsed command-line arguments.
@@ -660,7 +658,7 @@ def parse_arguments() -> argparse.Namespace:
 
 
 def main() -> None:
-    """Main function to run the dataset fetching procedure."""
+    """Run the dataset fetching procedure."""
     args = parse_arguments()
     configure_logging(level=args.log_level.upper())
     report_path = Path(args.report) if args.report else None

@@ -3,35 +3,35 @@ triage_offenders.py
 ===================
 
 Second-stage triage after qa/audit_fill_val.py, built for what that audit
-found: the residual errors are NOT diffuse — ~60% sit in ~20 runs, and the
+found: the residual errors are NOT diffuse - ~60% sit in ~20 runs, and the
 worst population is runs whose ENTIRE post-POI5 region (uniform cuts, hard
 cut, full run) reads 2ch. A model that is wrong about a run at every
 prefix is not a debounce problem and not an epochs problem; it is one of
 exactly three things, and each has a different fix:
 
-  (a) FAINT RIDGE — the POI5 transition is real but its salience in the
+  (a) FAINT RIDGE - the POI5 transition is real but its salience in the
       derivative-energy strip is too low at full-run scale (very slow
       transition, very long run). Fix: render lever (a longer timescale in
       the fill render's salience scales) and/or data lever (more warp
       exposure for the offender tier).
-  (b) SUSPECT LABEL — there is no salience anywhere near the labeled POI5
+  (b) SUSPECT LABEL - there is no salience anywhere near the labeled POI5
       (or strong salience somewhere else). The model may be right and the
       ground truth wrong. Fix: label review; these runs poison training.
-  (c) MODEL BLIND — the ridge is plainly there (salience comparable to
+  (c) MODEL BLIND - the ridge is plainly there (salience comparable to
       POI3/POI4's) and the model still under-counts. Fix: training-side
       (loss/sampling), the only case where retraining without new
       data/labels is justified.
 
-For every offender run this script prints a salience report — the peak
+For every offender run this script prints a salience report - the peak
 derivative-energy at each labeled POI as a percentile of the run's whole
-energy trace, plus its ratio to the trace median — and writes an annotated
+energy trace, plus its ratio to the trace median - and writes an annotated
 full-run v2 render (POI ground truth overlaid on the strips) so the
 (a)/(b)/(c) call takes seconds per run.
 
 It also settles a cheap question with the audit's saved probabilities:
 whether the ordinal-tail decision rule (what QModelV7FillClassifier.predict
 uses at analysis time) beats raw argmax on the val split at the fitted
-temperature — i.e., how many of the low-confidence full-run misses the
+temperature - i.e., how many of the low-confidence full-run misses the
 decision rule already softens without any retraining.
 
 Usage
@@ -66,7 +66,7 @@ from ..rendering.fill_render import (
     generate_fill_cls_v2,
     step_coincidence_energy,
 )
-from ..rendering.legacy_dataprocessor import QModelV6YOLO_DataProcessor as DP
+from ..rendering.legacy_dataprocessor import QModelOnyx_DataProcessor as DP
 
 LOG = get_logger("qmodel_7_onyx.qa.triage_offenders")
 
@@ -80,14 +80,14 @@ FULLRUN_K = {"no_fill": 2, "initial_fill": 5, "1ch": 8, "2ch": 11, "3ch": 14}
 
 
 def salience_report(df_p: pd.DataFrame, poi: Dict[str, float]) -> Dict[str, dict]:
-    """Peak salience around each labeled POI under BOTH energies — v2
+    """Peak salience around each labeled POI under BOTH energies - v2
     (curvature derivative-energy, what the current weights were trained
-    on) and v3 (step-coincidence, the candidate fix) — as percentile
+    on) and v3 (step-coincidence, the candidate fix) - as percentile
     within the run's whole trace + ratio to the trace median.
 
     Verdict calibration note: the first triage pass used v2-only salience
     with an 'ABSENT => suspect label' rule, which over-fired on ~20/25
-    offenders — too many to be label errors; it was indicting the render.
+    offenders - too many to be label errors; it was indicting the render.
     The recalibrated rule: a POI is a LABEL SUSPECT only if it stays
     absent under v3 as well. A POI absent under v2 but clear under v3 is
     the render defect the v3 rebuild fixes; the v2->v3 delta on the
@@ -116,7 +116,7 @@ def salience_report(df_p: pd.DataFrame, poi: Dict[str, float]) -> Dict[str, dict
 
 
 def annotate_render(df_p: pd.DataFrame, poi: Dict[str, float], path: Path) -> None:
-    """Full-run v2 render with ground-truth POI verticals + labels — the
+    """Full-run v2 render with ground-truth POI verticals + labels - the
     exact pixels the classifier judged, with the answer key drawn on."""
     img = generate_fill_cls_v2(df_p, FILL_GEN_W, FILL_GEN_H)
     t = pd.to_numeric(df_p[COL_TIME], errors="coerce").to_numpy(dtype=float)
@@ -143,7 +143,7 @@ def annotate_render(df_p: pd.DataFrame, poi: Dict[str, float], path: Path) -> No
 
 def decision_rule_check(npz_path: Path, temperature: float) -> None:
     """argmax vs ordinal-tail rule on the audit's saved val probabilities
-    at the fitted temperature — quantifies the no-retrain rescue rate."""
+    at the fitted temperature - quantifies the no-retrain rescue rate."""
     from ..live.fill_live import OrdinalEvidence
 
     data = np.load(npz_path)
@@ -221,7 +221,7 @@ def main() -> None:
     for rid in offenders:
         rec = by_id.get(rid)
         if rec is None:
-            LOG.warning("{}: not found under raw root — skipped", rid)
+            LOG.warning("{}: not found under raw root - skipped", rid)
             continue
         try:
             df_p = DP.preprocess_dataframe(pd.read_csv(rec.csv_path))
@@ -253,9 +253,9 @@ def main() -> None:
                     " (render fix recovers it)" if r["v2_vs_median"] < 2.0 else ""
                 )
             elif r["v3_vs_median"] >= 1.5:
-                verdict = "faint under v3 — data lever (tier warp exposure)"
+                verdict = "faint under v3 - data lever (tier warp exposure)"
             else:
-                verdict = "ABSENT under BOTH — genuine label suspect"
+                verdict = "ABSENT under BOTH - genuine label suspect"
             print(
                 f"    {name}: v2 x{r['v2_vs_median']:5.2f} ({r['v2_pctile']:5.1f} pct) | "
                 f"v3 x{r['v3_vs_median']:5.2f} ({r['v3_pctile']:5.1f} pct) | "
@@ -284,7 +284,7 @@ def main() -> None:
 
     print(
         "\nreading the verdicts: the v2->v3 delta on this offender list is the pre-retrain "
-        "validation of the render fix — 'clear under v3' on previously-missed POIs means the "
+        "validation of the render fix - 'clear under v3' on previously-missed POIs means the "
         "v3 rebuild+retrain should recover them; 'faint under v3' points at offender-tier "
         "warp exposure; 'ABSENT under BOTH' is now a genuine label suspect worth reviewing "
         "with the lab before the next build. Independently, the zoom cross-check "

@@ -39,7 +39,7 @@ jobs:
 
       # Every test in this suite is designed to run without model weights,
       # a GPU, or ultralytics actually being importable at call time (see
-      # CONTRIBUTING.md) — no separate "unit vs integration" split needed.
+      # CONTRIBUTING.md) - no separate "unit vs integration" split needed.
 
       - name: Upload coverage report
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'

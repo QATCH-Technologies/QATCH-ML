@@ -1,60 +1,59 @@
-"""
-dataset/build_fill_classifier.py
-==================================
+"""Builds the fill-type classification dataset for the live fill classifier.
 
-Builds the v7 fill-TYPE classification dataset (no_fill / initial_fill /
-1ch / 2ch / 3ch) in ultralytics classify folder format, porting every
-dataset-side fix the detector rebuild demanded:
+Renders the fill-TYPE classification dataset (no_fill / initial_fill / 1ch /
+2ch / 3ch) in ultralytics classify folder format, with the following
+properties:
 
-  1. LEAKAGE-PROOF SPLIT — reuses ``dataset.splitting.stratified_group_split``
-     (shared with ``dataset/build_detectors.py``): train/val split by RUN,
+  1. LEAKAGE-PROOF SPLIT - reuses :func:`.splitting.stratified_group_split`
+     (shared with :mod:`.build_detectors`): train/val split by run,
      stratified by (viscosity tier x fill count). Every prefix cut and
-     augmented variant of a run lands on one side only. (The classifier has
-     the same exposure the old detector split had: dozens of prefix frames
-     per run means run-level leakage inflates val accuracy dramatically — a
-     classifier that memorizes a run's noise texture aces val on that run's
-     other prefixes.)
+     augmented variant of a run lands on one side only. A classifier sees
+     dozens of prefix frames per run, so run-level split leakage inflates
+     val accuracy dramatically - a classifier that memorizes a run's noise
+     texture aces val on that run's other prefixes.
 
   2. LIVE-MATCHED SLICING. The live classifier never sees a full run until
-     the run is over — it sees a GROWING PREFIX, one frame per chunk. So
+     the run is over - it sees a GROWING PREFIX, one frame per chunk. So
      the training distribution is prefix cuts: for each run, cut times are
      sampled per achievable class and the label is the fill state AT the
-     cut (state(t): t<POI1 -> no_fill; POI1<=t<POI3 -> initial_fill;
-     POI3<=t<POI4 -> 1ch; POI4<=t<POI5 -> 2ch; t>=POI5 -> 3ch). The full
-     run is always emitted too — that is the analysis-time distribution,
-     which is just the prefix at t=end. One model, both duties, because
-     both duties are points on the same prefix continuum.
+     cut (see :func:`fill_state_at`: t<POI1 -> no_fill; POI1<=t<POI3 ->
+     initial_fill; POI3<=t<POI4 -> 1ch; POI4<=t<POI5 -> 2ch; t>=POI5 ->
+     3ch). The full run is always emitted too - that is the analysis-time
+     distribution, which is just the prefix at t=end. One model serves both
+     duties, because both duties are points on the same prefix continuum.
 
   3. TRANSITION DEAD ZONES + HARD BANDS (the dynamic-box insight, inverted).
-     dynamic_box_width_sec measures each transition's actual temporal
-     extent. DURING a transition the label is genuinely ambiguous — the
-     ridge is half-formed — so cuts inside the measured extent are
-     SKIPPED rather than taught with a hard label the pixels don't yet
-     support (mid-transition frames are what the live debounce exists to
-     ride out; training a confident label there just teaches confident
-     flicker). Immediately AFTER the transition completes sits the hard
-     band: the earliest moment the new state is visually present (one
-     barely-grown ridge). These are the latency-critical live frames —
+     :func:`..augmentation.dynamic_box_width_sec` measures each transition's
+     actual temporal extent. DURING a transition the label is genuinely
+     ambiguous - the ridge is half-formed - so cuts inside the measured
+     extent are SKIPPED rather than taught with a hard label the pixels
+     don't yet support (mid-transition frames are what the live debounce
+     exists to ride out; training a confident label there just teaches
+     confident flicker). Immediately AFTER the transition completes sits
+     the hard band: the earliest moment the new state is visually present
+     (one barely-grown ridge). These are the latency-critical live frames -
      every second of delayed confirmation is a second of delayed operator
-     feedback — so the hard band is deliberately oversampled.
+     feedback - so the hard band is deliberately oversampled. See
+     :func:`class_intervals` and :func:`sample_cuts`.
 
-  4. SIGNAL-DOMAIN AUGMENTATION (v7_augment), labels exact. time_warp is
-     again the high-viscosity synthesizer, and for the classifier it is
-     doubly load-bearing: stretching manufactures the slow-fill geometry
-     where late transitions flatten — the 2ch/3ch confusion zone. POI
-     times warp with the signal, so every cut's state label stays exact
-     by construction.
+  4. SIGNAL-DOMAIN AUGMENTATION (:mod:`..augmentation`), labels exact.
+     Time-warp is again the high-viscosity synthesizer, and for the
+     classifier it is doubly load-bearing: stretching manufactures the
+     slow-fill geometry where late transitions flatten - the 2ch/3ch
+     confusion zone. POI times warp with the signal, so every cut's state
+     label stays exact by construction.
 
-  5. PER-TIER UPSAMPLING with fresh augmentation per repeat, and
-     PER-CLASS-BALANCED cuts per run (each achievable state contributes
-     the same number of cuts), so class balance does not simply mirror
-     state dwell times (long 3ch tails would otherwise dominate).
+  5. PER-TIER UPSAMPLING with fresh augmentation per repeat (see
+     :func:`.splitting.repeat_factor`), and PER-CLASS-BALANCED cuts per run
+     (each achievable state contributes the same number of cuts), so class
+     balance does not simply mirror state dwell times (long 3ch tails would
+     otherwise dominate).
 
   6. TRAIN/DEPLOY RENDER MATCH, taken one step further than the detector:
-     images are saved as the EXACT 224x224 prepare_cls_input output the
-     predictor feeds the model — including the 640->224 INTER_AREA resize
-     — so there is no resize-kernel mismatch between training and
-     inference at all.
+     images are saved as the exact 224x224
+     :func:`..rendering.fill_render.prepare_cls_input` output the predictor
+     feeds the model - including the 640->224 INTER_AREA resize - so there
+     is no resize-kernel mismatch between training and inference at all.
 
 Val is variant-0 (un-augmented) only: it measures the model, not the
 augmentation pipeline.
@@ -87,7 +86,7 @@ from .. import paths
 from ..augmentation import COL_TIME, augment_run, dynamic_box_width_sec
 from ..corpus import dedupe_runs, discover_runs
 from ..rendering.fill_render import prepare_cls_input
-from ..rendering.legacy_dataprocessor import QModelV6YOLO_DataProcessor as DP
+from ..rendering.legacy_dataprocessor import QModelOnyx_DataProcessor as DP
 from ..tiers import TierScheme
 from .splitting import repeat_factor, stratified_group_split
 
@@ -95,13 +94,13 @@ LOG = get_logger("qmodel_7_onyx.dataset.build_fill_classifier")
 
 FILL_RENDER_VERSION = 3  # must match the predictor's fill render version
 
-# Ordinal class order — index == channels + 1. Folder names match
-# QModelV6Config.FILL_CLASS_MAP keys so the trained model's label names map
+# Ordinal class order - index == channels + 1. Folder names match
+# QModelOnyxConfig.FILL_CLASS_MAP keys so the trained model's label names map
 # straight through _map_label_to_channels.
 CLASS_NAMES = ["no_fill", "initial_fill", "1ch", "2ch", "3ch"]
 
 # State boundaries in POI space: state k begins at BOUNDARY_POI[k].
-# (POI2 — end of initial fill — is not a state boundary: initial_fill spans
+# (POI2 - end of initial fill - is not a state boundary: initial_fill spans
 # POI1..POI3.)
 BOUNDARY_POI = {1: "POI1", 2: "POI3", 3: "POI4", 4: "POI5"}
 
@@ -133,7 +132,7 @@ def class_intervals(
         hi(state k) = boundary_{k+1} - PRE_FRAC * width_{k+1} - margin
 
     States whose interval is empty (e.g. two transitions nearly back to
-    back) simply contribute no cuts — better absent than mislabeled."""
+    back) simply contribute no cuts - better absent than mislabeled."""
     bounds: List[Tuple[int, Optional[float], float]] = []  # (state, t_boundary, width)
     for k in (1, 2, 3, 4):
         pt = poi.get(BOUNDARY_POI[k])
@@ -165,7 +164,7 @@ def sample_cuts(
     hard_cuts: int,
 ) -> List[Tuple[float, int, bool]]:
     """Returns (cut_time, state, is_hard). Uniform cuts across each state's
-    interval plus hard-band cuts hugging the interval's left edge — the
+    interval plus hard-band cuts hugging the interval's left edge - the
     just-confirmed frames where live latency is decided. State 0 has no
     'just confirmed' moment, so it takes only uniform cuts."""
     out: List[Tuple[float, int, bool]] = []

@@ -9,7 +9,7 @@ starts from :func:`discover_runs`.
 
 This module consolidates logic that used to be duplicated across
 ``benchmark_decode.py`` (``_truth_times``) and ``fit_prior.py``
-(``parse_present``) — both implemented the same "strictly-ascending,
+(``parse_present``) - both implemented the same "strictly-ascending,
 non-tail POI" acceptance rule independently, which is exactly the kind of
 duplication that drifts out of sync silently. :func:`truth_times` is now the
 single source of truth for what counts as a valid POI mark, used both to fit
@@ -172,7 +172,7 @@ def _run_fingerprint(rec: RunRecord) -> str:
     """Content fingerprint for duplicate-run detection. Two directories
     containing the same physical run (same POI truth times) are the same run
     regardless of directory name. Duplicates double-count benchmark failures
-    and — far worse — defeat group-by-run_id train/val splitting: the same
+    and - far worse - defeat group-by-run_id train/val splitting: the same
     run on both sides of the split is leakage."""
     key = "|".join(f"{k}:{v:.4f}" for k, v in sorted(rec.poi_times.items()))
     return hashlib.blake2s(key.encode(), digest_size=8).hexdigest()
@@ -196,7 +196,7 @@ def dedupe_runs(runs: List[RunRecord]) -> List[RunRecord]:
 
 
 def load_run_filter(path: Path) -> set:
-    """Accepts either a build_dataset manifest.json (uses its val_ids — the
+    """Accepts either a build_dataset manifest.json (uses its val_ids - the
     runs the CURRENT model never trained on) or a plain text/JSON list of run
     ids. Benchmarking on the full corpus rewards whichever system memorized
     the corpus harder; a system trained (even partially) on the evaluation

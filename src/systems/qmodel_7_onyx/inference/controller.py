@@ -1,4 +1,4 @@
-"""This module implements the QModel V6 YOLO pipeline for data analysis.
+"""This module implements the QModel Onyx pipeline for data analysis.
 
 It orchestrates a "Reverse Cascading Detection" strategy, utilizing multiple
 YOLO object detectors to identify points of interest (POIs) in viscosity
@@ -7,14 +7,14 @@ sequential slicing of the dataset to isolate specific channel events (Init,
 Ch1, Ch2, Ch3).
 
 Key Components:
-- QModelV6YOLO: The main controller class.
-- QModelV6YOLO_Detector: A wrapper for individual YOLO model instances.
-- QModelV6Config: Configuration constants for the pipeline (see ``inference/config.py``).
+- QModelOnyx: The main controller class.
+- QModelOnyx_Detector: A wrapper for individual YOLO model instances.
+- QModelOnyxConfig: Configuration constants for the pipeline (see ``inference/config.py``).
 
 As of this migration into ``inference/``, the previously-orphaned
 ``inference/crosscheck.py`` (fill-verdict cross-check via the zoom
-detectors) is wired in as an optional stage of ``QModelV6YOLO.predict()``
-— see ``_crosscheck_fill`` and the ``crosscheck`` keyword argument.
+detectors) is wired in as an optional stage of ``QModelOnyx.predict()``
+- see ``_crosscheck_fill`` and the ``crosscheck`` keyword argument.
 
 Dependencies:
 - ultralytics (YOLO)
@@ -40,49 +40,42 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-try:
-    from QATCH.common.logger import (
-        Logger as Log,  # pyright: ignore[reportPrivateImportUsage]
-    )
-    from QATCH.QModel.src.models.v6_yolo.v6_yolo_dataprocessor import (
-        QModelV6YOLO_DataProcessor,
-    )
+from src.utils.logger import get_logger
 
-except (ImportError, ModuleNotFoundError):
-    from src.utils.logger import get_logger
+_log = get_logger("qmodel_7_onyx.inference.controller")
 
-    _log = get_logger("qmodel_7_onyx.inference.controller")
 
-    class Log:  # headless fallback, matching the rest of qmodel_7_onyx
-        @staticmethod
-        def d(tag: str, msg: str):
-            _log.debug(f"{tag} {msg}")
+class Log:  # headless fallback, matching the rest of qmodel_7_onyx
+    @staticmethod
+    def d(tag: str, msg: str):
+        _log.debug(f"{tag} {msg}")
 
-        @staticmethod
-        def i(tag: str, msg: str):
-            _log.info(f"{tag} {msg}")
+    @staticmethod
+    def i(tag: str, msg: str):
+        _log.info(f"{tag} {msg}")
 
-        @staticmethod
-        def w(tag: str, msg: str):
-            _log.warning(f"{tag} {msg}")
+    @staticmethod
+    def w(tag: str, msg: str):
+        _log.warning(f"{tag} {msg}")
 
-        @staticmethod
-        def e(tag: str, msg: str):
-            _log.error(f"{tag} {msg}")
+    @staticmethod
+    def e(tag: str, msg: str):
+        _log.error(f"{tag} {msg}")
 
-    Log.i(tag="[HEADLESS OPERATION]", msg="Running...")
-    from ..rendering.legacy_dataprocessor import QModelV6YOLO_DataProcessor
+
+Log.i(tag="[HEADLESS OPERATION]", msg="Running...")
+from ..rendering.legacy_dataprocessor import QModelOnyx_DataProcessor
 
 try:
     # New project requirement as of 2026-01-12
     from ultralytics import YOLO  # pyright: ignore[reportPrivateImportUsage]
 except ImportError:
     Log.e(
-        tag="[QModelV6YOLO]",
+        tag="[QModelOnyx]",
         msg="'ultralytics' not found. YOLO inference will fail.",
     )
 
-# Configuration-prior decode layer. Sibling subpackage of qmodel_7_onyx —
+# Configuration-prior decode layer. Sibling subpackage of qmodel_7_onyx -
 # always available, plain relative import (no standalone-execution
 # fallback needed here; that idiom was only ever for the optional
 # QATCH-app dependency above). Deliberately placed after the try/except
@@ -94,7 +87,7 @@ from ..decode.spacing_prior import SpacingPrior  # noqa: E402
 _DECODE_AVAILABLE = True
 
 # Version-2 detection renderer. Sibling subpackage; same rationale as
-# above — always available via plain relative import.
+# above - always available via plain relative import.
 from ..rendering.detector_render import generate_det_image as _gen_det_image  # noqa: E402
 
 _RENDER_V2_AVAILABLE = True
@@ -102,11 +95,11 @@ _RENDER_V2_AVAILABLE = True
 # Fill-verdict cross-check (zoom-detector based under-count rescue /
 # over-count advisory veto). See ``_crosscheck_fill`` below for the
 # wiring into ``predict()``.
-from .config import QModelV6Config  # noqa: E402
+from .config import QModelOnyxConfig  # noqa: E402
 from .crosscheck import verify_claimed_poi, verify_fill_count  # noqa: E402
 
 
-class QModelV6YOLO_FillClassifier:
+class QModelOnyx_FillClassifier:
     """
     Handles the classification of the run state (e.g., no_fill, initial_fill, 1ch, 2ch, 3ch).
 
@@ -115,7 +108,7 @@ class QModelV6YOLO_FillClassifier:
     dictates how many channels (if any) the subsequent detection pipeline should search for.
     """
 
-    TAG = "[QModelV6YOLO_FillClassifier]"
+    TAG = "[QModelOnyx_FillClassifier]"
 
     def __init__(self, model_path: str):
         """
@@ -165,11 +158,11 @@ class QModelV6YOLO_FillClassifier:
 
         # Generate Image
         # We divide the target GEN_H by 3 because the processor stacks 3 strips
-        strip_height = QModelV6Config.FILL_GEN_H // 3
+        strip_height = QModelOnyxConfig.FILL_GEN_H // 3
 
         try:
-            img_high_res = QModelV6YOLO_DataProcessor.generate_fill_cls(
-                df, img_h=strip_height, img_w=QModelV6Config.FILL_GEN_W
+            img_high_res = QModelOnyx_DataProcessor.generate_fill_cls(
+                df, img_h=strip_height, img_w=QModelOnyxConfig.FILL_GEN_W
             )
         except Exception as e:
             Log.e(self.TAG, f"Error generating signal image: {e}")
@@ -182,7 +175,7 @@ class QModelV6YOLO_FillClassifier:
         # Resize for Inference
         img_input = cv2.resize(
             img_high_res,
-            (QModelV6Config.FILL_INFERENCE_W, QModelV6Config.FILL_INFERENCE_H),
+            (QModelOnyxConfig.FILL_INFERENCE_W, QModelOnyxConfig.FILL_INFERENCE_H),
             interpolation=cv2.INTER_AREA,
         )
         self._last_image = img_input
@@ -234,15 +227,15 @@ class QModelV6YOLO_FillClassifier:
         """
         label_clean = str(label).strip().lower()
 
-        if label_clean in QModelV6Config.FILL_CLASS_MAP:
-            return QModelV6Config.FILL_CLASS_MAP[label_clean]
+        if label_clean in QModelOnyxConfig.FILL_CLASS_MAP:
+            return QModelOnyxConfig.FILL_CLASS_MAP[label_clean]
         if label_clean.isdigit():
             return int(label_clean)
         Log.w(self.TAG, f"Unknown label '{label}'. Defaulting to 0 channels.")
         return 0
 
 
-class QModelV6YOLO_Detector:
+class QModelOnyx_Detector:
     """
     Generic wrapper for a single YOLO detector instance.
 
@@ -298,20 +291,20 @@ class QModelV6YOLO_Detector:
                 Note: This method does *not* calculate the absolute row index; that must
                 be handled by the controller using the returned time.
         """
-        if df is None or len(df) < QModelV6Config.MIN_SLICE_LENGTH:
+        if df is None or len(df) < QModelOnyxConfig.MIN_SLICE_LENGTH:
             return {}
-        if QModelV6Config.RENDER_VERSION >= 2 and _RENDER_V2_AVAILABLE:
+        if QModelOnyxConfig.RENDER_VERSION >= 2 and _RENDER_V2_AVAILABLE:
             img_base = _gen_det_image(
                 df,
-                QModelV6Config.IMG_WIDTH,
-                QModelV6Config.IMG_HEIGHT,
-                version=QModelV6Config.RENDER_VERSION,
+                QModelOnyxConfig.IMG_WIDTH,
+                QModelOnyxConfig.IMG_HEIGHT,
+                version=QModelOnyxConfig.RENDER_VERSION,
             )
         else:
-            img_base = QModelV6YOLO_DataProcessor.generate_channel_det(
-                df, img_w=QModelV6Config.IMG_WIDTH, img_h=QModelV6Config.IMG_HEIGHT
+            img_base = QModelOnyx_DataProcessor.generate_channel_det(
+                df, img_w=QModelOnyxConfig.IMG_WIDTH, img_h=QModelOnyxConfig.IMG_HEIGHT
             )
-        results = self.model(img_base, verbose=False, conf=QModelV6Config.CONF_THRESHOLD)
+        results = self.model(img_base, verbose=False, conf=QModelOnyxConfig.CONF_THRESHOLD)
         col_time = "Relative_time"
         if col_time not in df.columns:
             col_time = "time" if "time" in df.columns else df.columns[0]
@@ -374,20 +367,20 @@ class QModelV6YOLO_Detector:
             of candidate dicts, each {"time": float, "conf": float}, sorted by
             descending confidence. Classes with no detections are omitted.
         """
-        if df is None or len(df) < QModelV6Config.MIN_SLICE_LENGTH:
+        if df is None or len(df) < QModelOnyxConfig.MIN_SLICE_LENGTH:
             return {}
-        if QModelV6Config.RENDER_VERSION >= 2 and _RENDER_V2_AVAILABLE:
+        if QModelOnyxConfig.RENDER_VERSION >= 2 and _RENDER_V2_AVAILABLE:
             img_base = _gen_det_image(
                 df,
-                QModelV6Config.IMG_WIDTH,
-                QModelV6Config.IMG_HEIGHT,
-                version=QModelV6Config.RENDER_VERSION,
+                QModelOnyxConfig.IMG_WIDTH,
+                QModelOnyxConfig.IMG_HEIGHT,
+                version=QModelOnyxConfig.RENDER_VERSION,
             )
         else:
-            img_base = QModelV6YOLO_DataProcessor.generate_channel_det(
-                df, img_w=QModelV6Config.IMG_WIDTH, img_h=QModelV6Config.IMG_HEIGHT
+            img_base = QModelOnyx_DataProcessor.generate_channel_det(
+                df, img_w=QModelOnyxConfig.IMG_WIDTH, img_h=QModelOnyxConfig.IMG_HEIGHT
             )
-        results = self.model(img_base, verbose=False, conf=QModelV6Config.CONF_THRESHOLD)
+        results = self.model(img_base, verbose=False, conf=QModelOnyxConfig.CONF_THRESHOLD)
         col_time = "Relative_time"
         if col_time not in df.columns:
             col_time = "time" if "time" in df.columns else df.columns[0]
@@ -418,7 +411,7 @@ class QModelV6YOLO_Detector:
         return mapped
 
 
-class QModelV6YOLO:
+class QModelOnyx:
     """
     Controller class for the QModel V6 YOLO .
 
@@ -428,7 +421,7 @@ class QModelV6YOLO:
     loaded when required by the prediction logic.
     """
 
-    TAG = "QModelV6YOLO"
+    TAG = "QModelOnyx"
 
     # Maps internal integer Class IDs to application-standard POI strings
     POI_MAP = {1: "POI1", 2: "POI2", 3: "POI3", 4: "POI4", 5: "POI5", 6: "POI6"}
@@ -452,7 +445,7 @@ class QModelV6YOLO:
 
     def __init__(self, model_assets: Dict[str, Any]):
         """
-        Initializes the QModelV6YOLO controller.
+        Initializes the QModelOnyx controller.
 
         Args:
             model_assets (Dict[str, Any]): A dictionary containing paths to model weights.
@@ -490,13 +483,13 @@ class QModelV6YOLO:
         the path provided in `model_assets`.
 
         Returns:
-            Any: The loaded `QModelV6YOLO_FillClassifier` instance, or None if loading failed
+            Any: The loaded `QModelOnyx_FillClassifier` instance, or None if loading failed
             or no path was provided.
         """
         if self._fill_classifier is None:
             model_path = self.model_assets.get("fill_classifier")
             if model_path:
-                self._fill_classifier = QModelV6YOLO_FillClassifier(model_path)
+                self._fill_classifier = QModelOnyx_FillClassifier(model_path)
         return self._fill_classifier
 
     def _load_detector_by_name(self, name: str) -> Any:
@@ -507,7 +500,7 @@ class QModelV6YOLO:
             name (str): The key for the detector to load (e.g., "init", "ch1", "ch2", "ch3").
 
         Returns:
-            Any: The loaded `QModelV6YOLO_Detector` instance, or None if the path is missing
+            Any: The loaded `QModelOnyx_Detector` instance, or None if the path is missing
             or loading fails.
         """
         if self._detectors.get(name) is None:
@@ -515,7 +508,7 @@ class QModelV6YOLO:
             model_path = detector_paths.get(name)
             if model_path:
                 try:
-                    self._detectors[name] = QModelV6YOLO_Detector(model_path)
+                    self._detectors[name] = QModelOnyx_Detector(model_path)
                 except Exception as e:
                     Log.e(self.TAG, f"Error while loading detector '{name}': {e}")
                     return None
@@ -526,8 +519,8 @@ class QModelV6YOLO:
         Lazy loads the learned SpacingPrior used by the configuration decode.
 
         The path is taken from `model_assets["spacing_prior"]` (a JSON file
-        produced by fit_prior.py). Returns None — and the decode path becomes
-        a no-op — if the decode modules or the prior file are unavailable, so
+        produced by fit_prior.py). Returns None - and the decode path becomes
+        a no-op - if the decode modules or the prior file are unavailable, so
         enabling `decode_config` can never break a deployment that lacks the
         asset.
 
@@ -631,18 +624,20 @@ class QModelV6YOLO:
         }
 
         try:
-            lam_eff: Any = QModelV6Config.DECODE_LAMBDA
-            if QModelV6Config.DECODE_LAMBDA_PAIRS:
-                base = float(QModelV6Config.DECODE_LAMBDA)
-                lam_eff = {p: QModelV6Config.DECODE_LAMBDA_PAIRS.get(p, base) for p in prior.pairs}
+            lam_eff: Any = QModelOnyxConfig.DECODE_LAMBDA
+            if QModelOnyxConfig.DECODE_LAMBDA_PAIRS:
+                base = float(QModelOnyxConfig.DECODE_LAMBDA)
+                lam_eff = {
+                    p: QModelOnyxConfig.DECODE_LAMBDA_PAIRS.get(p, base) for p in prior.pairs
+                }
             result = dp_decode(
                 cands,
                 present,
                 prior,
                 lam=lam_eff,
-                conf_weight=QModelV6Config.DECODE_CONF_WEIGHT,
-                feas_slack=QModelV6Config.DECODE_FEAS_SLACK,
-                max_candidates=QModelV6Config.DECODE_MAX_CANDIDATES,
+                conf_weight=QModelOnyxConfig.DECODE_CONF_WEIGHT,
+                feas_slack=QModelOnyxConfig.DECODE_FEAS_SLACK,
+                max_candidates=QModelOnyxConfig.DECODE_MAX_CANDIDATES,
             )
         except Exception as e:
             Log.e(self.TAG, f"Configuration decode failed: {e}")
@@ -660,13 +655,13 @@ class QModelV6YOLO:
             for name, rec in cascade_snapshot.items()
             if name in present
         }
-        margin = QModelV6Config.DECODE_MIN_MARGIN
+        margin = QModelOnyxConfig.DECODE_MIN_MARGIN
         if margin > 0 and result.chosen and set(result.chosen.keys()) == set(cascade_chosen.keys()):
             cascade_score = score_configuration(
                 cascade_chosen,
                 prior,
                 lam=lam_eff,
-                conf_weight=QModelV6Config.DECODE_CONF_WEIGHT,
+                conf_weight=QModelOnyxConfig.DECODE_CONF_WEIGHT,
             )
             if result.total_score < cascade_score + margin:
                 kept_cascade = True
@@ -724,7 +719,7 @@ class QModelV6YOLO:
         Runs AFTER the reverse cascade has produced ``final_results`` for the
         current ``num_channels`` and BEFORE configuration-prior decode, using
         the controller's own already-loaded zoom detectors
-        (``self._detectors["ch{1,2,3}_zoom"]``) — the same assets
+        (``self._detectors["ch{1,2,3}_zoom"]``) - the same assets
         `_refine_with_zoom` uses post-decode.
 
         Two checks, both advisory/conservative:
@@ -737,14 +732,14 @@ class QModelV6YOLO:
             fires in the tail after the cascade's last confirmed channel POI,
             `num_channels` is upgraded and the newly-found time is written
             into `final_results` exactly like every other detection in this
-            module (`_get_raw_index` + conf + time) — this is a genuine
+            module (`_get_raw_index` + conf + time) - this is a genuine
             zoom-detector detection being accepted, not a fabricated one, so
             it does not violate "never invent new detections": the pool of
             detections it can draw from is the existing zoom detectors'
             outputs, nothing outside that.
           * Over-count veto (`verify_claimed_poi`): re-inspects the cascade's
             OWN claimed highest-channel POI (before any rescue upgrade above)
-            with that channel's zoom detector. This is PURELY informational —
+            with that channel's zoom detector. This is PURELY informational -
             per crosscheck.py's own docstring, a missing zoom detection can
             also mean a zoom-recall failure, so a silent veto alone is not
             treated as strong enough evidence to remove a POI. It never
@@ -754,7 +749,7 @@ class QModelV6YOLO:
         Because the rescue only ever writes a POI that a zoom detector itself
         produced (never interpolates or guesses), and the veto never mutates
         state, this stage can only move within what the existing detector
-        pool already supports — the conservative behaviour called for when
+        pool already supports - the conservative behaviour called for when
         wiring a previously-unused module into a production controller.
 
         Args:
@@ -901,7 +896,7 @@ class QModelV6YOLO:
         col_time = "Relative_time" if "Relative_time" in master_df.columns else master_df.columns[0]
         tv = master_df[col_time].to_numpy(dtype=float)
         t_lo, t_hi = float(tv.min()), float(tv.max())
-        half_w = QModelV6Config.REFINE_WINDOW_S / 2.0
+        half_w = QModelOnyxConfig.REFINE_WINDOW_S / 2.0
         for poi_id, det_name in self.ZOOM_REFINE_MAP.items():
             rec = final_results.get(poi_id)
             if rec is None or rec.get("index", -1) < 0:
@@ -914,7 +909,7 @@ class QModelV6YOLO:
             if w1 - w0 < 4.0:
                 continue
             sl = master_df[(master_df[col_time] >= w0) & (master_df[col_time] < w1)]
-            if len(sl) < QModelV6Config.MIN_SLICE_LENGTH:
+            if len(sl) < QModelOnyxConfig.MIN_SLICE_LENGTH:
                 continue
             try:
                 res = detector.predict_single(sl, target_class_map={0: poi_id})
@@ -922,10 +917,10 @@ class QModelV6YOLO:
                 Log.w(self.TAG, f"Zoom refine failed for {det_name}: {e}")
                 continue
             det = res.get(poi_id) if res else None
-            if not det or det.get("conf", 0.0) < QModelV6Config.REFINE_MIN_CONF:
+            if not det or det.get("conf", 0.0) < QModelOnyxConfig.REFINE_MIN_CONF:
                 continue
             t_new = float(det["time"])
-            if abs(t_new - t_c) > QModelV6Config.REFINE_MAX_SHIFT_FRAC * (w1 - w0):
+            if abs(t_new - t_c) > QModelOnyxConfig.REFINE_MAX_SHIFT_FRAC * (w1 - w0):
                 continue  # latched onto a different event; keep decode pick
             meta["used"] = True
             meta["moved"][self.POI_MAP[poi_id]] = {
@@ -1156,7 +1151,7 @@ class QModelV6YOLO:
                 same in-distribution slice each detector sees, and attach them to
                 the output dict under the reserved key "_candidates" as
                 {POI_NAME: [{"time","conf","index"}, ...]}. This does NOT change
-                cuts or predictions — the cascade proceeds on the greedy pick
+                cuts or predictions - the cascade proceeds on the greedy pick
                 exactly as in production; harvesting only observes the runners-up
                 for the downstream configuration-prior decode. Defaults to False.
             decode_config (bool, optional): If True (implies harvesting), runs the
@@ -1217,7 +1212,7 @@ class QModelV6YOLO:
             if progress_signal:
                 progress_signal.emit(10, "Data Loaded")
 
-            master_df = QModelV6YOLO_DataProcessor.preprocess_dataframe(
+            master_df = QModelOnyx_DataProcessor.preprocess_dataframe(
                 raw_df.copy(),
                 baseline_freq=avg_res_freq,
                 baseline_diss=avg_diss,
@@ -1257,7 +1252,7 @@ class QModelV6YOLO:
             # cut at the LATEST harvested candidate of each stage instead of
             # the greedy pick. Rationale: if the greedy pick is too early, the
             # production cut excises the true downstream event before its
-            # detector ever sees it — a candidate that is never generated can
+            # detector ever sees it - a candidate that is never generated can
             # never be recovered by the decoder, silently capping oracle
             # recall. Cutting at the latest candidate keeps the harvest slice
             # a superset of the production slice (slightly wider than the

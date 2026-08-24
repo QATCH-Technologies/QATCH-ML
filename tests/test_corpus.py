@@ -53,7 +53,7 @@ def test_truth_times_rejects_non_ascending_index(tmp_path):
 
 def test_truth_times_rejects_tail_poi(tmp_path):
     """A POI whose index lands in the last ~0.1% of the run (or beyond) is
-    treated as unset — it's noise/tail artifact, not a real mark."""
+    treated as unset - it's noise/tail artifact, not a real mark."""
     poi_path = tmp_path / "tail_poi.csv"
     n = 10_000
     # row2 is the legacy POI2-shim row (skipped by truth_times); POI3/POI4/POI5

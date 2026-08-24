@@ -1,37 +1,30 @@
-"""
-label_review_packet.py
-======================
+"""Generate the human review packet for persistent offender runs.
 
-Generates the human review packet for the persistent offender runs — now
-the TOP lever for that population, per the evidence chain:
+When a run misses the same transition at every prefix INCLUDING the full
+run, under multiple independent renders and trainings, with miss
+confidence rising to saturation, "confidently wrong across all
+representations" is the signature of label error or a physically
+anomalous fill (partial channel, wicking, bubble) - not of a trainable
+representation gap. This module produces the packet a human reviewer
+needs to make that call.
 
-  * The same ~13 runs miss 3ch->2ch at every prefix INCLUDING the full
-    run, under TWO independent renders (v2 curvature energy, v3
-    step-coincidence energy) and TWO trainings, with miss confidence
-    rising to saturation (00640 at 1.000000). "Confidently wrong across
-    all representations" is the signature of label error or a physically
-    anomalous fill (partial third channel, wicking, bubble) — not of a
-    trainable representation gap.
-  * ~13 runs is ~2.4% of the val split: an entirely plausible annotation
-    error rate for transitions that are near-invisible to a human at
-    full-run scale too.
+For each suspect run given via ``--runs`` (see :mod:`.triage_offenders`
+for how the offender list is derived) this script writes one PNG page:
+raw dissipation and resonance frequency, (top) full run with all labeled
+POI verticals, and (below) ZOOMED panes around each late POI (default
+POI4 and POI5, ±zoom_s), where a genuine transition is unmistakable to a
+human eye and a mislabel equally so. Reviewers mark each run: label
+correct / label wrong (move or remove POI) / physically anomalous.
+Corrections feed the next dataset build; anomalous runs get excluded or
+re-classed.
 
-For each suspect run this script writes one PNG page: raw dissipation and
-resonance frequency, (top) full run with all labeled POI verticals, and
-(below) ZOOMED panes around each late POI (default POI4 and POI5,
-±zoom_s), where a genuine transition is unmistakable to a human eye and a
-mislabel equally so. Reviewers mark each run: label correct / label wrong
-(move or remove POI) / physically anomalous. Corrections feed the next
-dataset build; anomalous runs get excluded or re-classed.
-
-Zero runtime cost — this is offline human review, not a model stage.
+Zero runtime cost - this is offline human review, not a model stage.
 
 Usage
 -----
     python -m src.systems.qmodel_7_onyx.qa.label_review_packet --raw-root data/raw \
         --out artifacts/label_review \
-        --runs 02311 02810 02938 00655 00388 00453 02679 02484 02452 \
-               02910 00640 01754 02448 03086 [--pois POI4 POI5] [--zoom-s 60]
+        --runs 02311 02810 02938 [--pois POI4 POI5] [--zoom-s 60]
 """
 
 from __future__ import annotations
@@ -69,6 +62,20 @@ POI_COLOR = {
 def _plot_pair(
     ax_d, ax_f, df: pd.DataFrame, t0: float, t1: float, poi: Dict[str, float], title: str
 ) -> None:
+    """Plot dissipation and resonance-frequency traces over ``[t0, t1]``
+    onto a pair of axes, with vertical markers for any POI in range.
+
+    Args:
+        ax_d: matplotlib axes for the dissipation trace.
+        ax_f: matplotlib axes for the resonance-frequency trace.
+        df (pd.DataFrame): run dataframe with time/dissipation/frequency
+            columns.
+        t0 (float): window start time.
+        t1 (float): window end time.
+        poi (Dict[str, float]): POI name -> time, for markers falling
+            inside ``[t0, t1]``.
+        title (str): subplot title placed on the dissipation axes.
+    """
     m = (df[COL_TIME] >= t0) & (df[COL_TIME] <= t1)
     sl = df.loc[m]
     t = sl[COL_TIME].to_numpy(float)
@@ -92,6 +99,19 @@ def _plot_pair(
 
 
 def make_page(rec, pois: List[str], zoom_s: float, out: Path) -> None:
+    """Render one review PNG page for a single run.
+
+    The page shows the full run followed by a zoomed pane (±``zoom_s``)
+    around each requested POI that is present on the run, so a reviewer
+    can judge full-run context and transition-level detail together.
+
+    Args:
+        rec: a :class:`RunRecord` with ``run_id``, ``csv_path``,
+            ``poi_times``, and ``viscosity_cP``.
+        pois (List[str]): POI names to zoom in on, if present on ``rec``.
+        zoom_s (float): half-width in seconds of each zoomed pane.
+        out (Path): directory to write ``{run_id}_review.png`` into.
+    """
     df = pd.read_csv(rec.csv_path)
     if COL_TIME not in df.columns:
         LOG.warning("{}: no time column", rec.run_id)
@@ -119,7 +139,7 @@ def make_page(rec, pois: List[str], zoom_s: float, out: Path) -> None:
             max(t0, pt - zoom_s),
             min(t1, pt + zoom_s),
             poi,
-            f"zoom {name} ±{zoom_s:.0f}s — visible transition? (y / move / remove)",
+            f"zoom {name} ±{zoom_s:.0f}s - visible transition? (y / move / remove)",
         )
     fig.tight_layout(rect=(0, 0, 1, 0.97))
     fig.savefig(out / f"{rec.run_id}_review.png", dpi=130)
@@ -133,7 +153,7 @@ def main() -> None:
         "--runs",
         nargs="+",
         default=None,
-        help="run ids to review (required — see usage above for the current "
+        help="run ids to review (required - see usage above for the current "
         "persistent-offender list)",
     )
     ap.add_argument("--pois", nargs="+", default=["POI4", "POI5"])

@@ -1,35 +1,33 @@
-"""
-QModel v6 — Configuration-decode A/B benchmark
-==============================================
+"""Paired A/B benchmark for the configuration-prior decode.
 
 Measures the before/after effect of the configuration-prior decode
-(`decode_config=True`) against the production greedy cascade, PAIRED on the
-same runs and the same YOLO inferences: each run goes through
-`QModelV6YOLO.predict(..., decode_config=True)` ONCE, and the cascade's
-pre-decode placements are read back from the `_decode.cascade` snapshot, so
-both arms come from a single pass.
+(``decode_config=True``) against the production greedy cascade, paired on
+the same runs and the same YOLO inferences: each run goes through
+:meth:`QModelOnyx.predict` with ``decode_config=True`` once, and the
+cascade's pre-decode placements are read back from the ``_decode.cascade``
+snapshot, so both arms come from a single pass.
 
-Headline outputs (mirrors benchmark.py):
+Headline outputs:
   * per-POI global aggregate, side by side (greedy vs decoded), with paired
     deltas, win/loss/tie counts and gross failures FIXED vs INTRODUCED
-  * per-viscosity-tier breakdown so the high-cP tail (slow fills — exactly
+  * per-viscosity-tier breakdown so the high-cP tail (slow fills - exactly
     where the decode should help) is visible rather than buried
   * decode diagnostics: how often the decode moved a POI, fallback rate, and
-    the ORACLE RECALL of the harvested candidate pool — the ceiling on what
+    the ORACLE RECALL of the harvested candidate pool - the ceiling on what
     any decoder can achieve. If oracle recall is low, the remaining work is
     harvest-side (detector/augmentation), not decode-side.
 
 Outputs written to ``--output``:
-  * ``ab_metrics.csv``          — per-POI global aggregate, both arms
-  * ``ab_metrics_by_tier.csv``  — per-POI per-tier breakdown, both arms
-  * ``per_run_results.csv``     — one row per (run, POI) with both errors
-  * ``regressions.csv``         — cases the decode made grossly worse
-  * ``regression_plots/``       — diagnostic figure per regression run
+  * ``ab_metrics.csv``          - per-POI global aggregate, both arms
+  * ``ab_metrics_by_tier.csv``  - per-POI per-tier breakdown, both arms
+  * ``per_run_results.csv``     - one row per (run, POI) with both errors
+  * ``regressions.csv``         - cases the decode made grossly worse
+  * ``regression_plots/``       - diagnostic figure per regression run
 
 Viscosity tiers are taken from the run's ``*_analyze_out.csv`` (mean of
 ``viscosity_avg``) when present; runs without one land in the "unknown"
 tier rather than being dropped. Corpus discovery, dedup, and truth parsing
-live in :mod:`..corpus` — this module is the benchmark CLI + aggregation
+live in :mod:`..corpus` - this module is the benchmark CLI + aggregation
 layer built on top of it.
 
 Usage
@@ -87,7 +85,23 @@ TIER_LABELS = ["<2.66 cP", "2.66-6.16 cP", "6.16-18.14 cP", "18.14-73.4 cP", "73
 
 @dataclass
 class _POIMetrics:
-    """Per-POI time-error accumulator (same fields as benchmark.py)."""
+    """Accumulates signed time errors for one POI and derives summary stats.
+
+    Errors are collected via :meth:`record` as they are observed, then
+    reduced to MAE/RMSE/bias/etc. in one pass by :meth:`summarize`.
+
+    Attributes:
+        time_errs (List[float]): Signed (predicted - true) time errors, in
+            seconds, one per observation.
+        n (int): Number of errors recorded, set by :meth:`summarize`.
+        mae (float): Mean absolute error, in seconds.
+        rmse (float): Root-mean-square error, in seconds.
+        median_ae (float): Median absolute error, in seconds.
+        bias (float): Mean signed error, in seconds.
+        max_ae (float): Maximum absolute error, in seconds.
+        gross_failure_rate (float): Fraction of errors exceeding the gross
+            failure threshold passed to :meth:`summarize`.
+    """
 
     time_errs: List[float] = field(default_factory=list)
     n: int = 0
@@ -99,9 +113,19 @@ class _POIMetrics:
     gross_failure_rate: float = float("nan")
 
     def record(self, err: float) -> None:
+        """Append one signed time error, in seconds, to the accumulator."""
         self.time_errs.append(err)
 
     def summarize(self, gross_threshold: float) -> None:
+        """Compute MAE/RMSE/bias/etc. from the recorded errors.
+
+        No-op if no errors have been recorded, leaving the summary fields
+        at their NaN defaults.
+
+        Args:
+            gross_threshold (float): Absolute error, in seconds, above
+                which an observation counts as a gross failure.
+        """
         if not self.time_errs:
             return
         e = np.array(self.time_errs)
@@ -117,16 +141,45 @@ class _POIMetrics:
 
 @dataclass
 class _PairedCounts:
-    """Paired A/B counters for one POI (or one POI x tier cell)."""
+    """Paired win/loss/tie and gross-failure counters for one POI.
 
-    wins: int = 0  # decode strictly better (beyond tie band)
+    Used both for a POI's global aggregate and for a single POI x tier
+    cell. Because the decode and the greedy cascade are compared run by
+    run against the same truth, every count here is a paired comparison
+    rather than an independent per-arm statistic.
+
+    Attributes:
+        wins (int): Runs where the decode's absolute error was smaller than
+            the greedy cascade's by more than the tie band.
+        losses (int): Runs where the decode's absolute error was larger than
+            the greedy cascade's by more than the tie band.
+        ties (int): Runs where the two arms were within the tie band of
+            each other.
+        gross_fixed (int): Runs where the greedy cascade was a gross
+            failure but the decode was not.
+        gross_introduced (int): Runs where the decode was a gross failure
+            but the greedy cascade was not.
+        oracle_dists (List[float]): Distance from truth to the nearest
+            harvested candidate, one per run - the input to
+            :meth:`oracle_recall`.
+    """
+
+    wins: int = 0
     losses: int = 0
     ties: int = 0
-    gross_fixed: int = 0  # greedy gross, decoded fine
-    gross_introduced: int = 0  # greedy fine, decoded gross
-    oracle_dists: List[float] = field(default_factory=list)  # truth -> nearest candidate
+    gross_fixed: int = 0
+    gross_introduced: int = 0
+    oracle_dists: List[float] = field(default_factory=list)
 
     def oracle_recall(self, tol: float) -> float:
+        """Fraction of recorded runs where truth lies within ``tol`` of the nearest candidate.
+
+        Args:
+            tol (float): Tolerance, in seconds.
+
+        Returns:
+            float: Fraction in [0, 1], or NaN if no distances were recorded.
+        """
         if not self.oracle_dists:
             return float("nan")
         d = np.array(self.oracle_dists)
@@ -134,6 +187,7 @@ class _PairedCounts:
 
     @property
     def oracle_n(self) -> int:
+        """Number of runs with a recorded oracle distance for this POI."""
         return len(self.oracle_dists)
 
 
@@ -152,6 +206,23 @@ def _print_global(
     output_dir: Path,
     oracle_tol: float = 1.0,
 ) -> None:
+    """Print the global per-POI A/B summary table to stdout.
+
+    Args:
+        g (Dict[str, _POIMetrics]): Greedy-cascade metrics, keyed by POI.
+        d (Dict[str, _POIMetrics]): Decoded metrics, keyed by POI.
+        paired (Dict[str, _PairedCounts]): Paired win/loss/tie and oracle
+            counters, keyed by POI.
+        gross_threshold (float): Absolute error, in seconds, above which an
+            observation counts as a gross failure.
+        n_runs (int): Number of runs the summary was computed over.
+        decode_stats (Dict[str, Any]): ``moved``/``fallback``/``unused``
+            decode-usage statistics, as returned by :func:`run_benchmark`.
+        output_dir (Path): Directory the benchmark's CSV/plot outputs were
+            written to, shown in the header for reference.
+        oracle_tol (float, optional): Tolerance, in seconds, used for the
+            headline oracle-recall figure. Defaults to 1.0.
+    """
     HDR = (
         f"{'POI':<6} {'N':>5}  {'MAE_g':>8} {'MAE_d':>8} {'dMAE':>8}  "
         f"{'Med_g':>7} {'Med_d':>7}  {'Fail%_g':>8} {'Fail%_d':>8}  "
@@ -202,7 +273,7 @@ def _print_global(
         "decode unavailable on {unused} run(s)".format(**decode_stats)
     )
     print(f"  {SEP}")
-    print("  Oracle recall (truth within tol of ANY harvested candidate — the decode ceiling):")
+    print("  Oracle recall (truth within tol of ANY harvested candidate - the decode ceiling):")
     hdr = "  {:<6}".format("POI") + "".join(f" {('<=' + str(t) + 's'):>9}" for t in ORACLE_TOLS)
     print(hdr)
     for poi in POI_KEYS:
@@ -218,6 +289,16 @@ def _print_tier(
     d: Dict[str, Dict[int, _POIMetrics]],
     gross_threshold: float,
 ) -> None:
+    """Print the per-POI, per-viscosity-tier A/B breakdown to stdout.
+
+    Args:
+        g (Dict[str, Dict[int, _POIMetrics]]): Greedy-cascade metrics,
+            keyed by POI then by tier index into ``TIER_LABELS``.
+        d (Dict[str, Dict[int, _POIMetrics]]): Decoded metrics, keyed the
+            same way as `g`.
+        gross_threshold (float): Absolute error, in seconds, above which an
+            observation counts as a gross failure.
+    """
     HDR = (
         f"{'POI':<6} {'Tier':<10} {'N':>5}  {'MAE_g':>8} {'MAE_d':>8} {'dMAE':>8}  "
         f"{'Fail%_g':>8} {'Fail%_d':>8}"
@@ -304,7 +385,7 @@ def _render_regression_plot(
         handles.append(plt.Line2D([0], [0], color=_POI_COLORS.get(poi, "#000"), lw=2.4, label=poi))
     axes[0].legend(handles=handles, loc="upper left", fontsize=8, framealpha=0.85)
     axes[-1].set_xlabel("Relative_time (s)", fontsize=9)
-    fig.suptitle(f"Decode regression — run {run_id}   (tier {tier_label})", fontsize=11)
+    fig.suptitle(f"Decode regression - run {run_id}   (tier {tier_label})", fontsize=11)
     fig.tight_layout(rect=(0, 0, 1, 0.96))
     fig.savefig(out_path, dpi=110)
     plt.close(fig)
@@ -378,7 +459,7 @@ def run_benchmark(
     """Run the paired A/B benchmark and print/persist metrics.
 
     controller must expose predict(df=..., decode_config=True) with the
-    QModelV6YOLO output contract. Returns the global summary dict (useful
+    QModelOnyx output contract. Returns the global summary dict (useful
     for asserting in tests / CI gates).
     """
     output_dir = Path(output_dir)
@@ -388,7 +469,7 @@ def run_benchmark(
     # Optional dump of every run's candidate pools + truth + cascade picks.
     # This is the input to decode/sweep.py: the decode itself costs ~2 ms, so
     # once the pools are on disk, lambda / margin / blend can be swept across
-    # the whole corpus offline in seconds — no YOLO re-runs.
+    # the whole corpus offline in seconds - no YOLO re-runs.
     dump_fh = open(output_dir / "candidates.jsonl", "w") if dump_candidates else None
 
     if n_runs is not None and len(runs) > n_runs:
@@ -677,7 +758,7 @@ def _selftest(tmp_root: Path, output_dir: Path, n_runs: int = 80, seed: int = 11
     controller decode (`_decode_with_prior`) and the full benchmark
     aggregation. Verifies the plumbing end-to-end without model weights."""
     from ..decode.spacing_prior import SpacingPrior
-    from ..inference.controller import QModelV6YOLO
+    from ..inference.controller import QModelOnyx
 
     rng = np.random.default_rng(seed)
     prior = SpacingPrior.load(paths.SPACING_PRIOR_JSON)
@@ -713,7 +794,7 @@ def _selftest(tmp_root: Path, output_dir: Path, n_runs: int = 80, seed: int = 11
             run_dir / f"synth_{i:04d}_analyze_out.csv", index=False
         )
 
-    class MockYOLOController(QModelV6YOLO):
+    class MockYOLOController(QModelOnyx):
         """Fabricates the harvest; everything downstream (decode, index
         resolution, output contract) is the real production code."""
 
@@ -799,7 +880,7 @@ def _selftest(tmp_root: Path, output_dir: Path, n_runs: int = 80, seed: int = 11
     expected = {"ab_metrics.csv", "ab_metrics_by_tier.csv", "per_run_results.csv"}
     present = {p.name for p in Path(output_dir).iterdir()}
     assert expected <= present, f"missing outputs: {expected - present}"
-    print("SELFTEST OK — aggregation, A/B pairing, tiers, oracle recall and CSVs verified.")
+    print("SELFTEST OK - aggregation, A/B pairing, tiers, oracle recall and CSVs verified.")
 
 
 # ===========================================================================
@@ -830,7 +911,7 @@ def main() -> None:
         type=Path,
         default=None,
         help="restrict to run ids in this file (e.g. the dataset manifest.json, "
-        "whose val_ids are the held-out runs — the only honest evaluation set "
+        "whose val_ids are the held-out runs - the only honest evaluation set "
         "for a model trained on this corpus)",
     )
     ap.add_argument(
@@ -856,11 +937,11 @@ def main() -> None:
     if not args.raw_root or not args.assets:
         ap.error("--raw-root and --assets are required (or use --selftest)")
 
-    from ..inference.controller import QModelV6YOLO
+    from ..inference.controller import QModelOnyx
 
     model_assets = json.loads(Path(args.assets).read_text())
     model_assets["spacing_prior"] = str(args.prior)
-    controller = QModelV6YOLO(model_assets)
+    controller = QModelOnyx(model_assets)
 
     runs = dedupe_runs(discover_runs(args.raw_root))
     if args.only_runs:

@@ -3,51 +3,53 @@ train_detectors.py
 ==================
 
 Trains the v7 cascade detectors (init / ch1 / ch2 / ch3) on datasets built
-by build_dataset.py, using YOLO26 at a selectable size (n/s/m/l/xl), tuned
-to train on a SINGLE 24 GB GPU (RTX 4090) in hours, not days.
+by build_dataset.py, using YOLO26 at a selectable size (n/s/m/l/xl), sized
+to train on a single 24 GB GPU (e.g. an RTX 4090) in hours rather than days.
 
-The single-GPU pathology this fixes
------------------------------------
-Ultralytics' DetectionTrainer hard-codes ``rect=mode == "val"`` in
-``build_dataset`` — the ``rect=True`` train argument is silently ignored
-for the TRAINING loader. Every 2560x384 render therefore gets letterboxed
-into a 2560x2560 square that is ~85% black padding: ~6.5 MP/image, ~63 GB
-at batch 8, which spills past 24 GB into the Windows CUDA system-memory
-fallback. The 200+ s/it and multi-day ETAs are PCIe thrashing, not compute.
-(The huge initial cls_loss is the same symptom: the loss is dominated by an
-ocean of padded background.)
+Why training uses a custom rectangular trainer
+------------------------------------------------
+Ultralytics' ``DetectionTrainer`` hard-codes ``rect=mode == "val"`` inside
+``build_dataset``, so the ``rect=True`` train argument passed to
+``model.train(...)`` is silently ignored for the TRAINING loader. A wide,
+short render therefore gets letterboxed into a square the size of its long
+edge, which is mostly black padding - several times the pixel count of the
+real content, comfortably enough to spill a 24 GB GPU's budget into a much
+slower system-memory fallback path. The resulting per-iteration slowdown is
+PCIe/host-memory thrashing, not additional compute, and an inflated initial
+classification loss is the same symptom: the loss is dominated by an ocean
+of padded background rather than by real content.
 
-``RectDetectionTrainer`` below overrides that one method so train batches
-are genuinely rectangular (384x2560 at full res — ~1 MP, ~6x less). All
-images share one aspect ratio, so rect costs nothing: a single batch shape,
-no aspect bucketing. Ultralytics disables per-epoch shuffling for rect
-datasets; build_dataset.py compensates by hashing sample filenames so disk
-order IS a fixed random permutation.
+:class:`.RectDetectionTrainer` (built lazily by :func:`_make_rect_trainer`)
+overrides that one method so train batches are genuinely rectangular at the
+render's native aspect ratio instead of square. Because every image in a
+dataset shares one aspect ratio, rect batching costs nothing beyond the fix
+itself: a single fixed batch shape, no aspect-ratio bucketing. Ultralytics
+disables per-epoch shuffling for rect datasets, so build_dataset.py
+compensates by hashing sample filenames so disk order is itself a fixed
+random permutation.
 
 Defaults are sized for a 4090:
-  * imgsz=1536 (content ~1536x232 after rect): 0.36 MP/img. At a ~300 s run
-    this is ~0.2 s/pixel of native time resolution — localization headroom
-    is preserved because boxes are 10-220 px wide, the head regresses
-    sub-cell centers, and final precision belongs to the fine stage +
-    decode, not the coarse detector grid. Use --imgsz 2560 to train at full
-    render resolution: WITH the rect fix that is ~1 MP and also fits 24 GB
-    comfortably; it is simply ~2.5x slower.
+  * imgsz=1536 keeps localization headroom (event boxes are narrow relative
+    to the frame; the head regresses sub-cell centers, and final precision
+    belongs to the fine stage and decode, not the coarse detector grid).
+    Pass --imgsz 2560 to train at full render resolution - with the rect
+    fix that still fits comfortably in 24 GB, just at roughly 2.5x the
+    wall-clock cost.
   * batch=16 at imgsz=1536 (drop to 8 if you raise imgsz to 2560).
-  * cache=False, workers=2 — the established Windows constraints
+  * cache=False, workers=2, to stay within typical Windows constraints
     (RAM-cache duplication across workers, pagefile exhaustion).
 
 Also set the NVIDIA driver's "CUDA - Sysmem Fallback Policy" to
 "Prefer No Sysmem Fallback" (NVIDIA Control Panel > Manage 3D Settings) so
-any future overflow fails fast with an OOM instead of silently running 50x
+any future overflow fails fast with an OOM instead of silently running far
 slower.
 
-Augmentation rationale (unchanged): ALL pixel-space geometric/photometric
-augmentation is OFF (mosaic, mixup, copy_paste, flips, degrees, translate,
-scale, shear, perspective, hsv, erasing). On these renders x IS time:
-fliplr teaches time-reversal invariance, mosaic destroys global fill
-context, translate/scale break the time<->pixel map. Augmentation already
-happened in the signal domain (v7_augment) where labels warp exactly with
-the data.
+Augmentation rationale: ALL pixel-space geometric/photometric augmentation
+is OFF (mosaic, mixup, copy_paste, flips, degrees, translate, scale, shear,
+perspective, hsv, erasing). On these renders x IS time: fliplr teaches
+time-reversal invariance, mosaic destroys global fill context, and
+translate/scale break the time<->pixel map. Augmentation already happens in
+the signal domain (v7_augment) where labels warp exactly with the data.
 
 Usage
 -----
@@ -96,9 +98,9 @@ STAGE_EPOCHS = {
 
 # Zoom stages need a gentler schedule than the cascade stages: locally
 # normalized windows with no run-head anchor and wide variable boxes make
-# the loss landscape noisier — at the cascade lr they peaked at epochs 3-4
-# and then collapsed. Lower lr + shorter patience (their peaks come early,
-# so a long patience just burns epochs walking downhill).
+# the loss landscape noisier, so the cascade learning rate tends to peak
+# very early and then collapse. Lower lr + shorter patience (the peak comes
+# early, so a long patience just burns epochs walking downhill).
 STAGE_LR0 = {"ch1_zoom": 0.0015, "ch2_zoom": 0.0015, "ch3_zoom": 0.0015}
 STAGE_PATIENCE = {"ch1_zoom": 15, "ch2_zoom": 15, "ch3_zoom": 15}
 DEFAULT_LR0 = 0.003
@@ -106,12 +108,17 @@ DEFAULT_PATIENCE = 30
 
 
 def _make_rect_trainer():
-    """Trainer subclass forcing genuinely rectangular TRAIN batches.
+    """Build a ``DetectionTrainer`` subclass that forces genuinely rectangular TRAIN batches.
 
-    Built lazily so this module imports without ultralytics installed.
-    Mirrors the upstream build_dataset exactly except rect=True for both
-    modes. With a single shared aspect ratio across the dataset this yields
-    one fixed batch shape (e.g. 384x2560) instead of square letterboxing.
+    Defined lazily so this module can be imported without ultralytics
+    installed. Mirrors the upstream ``build_dataset`` exactly except with
+    ``rect=True`` for both train and val modes. With a single shared aspect
+    ratio across the dataset this yields one fixed batch shape instead of
+    square letterboxing (see the module docstring for why that matters).
+
+    Returns:
+        type: A ``DetectionTrainer`` subclass, ready to pass as the
+        ``trainer`` argument to ``model.train(...)``.
     """
     from ultralytics.data import build_yolo_dataset
     from ultralytics.models.yolo.detect import DetectionTrainer
@@ -135,7 +142,7 @@ def _make_rect_trainer():
             if mode == "train" and getattr(ds, "augment", False):
                 # The augment branch of build_transforms (v8_transforms)
                 # letterboxes to a SQUARE (imgsz, imgsz) unconditionally,
-                # ignoring rect batch shapes — that square padding is the
+                # ignoring rect batch shapes - that square padding is the
                 # whole memory blow-up. All pixel-space augmentations are
                 # zeroed for this task anyway (augmentation lives in the
                 # signal domain), so route the train dataset through the
@@ -159,11 +166,47 @@ def train_stage(
     resume: bool,
     device: str,
 ) -> StageResult:
+    """Train one cascade-detector stage and return its best checkpoint.
+
+    Args:
+        data_root (Path): Root of the datasets built by build_dataset.py;
+            ``data_root / stage`` must contain a ``data.yaml``.
+        stage (str): Stage name to train, e.g. "init", "ch2", "ch3_zoom".
+        size (str): YOLO26 size letter ("n", "s", "m", "l", "xl").
+        epochs (int): Maximum number of training epochs.
+        project (Path): Ultralytics project directory runs are written under.
+        batch (int): Training batch size.
+        imgsz (int): Training image size passed to Ultralytics.
+        seed (int): Random seed for a deterministic run.
+        resume (bool): Resume from the stage's existing run directory
+            instead of purging and starting fresh.
+        device (str): CUDA device spec passed through to Ultralytics.
+
+    Returns:
+        StageResult: The stage name, best-checkpoint path, and best-effort
+        validation metrics.
+
+    Raises:
+        SystemExit: If ``data_root / stage / "data.yaml"`` does not exist,
+            i.e. build_dataset.py has not been run for this stage yet.
+    """
+    import shutil
+
     from ultralytics import YOLO
 
     data_yaml = data_root / stage / "data.yaml"
     if not data_yaml.exists():
-        raise SystemExit(f"missing {data_yaml} — run build_dataset.py first")
+        raise SystemExit(f"missing {data_yaml} - run build_dataset.py first")
+
+    # Ultralytics reuses this folder in place (exist_ok=True below) rather
+    # than starting clean, so a fresh (non-resume) run can otherwise inherit
+    # stale plots/logs/checkpoints from a previous training session on a
+    # since-regenerated dataset. Purge it first unless we're resuming, which
+    # needs last.pt still in place.
+    run_dir = Path(project) / f"{stage}_yolo26{size}"
+    if not resume and run_dir.exists():
+        LOG.info("[{}] purging stale run dir {}", stage, run_dir)
+        shutil.rmtree(run_dir)
 
     model = YOLO(f"yolo26{size}.pt")
     train_return = model.train(
@@ -181,11 +224,11 @@ def train_stage(
         deterministic=True,
         cos_lr=True,
         patience=STAGE_PATIENCE.get(stage, DEFAULT_PATIENCE),
-        # Stability: every v7 stage peaked very early (ch1 @ epoch 8, ch3 @
-        # 17) then degraded until patience fired — the signature of the
-        # auto-optimizer's lr0=0.01 being too hot for a dataset with heavy
-        # upsampling duplication. Pin a gentler explicit schedule; "auto"
-        # ignores lr0/momentum, so name the optimizer to make lr0 stick.
+        # Stability: on a dataset with heavy upsampling duplication, the
+        # auto-optimizer's default lr0 tends to be too hot, causing an early
+        # peak followed by degradation until patience fires. Pin a gentler
+        # explicit schedule; "auto" ignores lr0/momentum, so name the
+        # optimizer to make lr0 stick.
         optimizer="SGD",
         lr0=STAGE_LR0.get(stage, DEFAULT_LR0),
         momentum=0.937,
@@ -220,6 +263,7 @@ def train_stage(
 
 
 def main() -> None:
+    """CLI entry point: parse arguments and train the requested stages in order."""
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--data-root", type=Path, default=paths.DATASETS_ROOT / "v7")
     ap.add_argument("--size", choices=["n", "s", "m", "l", "xl"], default="s")
