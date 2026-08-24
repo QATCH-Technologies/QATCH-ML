@@ -16,7 +16,7 @@ about the two quantities the live classifier is actually judged on:
 
 Held-out VAL runs (from the dataset manifest, so the split is identical to
 training) are replayed chunk-by-chunk through the exact live decision
-stack - preprocess_for_cls -> QModelV7FillClassifier.predict_probs (with
+stack - preprocess_for_cls -> QModelOnyxFillClassifier.predict_probs (with
 PROB_TEMPERATURE) -> OrdinalEvidence - without the QATCH process plumbing.
 Drop gating is emulated with the drop signal at POI1 (the UI fires it at
 drop application; POI1 is the closest ground-truth proxy).
@@ -54,7 +54,7 @@ from src.utils.logger import get_logger
 
 from .. import paths
 from ..corpus import dedupe_runs, discover_runs
-from .fill_live import OrdinalEvidence, QModelV7FillClassifier, preprocess_for_cls
+from .fill_live import OrdinalEvidence, QModelOnyxFillClassifier, preprocess_for_cls
 
 LOG = get_logger("qmodel_7_onyx.live.replay")
 
@@ -270,7 +270,7 @@ def main() -> None:
         not args.no_gate,
     )
 
-    clf = QModelV7FillClassifier(str(args.weights))
+    clf = QModelOnyxFillClassifier(str(args.weights))
     probs_fn = clf.predict_probs
 
     def make_machines() -> Dict[str, object]:

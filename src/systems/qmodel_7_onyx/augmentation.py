@@ -1,42 +1,19 @@
-"""
-augmentation.py
-================
+"""Signal-domain augmentation and dynamic bounding-box sizing for detector training.
 
-Signal-domain augmentation for QModel detector training, plus dynamic
-(event-extent-calibrated) bounding-box sizing.
+Implements physical signal-domain transformations (time warping, noise
+injection, amplitude jitter) for training datasets where the x-axis
+represents time. Because geometric pixel-space augmentations (e.g., flips,
+translation, mosaic) distort the time-to-pixel mapping or break global
+fill context, signal augmentation is applied directly to raw dataframes
+to keep point-of-interest (POI) labels precisely aligned.
 
-Why signal-domain
------------------
-All geometric pixel-space augmentation (mosaic, flips, translation, scale)
-is DISABLED in the trainer, because on these renders the x-axis IS time:
-fliplr is time reversal, mosaic destroys global fill context, translation
-breaks the time<->pixel map the cascade relies on. Instead we augment the
-raw signal before rendering, where every transform has a physical meaning
-and POI labels can be warped exactly along with the data:
+Also provides dynamic bounding-box width calculation (`dynamic_box_width_sec`)
+to size detector target boxes based on measured temporal event extents.
 
-  * time_warp        - global log-uniform stretch x [0.5 .. 4] composed with
-                       a smooth piecewise-linear monotone jitter. This is the
-                       high-viscosity synthesizer: stretching a fast run's
-                       time axis manufactures the slow-fill geometry the
-                       corpus barely contains (15 runs above 150 cP), instead
-                       of merely re-weighting them. Monotonicity preserves
-                       event order and shape topology; only the time scale -
-                       which the decode layer, not the detector, is
-                       responsible for - is changed.
-  * inject_noise     - white noise scaled to a robust (MAD) signal sigma,
-                       low-frequency baseline drift, and sparse spikes.
-  * amplitude_jitter - per-signal gain/offset jitter, breaking any
-                       memorization of absolute signal levels.
-
-All transforms take and return (df_raw, poi_times) so labels stay exact.
-
-Dynamic boxes
--------------
-`dynamic_box_width_sec` measures the actual temporal extent of the fill
-transition around each POI from the dissipation derivative, so slow
-(high-viscosity) events get proportionally wider boxes instead of the fixed
-pixel size the current model was trained with. Width is clamped to sane
-pixel bounds at render time by the dataset builder.
+Attributes:
+    COL_TIME (str): DataFrame column name for relative time.
+    COL_DISS (str): DataFrame column name for dissipation.
+    COL_FREQ (str): DataFrame column name for resonance frequency.
 """
 
 from __future__ import annotations
@@ -51,11 +28,6 @@ COL_DISS = "Dissipation"
 COL_FREQ = "Resonance_Frequency"
 
 
-# ===========================================================================
-#  Time warping
-# ===========================================================================
-
-
 def make_monotone_warp(
     t_min: float,
     t_max: float,
@@ -64,11 +36,28 @@ def make_monotone_warp(
     n_knots: int = 5,
     slope_sigma: float = 0.35,
 ):
-    """Returns a strictly monotone map w(t) on [t_min, t_max].
+    """Constructs a strictly monotone time-warping function w(t) on [t_min, t_max].
 
-    w is a global stretch S = exp(U(log_stretch_range)) composed with a
-    piecewise-linear jitter whose per-segment slopes are S * exp(N(0,
-    slope_sigma)) - i.e. locally faster/slower filling, globally scaled.
+    Composes a global stretch factor S = exp(U(log_stretch_range)) with a
+    piecewise-linear jitter whose segment slopes follow S * exp(N(0, slope_sigma)).
+    This simulates locally faster or slower filling while scaling the time axis globally.
+
+    Args:
+        t_min (float): Start of the time interval in seconds.
+        t_max (float): End of the time interval in seconds.
+        rng (np.random.Generator): NumPy random number generator instance.
+        log_stretch_range (Tuple[float, float], optional): Log-uniform bounds
+            for the global stretch factor. Defaults to (log(0.5), log(4.0)).
+        n_knots (int, optional): Number of interior segments for piecewise
+            linear jitter. Defaults to 5.
+        slope_sigma (float, optional): Standard deviation of the log-normal
+            slope jitter. Defaults to 0.35.
+
+    Returns:
+        Tuple[Callable[[np.ndarray], np.ndarray], float]: A tuple containing:
+            - w: Callable warping function mapping original time array to
+              warped time array.
+            - S: The global stretch factor applied.
     """
     S = float(np.exp(rng.uniform(*log_stretch_range)))
     knots = np.linspace(t_min, t_max, n_knots + 1)
@@ -88,8 +77,21 @@ def time_warp(
     rng: np.random.Generator,
     **warp_kwargs,
 ) -> Tuple[pd.DataFrame, Dict[str, float], float]:
-    """Apply a monotone time warp to the raw frame and its POI labels.
-    Returns (warped_df, warped_poi_times, global_stretch)."""
+    """Applies a monotone time warp to a raw dataframe and its POI timestamps.
+
+    Args:
+        df (pd.DataFrame): Time series DataFrame containing a relative time column.
+        poi_times (Dict[str, float]): Dictionary mapping POI names to
+            timestamps (in seconds).
+        rng (np.random.Generator): NumPy random number generator instance.
+        **warp_kwargs: Additional arguments passed to `make_monotone_warp`.
+
+    Returns:
+        Tuple[pd.DataFrame, Dict[str, float], float]: A tuple containing:
+            - warped_df: Copy of the DataFrame with warped relative timestamps.
+            - warped_poi_times: Dictionary of transformed POI timestamps.
+            - S: Global stretch factor applied during warping.
+    """
     t = pd.to_numeric(df[COL_TIME], errors="coerce").to_numpy(dtype=float)
     w, S = make_monotone_warp(float(np.nanmin(t)), float(np.nanmax(t)), rng, **warp_kwargs)
     out = df.copy()
@@ -98,12 +100,19 @@ def time_warp(
     return out, poi_out, S
 
 
-# ===========================================================================
-#  Noise / amplitude
-# ===========================================================================
-
-
 def _robust_sigma(x: np.ndarray) -> float:
+    """Estimates signal noise standard deviation using detrended median absolute deviation.
+
+    Detrends the input array via first-order differencing and calculates a
+    scaled MAD to isolate high-frequency noise from global signal trends.
+
+    Args:
+        x (np.ndarray): 1D array of signal values.
+
+    Returns:
+        float: Estimated noise standard deviation, or 0.0 if fewer than
+        8 finite values exist.
+    """
     x = x[np.isfinite(x)]
     if len(x) < 8:
         return 0.0
@@ -119,9 +128,27 @@ def inject_noise(
     spike_prob: float = 0.15,
     cols: Tuple[str, ...] = (COL_DISS, COL_FREQ),
 ) -> pd.DataFrame:
-    """Additive white noise + low-frequency baseline drift + sparse spikes,
-    all scaled to each signal's own robust noise floor so the augmentation
-    never overwhelms event shape."""
+    """Injects white noise, low-frequency baseline drift, and sparse spikes into signals.
+
+    All noise components are scaled relative to each signal's robust noise floor
+    (`_robust_sigma`) to prevent noise from corrupting event shapes.
+
+    Args:
+        df (pd.DataFrame): Input DataFrame with target signal columns.
+        rng (np.random.Generator): NumPy random number generator instance.
+        white_frac (Tuple[float, float], optional): Min/max fraction of noise
+            sigma for additive Gaussian noise. Defaults to (0.2, 1.0).
+        drift_frac (Tuple[float, float], optional): Min/max fraction of noise
+            sigma for sinusoidal drift amplitude. Defaults to (0.0, 3.0).
+        spike_prob (float, optional): Probability of introducing sparse spike
+            artifacts. Defaults to 0.15.
+        cols (Tuple[str, ...], optional): Target column names to augment.
+            Defaults to (COL_DISS, COL_FREQ).
+
+    Returns:
+        pd.DataFrame: A copy of the input DataFrame with noise injected into
+        the specified signal columns.
+    """
     out = df.copy()
     n = len(out)
     for col in cols:
@@ -155,9 +182,23 @@ def amplitude_jitter(
     gain_sigma: float = 0.08,
     cols: Tuple[str, ...] = (COL_DISS, COL_FREQ),
 ) -> pd.DataFrame:
-    """Per-signal multiplicative gain jitter about the signal's own baseline
-    (its early-run median), so event amplitude varies but the baseline does
-    not run away."""
+    """Applies per-signal multiplicative gain jitter around baseline levels.
+
+    Jitters event amplitude about each signal's early-run median baseline,
+    breaking memorization of absolute amplitude levels without causing
+    baseline drift.
+
+    Args:
+        df (pd.DataFrame): Input DataFrame with target signal columns.
+        rng (np.random.Generator): NumPy random number generator instance.
+        gain_sigma (float, optional): Standard deviation of log-normal gain
+            multiplier. Defaults to 0.08.
+        cols (Tuple[str, ...], optional): Target column names to augment.
+            Defaults to (COL_DISS, COL_FREQ).
+
+    Returns:
+        pd.DataFrame: A copy of the input DataFrame with jittered signal amplitudes.
+    """
     out = df.copy()
     for col in cols:
         if col not in out.columns:
@@ -176,7 +217,26 @@ def augment_run(
     p_noise: float = 0.6,
     p_amp: float = 0.6,
 ) -> Tuple[pd.DataFrame, Dict[str, float], Dict[str, float]]:
-    """Compose the augmentations. Returns (df, poi_times, info)."""
+    """Composes time warping, amplitude jitter, and noise injection augmentations.
+
+    Args:
+        df (pd.DataFrame): Input DataFrame of raw run signals.
+        poi_times (Dict[str, float]): Point-of-interest labels mapping names
+            to timestamps (in seconds).
+        rng (np.random.Generator): NumPy random number generator instance.
+        p_warp (float, optional): Probability of applying time warping.
+            Defaults to 0.9.
+        p_noise (float, optional): Probability of applying noise injection.
+            Defaults to 0.6.
+        p_amp (float, optional): Probability of applying amplitude jitter.
+            Defaults to 0.6.
+
+    Returns:
+        Tuple[pd.DataFrame, Dict[str, float], Dict[str, float]]: A tuple containing:
+            - augmented_df: Transformed signal DataFrame.
+            - augmented_poi_times: Dictionary of updated POI timestamps.
+            - info: Metadata dictionary containing augmentation details (e.g., "stretch").
+    """
     info: Dict[str, float] = {"stretch": 1.0}
     if rng.random() < p_warp:
         df, poi_times, S = time_warp(df, poi_times, rng)
@@ -186,11 +246,6 @@ def augment_run(
     if rng.random() < p_noise:
         df = inject_noise(df, rng)
     return df, poi_times, info
-
-
-# ===========================================================================
-#  Dynamic box sizing
-# ===========================================================================
 
 
 def dynamic_box_width_sec(
@@ -204,15 +259,32 @@ def dynamic_box_width_sec(
     min_width_s: float = 0.05,
     max_width_frac: float = 0.06,
 ) -> float:
-    """Temporal extent of the fill transition around poi_t, in seconds.
+    """Calculates the temporal duration of a fill transition around a POI.
 
-    Measures where the smoothed |d(dissipation)/dt| within a local window
-    exceeds `active_frac` of its local peak - i.e. the duration of the
-    transition itself. Slow (high-viscosity) events therefore get wider
-    boxes automatically; the fixed-pixel-size assumption the current model
-    was trained with is what starved it of gradient on stretched events.
+    Measures the duration where the smoothed derivative |d(dissipation)/dt|
+    exceeds `active_frac` of its local peak within a localized window around
+    `poi_t`. High-viscosity (slow) events automatically yield wider boxes,
+    preventing bounding-box gradient starvation on temporally stretched events.
 
-    Falls back to min_width_s when the local derivative is degenerate.
+    Args:
+        df_p (pd.DataFrame): DataFrame containing signal and time series data.
+        poi_t (float): Point-of-interest timestamp in seconds.
+        diss_col (str, optional): Dissipation column name. Defaults to COL_DISS.
+        time_col (str, optional): Relative time column name. Defaults to COL_TIME.
+        rel_window (float, optional): Window size relative to total run duration.
+            Defaults to 0.04.
+        min_window_s (float, optional): Minimum half-window size in seconds.
+            Defaults to 0.75.
+        active_frac (float, optional): Fraction of peak derivative defining active
+            transition extent. Defaults to 0.2.
+        min_width_s (float, optional): Lower bound fallback width in seconds.
+            Defaults to 0.05.
+        max_width_frac (float, optional): Maximum allowed width as a fraction
+            of total run duration. Defaults to 0.06.
+
+    Returns:
+        float: Measured transition duration in seconds, clamped between `min_width_s`
+        and `max_width_frac * total_span`.
     """
     t = pd.to_numeric(df_p[time_col], errors="coerce").to_numpy(dtype=float)
     x = pd.to_numeric(df_p[diss_col], errors="coerce").to_numpy(dtype=float)

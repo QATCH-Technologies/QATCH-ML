@@ -97,7 +97,7 @@ except (ImportError, ModuleNotFoundError):
                 "QModelV6YOLO_FillClassifier (QATCH app) is unavailable — "
                 "QATCH.QModel.src.models.v6_yolo.v6_yolo could not be "
                 "imported. Headless consumers should use "
-                "qmodel_7_onyx.live.fill_live.QModelV7FillClassifier instead."
+                "qmodel_7_onyx.live.fill_live.QModelOnyxFillClassifier instead."
             )
 
 
@@ -187,7 +187,7 @@ class QModelV6YOLO_Live(QModelV6YOLO_FillClassifier):
                 "QATCH.QModel.src.models.v6_yolo.*), none of which are "
                 "importable in this environment. Headless consumers should "
                 "use qmodel_7_onyx.live.fill_live "
-                "(QModelV7FillClassifier / OrdinalEvidence / "
+                "(QModelOnyxFillClassifier / OrdinalEvidence / "
                 "preprocess_for_cls) directly, as replay.py does."
             )
         super().__init__(model_path)

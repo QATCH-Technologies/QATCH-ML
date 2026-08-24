@@ -1,50 +1,40 @@
-"""
-rendering/fill_render.py
-=========================
+"""Version-2 and Version-3 fill-classification renderers.
 
-Version-2 fill-CLASSIFICATION renderer, applying the v7 detector render
-insights to the type classifier, plus the single shared train/deploy input
-contract.
+Applies detector render insights to the type classifier and enforces a single
+shared train/deploy input contract.
 
-Why the classifier needs the derivative-energy strip even more than the
-detectors did
--------------------------------------------------------------------------
-The fill classifier's job is literally COUNTING transitions: the class IS
-the number of fill events visible so far. Its current third strip is the
-Difference curve - a linear combination of the two value strips that
-carries almost no independent information - and all three strips share the
-v1 percentile-value normalization whose failure mode the detector work
-exposed: in a long viscous run the early fill step owns the entire dynamic
-range, so the late transitions that distinguish 2ch from 3ch flatten into
-featureless plateaus. That is exactly the confusion boundary a channel
-counter cannot afford to lose.
+The fill classifier counts transitions (the class is the number of fill events
+visible so far). Under the v1 percentile-value normalization, long viscous runs
+flattened late transitions into featureless plateaus, obscuring the boundary
+between 2-channel and 3-channel fills.
 
-The v2 classification render therefore mirrors detector_render:
+The v2/v3 renders address this by:
+  1. Preserving strips 0 and 1 (dissipation and resonance) exactly as v1 to
+     maintain global fill-context cues.
+  2. Replacing strip 2 (formerly a linear Difference curve) with a transition-aware
+     salience trace.
+        - v2 uses a multi-scale derivative-energy trace.
+        - v3 uses a step-coincidence energy trace, which fixes failure modes on
+          extremely slow, late transitions by using a matched step filter and
+          cross-signal geometric means.
 
-  * Strips 0/1 (dissipation red, resonance green) are kept EXACTLY as the
-    v1 classifier render draws them - same percentile normalization, color
-    fill, +50 edge highlight - preserving the global fill-context cues
-    (step position, plateau levels, fill fraction of frame) the current
-    model already exploits. Those cues are what separate no_fill /
-    initial_fill, where value shape matters more than transition count.
-  * Strip 2 replaces the Difference curve with the DERIVATIVE-ENERGY trace
-    from detector_render: multi-scale, per-scale-MAD-normalized,
-    log-compressed curvature salience. Every transition - millisecond init
-    events and minute-scale viscous channel fills alike - appears as a
-    ridge of comparable height regardless of where in the run it occurs.
-    Counting ridges is amplitude- and position-invariant in precisely the
-    way the class label is.
+Train/deploy contract: `prepare_cls_input` is the sole function that turns a
+preprocessed dataframe into the 224x224 tensor-ready image, ensuring that
+training images and inference images are bit-identical by construction.
 
-Train/deploy contract (the detector lesson, applied)
-----------------------------------------------------
-`prepare_cls_input` is the ONE function that turns a preprocessed
-dataframe into the 224x224 tensor-ready image. build_fill_dataset.py saves
-its exact output; QModelV7 inference feeds its exact output. The 640->224
-INTER_AREA resize lives inside it, so training images and inference images
-are bit-identical by construction - no "same-ish render" drift.
-
-`FILL_RENDER_VERSION` dispatches v1 (legacy weights) vs v2, the same
-roll-out mechanism as QModelOnyxConfig.RENDER_VERSION on the detector side.
+Attributes:
+    COL_TIME (str): DataFrame column name for relative time.
+    COL_DISS (str): DataFrame column name for dissipation.
+    COL_FREQ (str): DataFrame column name for resonance frequency.
+    IMG_CHANNELS (int): Number of image channels (3 for BGR).
+    FILL_GEN_W (int): Base generation image width (640).
+    FILL_GEN_H (int): Base generation image height (640).
+    FILL_INFERENCE_W (int): Final inference image width (224).
+    FILL_INFERENCE_H (int): Final inference image height (224).
+    STRIP_SPEC (tuple): Configuration for rendering each horizontal strip band.
+    STEP_ABS_SCALES_S (tuple[float, ...]): Absolute time scales for v3 step detection.
+    STEP_REL_SCALES (tuple[float, ...]): Span-relative scales for v3 step detection.
+    STEP_SMOOTH_S (float): Post-smoothing window size (in seconds) for v3 traces.
 """
 
 from __future__ import annotations
@@ -84,9 +74,20 @@ STRIP_SPEC = (
 def generate_fill_cls_v2(
     df: pd.DataFrame, img_w: int = FILL_GEN_W, img_h: int = FILL_GEN_H
 ) -> np.ndarray:
-    """v2 classification render: dissipation (red) + resonance (green) value
-    strips exactly as v1, derivative-energy ridge strip (blue) replacing the
-    Difference curve. Takes TOTAL image dimensions."""
+    """Generates the version-2 classification render image.
+
+    Renders dissipation (red) and resonance (green) value strips using the
+    legacy v1 formatting, but replaces the third strip with a derivative-energy
+    ridge strip (blue).
+
+    Args:
+        df (pd.DataFrame): Time series data containing signal columns.
+        img_w (int, optional): Total image width. Defaults to FILL_GEN_W.
+        img_h (int, optional): Total image height. Defaults to FILL_GEN_H.
+
+    Returns:
+        np.ndarray: A 3D numpy array representing the generated BGR image.
+    """
     img = np.zeros((img_h, img_w, IMG_CHANNELS), dtype=np.uint8)
     if df is None or df.empty or len(df) < 2:
         return img
@@ -129,11 +130,19 @@ def generate_fill_cls_v2(
 
 
 def generate_fill_image(df: pd.DataFrame, version: int = 2) -> np.ndarray:
-    """Version dispatch. version=1 reproduces the legacy classifier render
-    (diss/freq/Difference at FILL_GEN geometry) so old type_cls weights keep
-    working; version=2 is the derivative-energy render; version=3 swaps in
-    the step-coincidence energy (retrain required - weights and version
-    travel together)."""
+    """Dispatches fill image generation to the specified render version.
+
+    Args:
+        df (pd.DataFrame): Time series data to render.
+        version (int, optional): Render version to use. Version 1 reproduces
+            the legacy classifier render, Version 2 uses the derivative-energy
+            render, and Version 3 (or higher) uses the step-coincidence energy.
+            Defaults to 2.
+
+    Returns:
+        np.ndarray: A 3D numpy array containing the generated BGR image at
+        generation resolution (640x640).
+    """
     if version == 1:
         # v1 generate_fill_cls takes PER-STRIP height.
         return DP.generate_fill_cls(df, img_h=FILL_GEN_H // 3, img_w=FILL_GEN_W)
@@ -143,53 +152,23 @@ def generate_fill_image(df: pd.DataFrame, version: int = 2) -> np.ndarray:
 
 
 def prepare_cls_input(df: pd.DataFrame, version: int = 2) -> np.ndarray:
-    """THE train/deploy contract: preprocessed dataframe -> the exact
-    224x224 BGR uint8 image the classifier consumes. build_fill_dataset.py
-    saves this image; the predictor feeds this image. INTER_AREA matches the
-    existing inference path."""
+    """Converts a preprocessed dataframe into the final classifier tensor input.
+
+    This function represents the strict train/deploy contract. It generates the
+    classification image and performs the exact INTER_AREA resize down to the
+    final inference resolution (224x224). This exact output is saved during
+    dataset building and fed directly into the predictor during inference.
+
+    Args:
+        df (pd.DataFrame): Time series data to process.
+        version (int, optional): Render version to dispatch. Defaults to 2.
+
+    Returns:
+        np.ndarray: A 224x224x3 uint8 BGR image ready for the classifier.
+    """
     img = generate_fill_image(df, version=version)
     return cv2.resize(img, (FILL_INFERENCE_W, FILL_INFERENCE_H), interpolation=cv2.INTER_AREA)
 
-
-# ===========================================================================
-#  Version 3: step-coincidence energy
-# ===========================================================================
-#
-# What the first v7 training run's offender triage established: the v2
-# derivative-energy strip fails on slow LATE transitions, and not for lack
-# of trying harder - for two structural reasons the triage quantified
-# (POI1/2 salience ~4.2x trace median vs POI4/5 at ~1.6x, with measured
-# transition extents of 12-67 s against a longest curvature scale of 4 s):
-#
-#   1. WRONG MATCHED FILTER. The windowed second difference samples three
-#      POINTS, so per-sample noise never averages down as the window grows,
-#      and at long windows the drifting background's own curvature (random
-#      walk: ~sqrt(w)) inflates the per-scale MAD normalizer - the scales
-#      that should catch slow transitions normalize themselves away.
-#      Synthetic verification: adding long scales + pre-smoothing to the
-#      curvature moved worst-event/phantom separation 0.97 -> 0.96 (nothing).
-#      A STEP filter - difference of adjacent window MEANS - carries the
-#      full step amplitude as signal while noise shrinks ~sqrt(w/dt):
-#      separation 0.97 -> 1.18, POI5 salience 1.29x -> 2.43x median.
-#
-#   2. WRONG COMBINE. Taking the max across signals lets a single-channel
-#      drift excursion or noise burst masquerade as an event - the phantom
-#      fuel behind the 2ch->3ch over-counts. Physics says a genuine fill
-#      transition moves dissipation AND resonance frequency together; the
-#      per-scale GEOMETRIC MEAN of the two normalized step responses keeps
-#      coordinated events and suppresses single-channel excursions:
-#      separation 1.18 -> 1.22, POI5 salience 2.43x -> 2.70x median
-#      (all figures median over 10 noise seeds, monotone improvement in
-#      every seed).
-#
-# Scales are absolute (0.5/2/8 s) plus SPAN-RELATIVE (span/32, span/12):
-# the fill classifier sees whole runs from 25 s to 750 s; fixed absolute
-# scales cannot serve both ends, and the offenders' transition extents ran
-# ~6-9% of span (the dynamic-box cap), which span/12..span/32 brackets.
-#
-# Version 3 = v2's value strips unchanged, B strip = this energy.
-# v3-trained weights ship with FILL_RENDER_VERSION=3; the shared detector
-# render (detector_render) is NOT touched - its weights contract stands.
 
 STEP_ABS_SCALES_S = (0.5, 2.0, 8.0)
 STEP_REL_SCALES = (1.0 / 32.0, 1.0 / 12.0)
@@ -197,9 +176,21 @@ STEP_SMOOTH_S = 0.15
 
 
 def _step_response(x: np.ndarray, w: int) -> np.ndarray:
-    """|mean(x[i+1..i+w]) - mean(x[i-w..i])|, normalized by the interior
-    MAD of its own response - a matched filter for level shifts at scale
-    ~w samples. O(n) via cumulative sums."""
+    """Computes a normalized matched filter for level shifts at a specific scale.
+
+    Calculates the absolute difference between the means of adjacent windows
+    (`|mean(x[i+1..i+w]) - mean(x[i-w..i])|`) efficiently using cumulative sums.
+    The result is normalized by the interior median absolute deviation (MAD) of
+    its own response. This acts as a matched filter for step responses while
+    suppressing noise `~sqrt(w/dt)`.
+
+    Args:
+        x (np.ndarray): 1D input array of signal values.
+        w (int): Window size in samples.
+
+    Returns:
+        np.ndarray: A 1D array of the normalized step response.
+    """
     n = len(x)
     cs = np.concatenate([[0.0], np.cumsum(np.nan_to_num(x, nan=float(np.nanmedian(x))))])
     i = np.arange(n)
@@ -216,9 +207,23 @@ def _step_response(x: np.ndarray, w: int) -> np.ndarray:
 
 
 def step_coincidence_energy(df: pd.DataFrame) -> np.ndarray:
-    """Multi-scale, cross-signal-coincident step salience (see block
-    comment above). Returns a per-sample trace; drawn as strip 3 by the
-    version-3 render."""
+    """Calculates multi-scale, cross-signal-coincident step salience.
+
+    Addresses failures in the v2 derivative-energy strip on slow, late transitions
+    by implementing a step filter combined with a cross-signal geometric mean.
+    It evaluates multiple absolute scales (0.5s, 2s, 8s) and span-relative scales
+    (span/32, span/12) to catch both fast initialized events and slow viscous fills.
+    By requiring coordination across dissipation and resonance, it suppresses
+    single-channel noise excursions.
+
+    Args:
+        df (pd.DataFrame): Time series data containing relative time, dissipation,
+            and resonance frequency columns.
+
+    Returns:
+        np.ndarray: A 1D array representing the per-sample step-coincidence
+        energy trace.
+    """
     n = len(df)
     if n < 16:
         return np.zeros(n)
@@ -254,8 +259,20 @@ def step_coincidence_energy(df: pd.DataFrame) -> np.ndarray:
 def generate_fill_cls_v3(
     df: pd.DataFrame, img_w: int = FILL_GEN_W, img_h: int = FILL_GEN_H
 ) -> np.ndarray:
-    """v3 render: identical to v2 except strip 3 is the step-coincidence
-    energy instead of the curvature-based derivative energy."""
+    """Generates the version-3 classification render image.
+
+    Identical to the v2 classification render, except the third strip (blue)
+    is drawn using the step-coincidence energy instead of the curvature-based
+    derivative energy.
+
+    Args:
+        df (pd.DataFrame): Time series data containing signal columns.
+        img_w (int, optional): Total image width. Defaults to FILL_GEN_W.
+        img_h (int, optional): Total image height. Defaults to FILL_GEN_H.
+
+    Returns:
+        np.ndarray: A 3D numpy array representing the generated BGR image.
+    """
     img = np.zeros((img_h, img_w, IMG_CHANNELS), dtype=np.uint8)
     if df is None or df.empty or len(df) < 2:
         return img

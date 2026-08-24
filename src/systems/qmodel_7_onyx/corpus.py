@@ -1,20 +1,21 @@
-"""
-corpus.py
-=========
+"""Shared corpus-discovery library for evaluating and training models.
 
-Shared corpus-discovery library: walks `data/raw`-style run directories,
-parses ground-truth POI times, and reads per-run viscosity. Every other
-stage (dataset building, tier discovery, benchmarking, audit/triage tools)
-starts from :func:`discover_runs`.
+Walks `data/raw`-style run directories, parses ground-truth point-of-interest
+(POI) times, and reads per-run viscosity. Every other stage (dataset building,
+tier discovery, benchmarking, audit/triage tools) relies on this module as a
+starting point.
 
-This module consolidates logic that used to be duplicated across
-`benchmark_decode.py` (`_truth_times`) and `fit_prior.py`
-(`parse_present`) - both implemented the same "strictly-ascending,
-non-tail POI" acceptance rule independently, which is exactly the kind of
-duplication that drifts out of sync silently. :func:`truth_times` is now the
-single source of truth for what counts as a valid POI mark, used both to fit
-the spacing prior (:mod:`.decode.fit_prior`) and to build the evaluation
-corpus (:func:`discover_runs`).
+Consolidates logic for determining valid POI marks via a strict acceptance rule
+(strictly-ascending, non-tail POI). This is the single source of truth used both
+to fit the spacing prior and to build the evaluation corpus.
+
+Attributes:
+    POI_ROW (Dict[str, int]): Mapping of chain-space POI names to their
+        corresponding zero-indexed row in the POI CSV.
+    TIER_EDGES (List[float]): Fixed viscosity-tier boundary edges (in cP)
+        used for benchmark and report tables.
+    TIER_LABELS (List[str]): Human-readable labels corresponding to the
+        defined viscosity tiers.
 """
 
 from __future__ import annotations
@@ -47,6 +48,15 @@ TIER_LABELS = ["<2.66 cP", "2.66-6.16 cP", "6.16-18.14 cP", "18.14-73.4 cP", "73
 
 
 def viscosity_tier(cp: Optional[float]) -> int:
+    """Determines the viscosity tier index for a given viscosity value.
+
+    Args:
+        cp (Optional[float]): Viscosity in centipoise (cP), or None if unknown.
+
+    Returns:
+        int: The zero-based index of the tier corresponding to `TIER_LABELS`.
+        Returns the "unknown" index if the input is None or not finite.
+    """
     if cp is None or not np.isfinite(cp):
         return len(TIER_EDGES) + 1  # "unknown"
     for i, edge in enumerate(TIER_EDGES):
@@ -57,6 +67,18 @@ def viscosity_tier(cp: Optional[float]) -> int:
 
 @dataclass
 class RunRecord:
+    """A parsed representation of a single physical run directory.
+
+    Attributes:
+        run_id (str): Unique identifier for the run (typically the directory name).
+        csv_path (Path): Path to the primary run data CSV file.
+        poi_times (Dict[str, float]): Dictionary mapping POI names to their
+            ground-truth chain-space time in seconds. Acts as a prefix on
+            partial fills.
+        viscosity_cP (Optional[float]): The mean viscosity of the run in
+            centipoise, if available.
+    """
+
     run_id: str
     csv_path: Path
     poi_times: Dict[str, float]  # chain-space truth (prefix on partial fills)
@@ -64,14 +86,26 @@ class RunRecord:
 
 
 def truth_times(poi_path: Path, time_axis: np.ndarray) -> Dict[str, float]:
-    """Chain-space ground-truth POI times: strictly-ascending, non-tail
-    prefix. A POI is accepted only if its row index is present, non-tail (at
-    least `tail_tol` samples before the end of the run), in range, and
-    strictly later than the previous accepted POI's time. This is the single
-    acceptance rule used both to fit the spacing prior (only complete-fill
-    configurations, i.e. `len(truth_times(...)) == len(POI_ORDER)`, are
-    used) and to build the evaluation corpus (prefixes are accepted as
-    partial fills)."""
+    """Parses and validates ground-truth POI times from a run's POI CSV.
+
+    Extracts chain-space ground-truth times with a strict acceptance rule:
+    A POI is accepted only if its row index is present, non-tail (at least
+    `tail_tol` samples before the end of the run), in range, and strictly
+    later than the previous accepted POI's time.
+
+    This enforces a strictly-ascending, non-tail prefix constraint for both
+    training (where only complete fills are used) and evaluation (where
+    prefixes are accepted as partial fills).
+
+    Args:
+        poi_path (Path): Path to the `*_poi.csv` file containing raw POI indices.
+        time_axis (np.ndarray): The 1D numeric array of time values for the run,
+            used to map row indices to physical timestamps.
+
+    Returns:
+        Dict[str, float]: A dictionary mapping POI names (e.g., "POI1") to
+        their validated timestamps.
+    """
     try:
         raw_idx = pd.to_numeric(
             pd.read_csv(poi_path, header=None).iloc[:, 0], errors="coerce"
@@ -99,6 +133,15 @@ def truth_times(poi_path: Path, time_axis: np.ndarray) -> Dict[str, float]:
 
 
 def _viscosity_from_frame(df: pd.DataFrame) -> Optional[float]:
+    """Extracts the mean viscosity from an analyze-output DataFrame.
+
+    Args:
+        df (pd.DataFrame): The DataFrame parsed from an `analyze_out` CSV.
+
+    Returns:
+        Optional[float]: The mean viscosity in cP if a valid `viscosity_avg`
+        column exists and contains finite numeric data; otherwise, None.
+    """
     df.columns = [str(c).lstrip("# ").strip() for c in df.columns]
     if "viscosity_avg" in df.columns:
         v = pd.to_numeric(df["viscosity_avg"], errors="coerce").dropna()
@@ -108,9 +151,19 @@ def _viscosity_from_frame(df: pd.DataFrame) -> Optional[float]:
 
 
 def run_viscosity(run_dir: Path) -> Optional[float]:
-    """Mean viscosity_avg from a run's analyze output. Looks at loose
-    `*analyze_out*.csv` files first, then inside `analyze-N.zip`
-    archives."""
+    """Locates and extracts the mean viscosity for a single run directory.
+
+    Searches for `*analyze_out*.csv` files directly within the directory,
+    falling back to probing inside `analyze-*.zip` archives if the loose
+    CSV is missing.
+
+    Args:
+        run_dir (Path): The root directory path of the specific run.
+
+    Returns:
+        Optional[float]: The parsed mean viscosity in cP, or None if no
+        valid analyze output was found.
+    """
     for p in run_dir.glob("*analyze_out*.csv"):
         try:
             cp = _viscosity_from_frame(pd.read_csv(p))
@@ -134,6 +187,22 @@ def run_viscosity(run_dir: Path) -> Optional[float]:
 
 
 def discover_runs(raw_root: Path, time_col: str = "Relative_time") -> List[RunRecord]:
+    """Scans a root directory to discover and parse valid run records.
+
+    Iterates over subdirectories looking for pairs of data CSVs and POI
+    CSVs. Extracts the time axis, filters out malformed or empty data,
+    extracts validated truth times, and attempts to resolve viscosity.
+
+    Args:
+        raw_root (Path): Path to the root directory containing run subdirectories
+            (e.g., `data/raw`).
+        time_col (str, optional): The name of the time column to use. Defaults to
+            "Relative_time". Falls back to the first column if missing.
+
+    Returns:
+        List[RunRecord]: A list of successfully validated and parsed `RunRecord`
+        instances representing the discoverable corpus.
+    """
     runs: List[RunRecord] = []
     for d in sorted(Path(raw_root).iterdir()):
         if not d.is_dir():
@@ -169,16 +238,33 @@ def discover_runs(raw_root: Path, time_col: str = "Relative_time") -> List[RunRe
 
 
 def _run_fingerprint(rec: RunRecord) -> str:
-    """Content fingerprint for duplicate-run detection. Two directories
-    containing the same physical run (same POI truth times) are the same run
-    regardless of directory name. Duplicates double-count benchmark failures
-    and - far worse - defeat group-by-run_id train/val splitting: the same
-    run on both sides of the split is leakage."""
+    """Generates a unique content fingerprint for duplicate-run detection.
+
+    Calculates a Blake2s hash based on the exact sequence of POI truth times.
+    Two directories containing the same physical run (same POI times) are
+    considered the same run regardless of their directory names. This prevents
+    double-counting benchmark failures and avoids train/val data leakage.
+
+    Args:
+        rec (RunRecord): The run record to fingerprint.
+
+    Returns:
+        str: An 8-byte hexadecimal string representing the run's content fingerprint.
+    """
     key = "|".join(f"{k}:{v:.4f}" for k, v in sorted(rec.poi_times.items()))
     return hashlib.blake2s(key.encode(), digest_size=8).hexdigest()
 
 
 def dedupe_runs(runs: List[RunRecord]) -> List[RunRecord]:
+    """Removes duplicate runs from a corpus using content fingerprints.
+
+    Args:
+        runs (List[RunRecord]): The initial list of parsed run records.
+
+    Returns:
+        List[RunRecord]: A deduplicated list of run records. Warnings are logged
+        for any duplicates dropped during this process.
+    """
     seen: Dict[str, str] = {}
     out: List[RunRecord] = []
     n_dup = 0
@@ -196,11 +282,22 @@ def dedupe_runs(runs: List[RunRecord]) -> List[RunRecord]:
 
 
 def load_run_filter(path: Path) -> set:
-    """Accepts either a build_dataset manifest.json (uses its val_ids - the
-    runs the CURRENT model never trained on) or a plain text/JSON list of run
-    ids. Benchmarking on the full corpus rewards whichever system memorized
-    the corpus harder; a system trained (even partially) on the evaluation
-    runs reports memorization, not generalization."""
+    """Loads a set of allowed or isolated run IDs for stratified evaluation.
+
+    Accepts either a JSON manifest from `build_dataset.py` (extracting its
+    `val_ids` key to ensure evaluation strictly on unseen runs) or a plain
+    text/JSON list of run IDs. This prevents benchmarking on runs the model
+    may have already memorized during training.
+
+    Args:
+        path (Path): Path to the JSON manifest or text list of run IDs.
+
+    Returns:
+        set: A set of unique run ID strings parsed from the file.
+
+    Raises:
+        SystemExit: If the file format is unrecognized or lacks the expected schema.
+    """
     text = Path(path).read_text()
     try:
         data = json.loads(text)

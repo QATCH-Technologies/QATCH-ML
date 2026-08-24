@@ -1,61 +1,35 @@
-"""
-train_detectors.py
-==================
+"""Trains the v7 cascade detectors (init / ch1 / ch2 / ch3).
 
-Trains the v7 cascade detectors (init / ch1 / ch2 / ch3) on datasets built
-by build_dataset.py, using YOLO26 at a selectable size (n/s/m/l/xl), sized
-to train on a single 24 GB GPU (e.g. an RTX 4090) in hours rather than days.
+Trains the detectors on datasets built by build_dataset.py, using YOLO26 at a 
+selectable size (n/s/m/l/xl). Defaults are sized to train on a single 24 GB GPU 
+(e.g., an RTX 4090) in hours rather than days.
 
-Why training uses a custom rectangular trainer
-------------------------------------------------
-Ultralytics' `DetectionTrainer` hard-codes `rect=mode == "val"` inside
-`build_dataset`, so the `rect=True` train argument passed to
-`model.train(...)` is silently ignored for the TRAINING loader. A wide,
-short render therefore gets letterboxed into a square the size of its long
-edge, which is mostly black padding - several times the pixel count of the
-real content, comfortably enough to spill a 24 GB GPU's budget into a much
-slower system-memory fallback path. The resulting per-iteration slowdown is
-PCIe/host-memory thrashing, not additional compute, and an inflated initial
-classification loss is the same symptom: the loss is dominated by an ocean
-of padded background rather than by real content.
+Ultralytics' DetectionTrainer hard-codes `rect=mode == "val"` inside `build_dataset`, 
+so the `rect=True` train argument passed to `model.train(...)` is silently ignored 
+for the TRAINING loader. A wide, short render therefore gets letterboxed into a 
+square the size of its long edge, which is mostly black padding. This inflates 
+memory usage and slows down training due to PCIe/host-memory thrashing. 
+`RectDetectionTrainer` overrides this to ensure train batches are genuinely 
+rectangular at the render's native aspect ratio.
 
-:class:`.RectDetectionTrainer` (built lazily by :func:`_make_rect_trainer`)
-overrides that one method so train batches are genuinely rectangular at the
-render's native aspect ratio instead of square. Because every image in a
-dataset shares one aspect ratio, rect batching costs nothing beyond the fix
-itself: a single fixed batch shape, no aspect-ratio bucketing. Ultralytics
-disables per-epoch shuffling for rect datasets, so build_dataset.py
-compensates by hashing sample filenames so disk order is itself a fixed
-random permutation.
+Augmentation rationale: ALL pixel-space geometric/photometric augmentation is OFF 
+(mosaic, mixup, copy_paste, flips, degrees, translate, scale, shear, perspective, 
+hsv, erasing). On these renders x IS time: fliplr teaches time-reversal invariance, 
+mosaic destroys global fill context, and translate/scale break the time<->pixel map. 
 
-Defaults are sized for a 4090:
-  * imgsz=1536 keeps localization headroom (event boxes are narrow relative
-    to the frame; the head regresses sub-cell centers, and final precision
-    belongs to the fine stage and decode, not the coarse detector grid).
-    Pass --imgsz 2560 to train at full render resolution - with the rect
-    fix that still fits comfortably in 24 GB, just at roughly 2.5x the
-    wall-clock cost.
-  * batch=16 at imgsz=1536 (drop to 8 if you raise imgsz to 2560).
-  * cache=False, workers=2, to stay within typical Windows constraints
-    (RAM-cache duplication across workers, pagefile exhaustion).
-
-Also set the NVIDIA driver's "CUDA - Sysmem Fallback Policy" to
-"Prefer No Sysmem Fallback" (NVIDIA Control Panel > Manage 3D Settings) so
-any future overflow fails fast with an OOM instead of silently running far
-slower.
-
-Augmentation rationale: ALL pixel-space geometric/photometric augmentation
-is OFF (mosaic, mixup, copy_paste, flips, degrees, translate, scale, shear,
-perspective, hsv, erasing). On these renders x IS time: fliplr teaches
-time-reversal invariance, mosaic destroys global fill context, and
-translate/scale break the time<->pixel map. Augmentation already happens in
-the signal domain (v7_augment) where labels warp exactly with the data.
-
-Usage
------
+Example:
     python train_detectors.py --data-root datasets/v7 --size s \
-        [--stages init ch1 ch2 ch3] [--imgsz 1536] [--batch 16] \
-        [--epochs 150] [--project runs/v7]
+        --stages init ch1 ch2 ch3 --imgsz 1536 --batch 16 \
+        --epochs 150 --project runs/v7
+
+Attributes:
+    STAGE_CHOICES (list[str]): Available stages for training.
+    STAGE_EPOCHS (dict[str, int]): Per-stage maximum epoch overrides.
+    STAGE_LR0 (dict[str, float]): Per-stage initial learning rate overrides, 
+        specifically gentler schedules for zoom stages.
+    STAGE_PATIENCE (dict[str, int]): Per-stage early-stopping patience overrides.
+    DEFAULT_LR0 (float): Default initial learning rate.
+    DEFAULT_PATIENCE (int): Default early stopping patience.
 """
 
 from __future__ import annotations
@@ -108,23 +82,47 @@ DEFAULT_PATIENCE = 30
 
 
 def _make_rect_trainer():
-    """Build a `DetectionTrainer` subclass that forces genuinely rectangular TRAIN batches.
+    """Builds a DetectionTrainer subclass that forces genuinely rectangular train batches.
 
-    Defined lazily so this module can be imported without ultralytics
-    installed. Mirrors the upstream `build_dataset` exactly except with
-    `rect=True` for both train and val modes. With a single shared aspect
-    ratio across the dataset this yields one fixed batch shape instead of
-    square letterboxing (see the module docstring for why that matters).
+    Defined lazily so this module can be imported without ultralytics installed.
+    Mirrors the upstream build_dataset exactly except with `rect=True` for both train
+    and val modes. With a single shared aspect ratio across the dataset this yields
+    one fixed batch shape instead of square letterboxing.
 
     Returns:
-        type: A `DetectionTrainer` subclass, ready to pass as the
-        `trainer` argument to `model.train(...)`.
+        type: A DetectionTrainer subclass, ready to pass as the trainer argument
+        to model.train().
     """
     from ultralytics.data import build_yolo_dataset
     from ultralytics.models.yolo.detect import DetectionTrainer
 
     class RectDetectionTrainer(DetectionTrainer):
+        """DetectionTrainer subclass for forcing rectangular training batches.
+
+        Overrides the default dataset building behavior to ensure that rectangular
+        batching is used during the training phase, preventing memory blow-ups
+        from unnecessary square letterboxing on wide/short renders.
+        """
+
         def build_dataset(self, img_path, mode: str = "train", batch=None):
+            """Builds a YOLO dataset with rectangular batching enabled.
+
+            Overrides the base DetectionTrainer.build_dataset method to enforce
+            `rect=True` for both training and validation sets. Disables the
+            pixel-space augmentation transform path if `mode` is "train" to prevent
+            unconditional square letterboxing.
+
+            Args:
+                img_path (str): Path to the image directory or dataset configuration.
+                mode (str, optional): The mode to build the dataset for, typically
+                    "train" or "val". Defaults to "train".
+                batch (int | None, optional): The batch size used when constructing
+                    the dataset. Defaults to None.
+
+            Returns:
+                ultralytics.data.dataset.YOLODataset: The constructed YOLO dataset
+                configured for rectangular batching.
+            """
             try:  # stride accessor name varies across ultralytics versions
                 from ultralytics.utils.torch_utils import unwrap_model
 
@@ -263,7 +261,12 @@ def train_stage(
 
 
 def main() -> None:
-    """CLI entry point: parse arguments and train the requested stages in order."""
+    """Parses command-line arguments and trains the requested detector stages in order.
+
+    Provides a CLI entry point to sequentially train one or more detector stages
+    using customized settings for batch size, image size, device, output project,
+    random seed, resume behavior, and epoch counts.
+    """
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--data-root", type=Path, default=paths.DATASETS_ROOT / "v7")
     ap.add_argument("--size", choices=["n", "s", "m", "l", "xl"], default="s")

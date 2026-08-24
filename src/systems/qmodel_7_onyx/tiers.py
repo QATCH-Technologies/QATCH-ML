@@ -1,43 +1,22 @@
-"""
-tiers.py
-========
+"""Data-driven viscosity tier binning for stratified dataset splitting.
 
-Data-driven viscosity tier binning, replacing the arbitrary 5-bin scheme.
+Replaces arbitrary binning schemes by fitting tiers on log10(viscosity_cP),
+since fill dynamics scale roughly multiplicatively with viscosity, making
+log-space ideal for cluster structure.
 
-Tiers are fitted on log10(viscosity_cP) - fill dynamics scale roughly
-multiplicatively with viscosity, so log-space is where cluster structure
-lives. Three fitters:
+Supports multiple fitting methods:
+  * `log_uniform` (default): Equal-width bins in log-space, ensuring the
+    top tier captures the true high-viscosity tail of the corpus.
+  * `gmm`: Gaussian mixture model with BIC model selection, placing bin edges
+    at posterior decision boundaries. Tends to underrepresent the tail slightly.
+  * `quantile`: Equal-count bins. Guarantees balanced support but collapses
+    the right-skewed tail into a single bucket.
 
-  * `log_uniform` (default): bins of equal width in log10(cP), spanning
-    the observed min..max. This is the only method that guarantees the
-    top edge tracks the actual tail of the corpus - the corpus here has
-    a 95th percentile around 46 cP but individual runs up to ~1800 cP, and
-    both of the count-balanced methods below place their top edge around
-    11-17 cP because that's where the *count* quantile falls, silently
-    lumping every run from there to 1800 cP into one "N+" bucket.
-  * `gmm`: Gaussian mixture with BIC model selection over k (uses
-    scikit-learn when available). Bin edges are placed at the posterior
-    decision boundaries between adjacent components. Cluster-seeking, not
-    range-seeking: BIC penalizes extra components that only serve a
-    sparsely-populated tail, so it tends to underrepresent high-viscosity
-    runs the same way quantile does (just less severely).
-  * `quantile`: equal-*count* bins (no dependency). Guarantees balanced
-    support per tier but, for a right-skewed corpus, that balance is
-    exactly what collapses the tail.
+Regardless of the selected method, bins with fewer than `min_support` runs
+are iteratively merged into their neighbors to ensure viable stratification
+across train and validation splits.
 
-Whichever method is used, bins with fewer than `min_support` runs are merged into their
-neighbour, because a stratification bin you cannot populate in BOTH train
-and val splits is worse than no bin: it silently degrades to noise in the
-sampler and in the benchmark's per-tier tables (the 150+ cP tier with n=15
-in the current corpus is exactly this).
-
-The result is persisted to `configs/tiers.json` and consumed by:
-  * dataset/build_detectors.py, dataset/build_fill_classifier.py - stratified
-    group split + per-tier upsampling
-  * qa/benchmark.py - per-tier reporting
-
-Usage
------
+Example:
     python -m src.systems.qmodel_7_onyx.tiers --raw-root data/raw --out configs/tiers.json
 """
 
@@ -60,8 +39,19 @@ LOG = get_logger("qmodel_7_onyx.tiers")
 
 @dataclass
 class TierScheme:
-    """Edges are in cP, ascending, defining len(edges)+1 bins plus an
-    implicit "unknown" bin for runs without a viscosity estimate."""
+    """Defines viscosity tiers and handles categorization of run data.
+
+    Edges are stored in centipoise (cP) in ascending order, defining
+    `len(edges) + 1` bins plus an implicit "unknown" bin for runs without
+    a viscosity estimate.
+
+    Attributes:
+        edges_cp (List[float]): Ascending tier boundary edges in cP.
+        labels (List[str]): Human-readable labels for each tier.
+        n_per_tier (List[int]): Number of samples falling into each tier.
+        method (str): The fitting method used to generate the tiers (e.g.,
+            "log_uniform", "gmm", "quantile").
+    """
 
     edges_cp: List[float]
     labels: List[str] = field(default_factory=list)
@@ -82,9 +72,19 @@ class TierScheme:
 
     @property
     def n_tiers(self) -> int:
+        """int: Total number of defined tiers, including the 'unknown' tier."""
         return len(self.edges_cp) + 2  # bins + unknown
 
     def tier_of(self, cp: Optional[float]) -> int:
+        """Determines the corresponding tier index for a given viscosity value.
+
+        Args:
+            cp (Optional[float]): Viscosity value in cP.
+
+        Returns:
+            int: The zero-indexed tier bin, or the 'unknown' tier index
+            if `cp` is None or non-finite.
+        """
         if cp is None or not np.isfinite(cp):
             return len(self.edges_cp) + 1  # unknown
         for i, e in enumerate(self.edges_cp):
@@ -93,6 +93,11 @@ class TierScheme:
         return len(self.edges_cp)
 
     def save(self, path: Path) -> None:
+        """Serializes the tier scheme to a JSON configuration file.
+
+        Args:
+            path (Path): Destination file path for the JSON configuration.
+        """
         Path(path).write_text(
             json.dumps(
                 dict(
@@ -107,6 +112,14 @@ class TierScheme:
 
     @staticmethod
     def load(path: Path) -> "TierScheme":
+        """Deserializes a TierScheme from a JSON configuration file.
+
+        Args:
+            path (Path): Path to the saved JSON configuration.
+
+        Returns:
+            TierScheme: The instantiated tier scheme loaded from the file.
+        """
         d = json.loads(Path(path).read_text())
         return TierScheme(
             edges_cp=d["edges_cp"],
@@ -117,7 +130,20 @@ class TierScheme:
 
 
 def _merge_small_bins(edges: List[float], log_v: np.ndarray, min_support: int) -> List[float]:
-    """Drop interior edges until every bin has >= min_support members."""
+    """Merges interior bin edges until all bins meet a minimum support threshold.
+
+    Iteratively drops the boundary adjacent to the smallest bin, effectively
+    merging it into its neighbor, until all remaining bins contain at least
+    `min_support` items or no interior edges remain.
+
+    Args:
+        edges (List[float]): Initial list of interior bin edges in log space.
+        log_v (np.ndarray): Array of log10(viscosity) values.
+        min_support (int): Minimum number of samples required per bin.
+
+    Returns:
+        List[float]: Filtered list of interior edges ensuring minimum support.
+    """
     edges = sorted(edges)
     while edges:
         counts = np.histogram(log_v, bins=[-np.inf] + edges + [np.inf])[0]
@@ -133,21 +159,52 @@ def _merge_small_bins(edges: List[float], log_v: np.ndarray, min_support: int) -
 
 
 def _log_uniform_edges(log_v: np.ndarray, n_bins: int) -> List[float]:
-    """Interior edges of `n_bins` bins of equal width spanning
-    `log_v`'s observed range - the only scheme whose top edge tracks the
-    actual max of a right-skewed corpus rather than a count quantile."""
+    """Calculates equal-width bin edges in log space.
+
+    Ensures the top edge tracks the actual maximum of a right-skewed corpus
+    rather than a count quantile.
+
+    Args:
+        log_v (np.ndarray): Array of log10(viscosity) values.
+        n_bins (int): Target number of bins.
+
+    Returns:
+        List[float]: Interior bin edges dividing the range evenly.
+    """
     lo, hi = float(log_v.min()), float(log_v.max())
     return list(np.linspace(lo, hi, n_bins + 1)[1:-1])
 
 
 def _quantile_edges(log_v: np.ndarray, n_bins: int) -> List[float]:
+    """Calculates equal-count bin edges using quantiles.
+
+    Args:
+        log_v (np.ndarray): Array of log10(viscosity) values.
+        n_bins (int): Target number of bins.
+
+    Returns:
+        List[float]: Interior bin edges mapping to equal percentiles.
+    """
     qs = np.linspace(0, 1, n_bins + 1)[1:-1]
     return list(np.quantile(log_v, qs))
 
 
 def _gmm_edges(log_v: np.ndarray, max_tiers: int) -> Optional[tuple]:
-    """Returns (edges_log, n_components) via BIC-selected GaussianMixture,
-    or None if scikit-learn isn't installed."""
+    """Calculates cluster-seeking bin boundaries using a Gaussian Mixture Model.
+
+    Selects the optimal number of components up to `max_tiers` using the
+    Bayesian Information Criterion (BIC), then places edges at the dense
+    posterior decision boundaries between adjacent components.
+
+    Args:
+        log_v (np.ndarray): Array of log10(viscosity) values.
+        max_tiers (int): Maximum number of mixture components to evaluate.
+
+    Returns:
+        Optional[tuple]: A tuple containing a list of interior log edges
+        and the number of components selected, or None if `scikit-learn`
+        is not installed.
+    """
     try:
         from sklearn.mixture import GaussianMixture
     except ImportError:
@@ -175,16 +232,29 @@ def fit_tiers(
     min_support: int = 40,
     method: str = "auto",
 ) -> TierScheme:
-    """Fit a TierScheme on the corpus viscosities.
+    """Fits a data-driven TierScheme to the provided corpus viscosities.
 
-    min_support: minimum runs per tier AFTER merging. Should comfortably
-    exceed 2x the validation fraction's reciprocal sampling needs (a tier
-    needs presence in both splits to be a meaningful stratum).
+    Transforms viscosities to log10 space, applies the requested binning
+    strategy, and merges underpopulated bins to ensure valid stratification
+    during train/val splitting.
 
-    method: "auto" (== "log_uniform"), "log_uniform", "gmm", or "quantile".
-    "gmm" falls back to "log_uniform" (not "quantile") when scikit-learn is
-    unavailable or its decision-boundary scan comes up empty, since
-    log_uniform is the better range-preserving default either way.
+    Args:
+        viscosities_cp (np.ndarray): Array of corpus viscosity values in cP.
+        max_tiers (int, optional): Maximum number of tiers to generate initially.
+            Defaults to 8.
+        min_support (int, optional): Minimum required runs per tier after merging.
+            Should exceed 2x the reciprocal validation fraction. Defaults to 40.
+        method (str, optional): Fitting strategy. One of "auto" (defaults
+            to "log_uniform"), "log_uniform", "gmm", or "quantile".
+            "gmm" falls back to "log_uniform" if unsupported or if the scan fails.
+            Defaults to "auto".
+
+    Returns:
+        TierScheme: The fitted scheme containing final tier boundaries and counts.
+
+    Raises:
+        SystemExit: If the number of valid viscosity samples is insufficient
+            for the required minimum support.
     """
     v = np.asarray(viscosities_cp, dtype=float)
     v = v[np.isfinite(v) & (v > 0)]
@@ -216,6 +286,12 @@ def fit_tiers(
 
 
 def main() -> None:
+    """Parses command-line arguments and fits a new viscosity TierScheme.
+
+    Discovers runs in the configured raw data root, extracts viscosities, fits
+    the requested tier structure, and saves the configuration to JSON for use
+    in downstream dataset building and benchmarking.
+    """
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--raw-root", type=Path, default=paths.DATA_ROOT)
     ap.add_argument("--out", type=Path, default=paths.TIERS_JSON)

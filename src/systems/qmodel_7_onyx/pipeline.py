@@ -1,7 +1,4 @@
 """
-pipeline.py
-===========
-
 The public entry point for this system: `Workspace` + `Pipeline`.
 
 Today, going from "a folder of raw data" to "trained model weights" means

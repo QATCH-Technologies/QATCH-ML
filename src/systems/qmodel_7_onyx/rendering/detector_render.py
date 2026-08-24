@@ -1,7 +1,4 @@
 """
-rendering/detector_render.py
-=============================
-
 Version-2 detection-image renderer, addressing the two representation
 failures the v7 training run exposed:
 
@@ -29,6 +26,19 @@ the production predictor (QModelOnyxConfig.RENDER_VERSION). The render the
 weights were trained on MUST be the render they see at inference; the
 version flag exists precisely so old (v1-trained) weights keep working
 while v2-trained weights roll out.
+
+Attributes:
+    COL_TIME (str): DataFrame column name for relative time.
+    COL_DISS (str): DataFrame column name for dissipation.
+    COL_FREQ (str): DataFrame column name for resonance frequency.
+    IMG_CHANNELS (int): Number of image channels (3 for BGR).
+    COLOR_WHITE (tuple[int, int, int]): BGR color tuple for white outlines.
+    DERIV_SCALES_S (tuple[float, ...]): Half-window timescales (in seconds)
+        for transition detection.
+    DERIV_SMOOTH_S (float): Post-smoothing window size (in seconds) for the
+        salience trace.
+    DERIV_UPPER_PCT (float): Robust percentile ceiling for ridge normalization.
+    DERIV_EPS (float): Epsilon value to prevent division by zero in calculations.
 """
 
 from __future__ import annotations
@@ -55,10 +65,21 @@ DERIV_EPS = 1e-12
 
 
 def _scaled_curv(x: np.ndarray, w: int) -> np.ndarray:
-    """|x[i+w] - 2x[i] + x[i-w]|: windowed second difference, same length
-    (edges clamped). Fires on steps AND on slope changes, and is inherently
-    insensitive to a linear trend - which is what distinguishes a late-fill
-    POI (a bend on a monotone background) from the background itself."""
+    """Computes the windowed second difference of a 1D array.
+
+    Calculates `|x[i+w] - 2x[i] + x[i-w]|` for each point, clamping the edges.
+    This filter fires on both step changes and slope changes, while remaining
+    inherently insensitive to linear trends. This property distinguishes late-fill
+    points of interest (bends on a monotone background) from the background itself.
+
+    Args:
+        x (np.ndarray): 1D input array of signal values.
+        w (int): Half-window size in samples.
+
+    Returns:
+        np.ndarray: A 1D array of the same length as `x` containing the
+        computed windowed second difference.
+    """
     n = len(x)
     out = np.zeros(n)
     if n <= 2 * w:
@@ -70,15 +91,24 @@ def _scaled_curv(x: np.ndarray, w: int) -> np.ndarray:
 
 
 def derivative_energy(df: pd.DataFrame) -> np.ndarray:
-    """Multi-scale transition salience: for each signal and each timescale
-    (~0.25 s / 1 s / 4 s), the windowed SECOND difference is normalized by
-    its own MAD; the per-sample maximum across signals and scales is
-    log-compressed and lightly smoothed. Fast init events and slow viscous
-    transitions both appear as ridges of comparable salience, because each
-    scale is normalized against ITS OWN noise floor - the property a
-    single-sample gradient lacks (at the 5 ms resample grid it is pure
-    noise) and a global value normalization lacks (the early fill step owns
-    the dynamic range)."""
+    """Calculates multi-scale transition salience across signal channels.
+
+    For each valid signal (Dissipation and Resonance Frequency) and each
+    configured timescale, this computes a windowed second difference normalized
+    by its own median absolute deviation (MAD). The per-sample maximum across
+    signals and scales is then log-compressed and lightly smoothed.
+
+    This ensures fast initial events and slow viscous transitions both appear
+    as ridges of comparable salience, as each scale is normalized against its
+    own localized noise floor.
+
+    Args:
+        df (pd.DataFrame): DataFrame containing the time series data. Expected
+            to contain columns for relative time, dissipation, and frequency.
+
+    Returns:
+        np.ndarray: A 1D array of the computed derivative-energy salience trace.
+    """
     n = len(df)
     if n < 16:
         return np.zeros(n)
@@ -110,8 +140,26 @@ def derivative_energy(df: pd.DataFrame) -> np.ndarray:
 
 
 def generate_channel_det_v2(df: pd.DataFrame, img_w: int, img_h: int) -> np.ndarray:
-    """v2 detection render: R=dissipation, G=resonance frequency (both as in
-    v1), B=derivative-energy ridge trace."""
+    """Generates a version-2 detection render from signal data.
+
+    Produces an RGB (BGR in OpenCV format) image where the channels correspond to:
+    - Red (Channel 2 in BGR): Dissipation.
+    - Green (Channel 1 in BGR): Resonance frequency.
+    - Blue (Channel 0 in BGR): Derivative-energy ridge trace.
+
+    Values are percentile-normalized and rendered as filled polygons with
+    white outlines, preserving global fill-context cues used by detectors.
+
+    Args:
+        df (pd.DataFrame): Time series data containing dissipation, frequency,
+            and time columns.
+        img_w (int): Target width of the generated image in pixels.
+        img_h (int): Target height of the generated image in pixels.
+
+    Returns:
+        np.ndarray: A 3D numpy array of shape `(img_h, img_w, 3)` containing
+        the generated BGR image.
+    """
     img = np.zeros((img_h, img_w, IMG_CHANNELS), dtype=np.uint8)
     if df is None or df.empty or len(df) < 2:
         return img
@@ -162,8 +210,24 @@ def generate_channel_det_v2(df: pd.DataFrame, img_w: int, img_h: int) -> np.ndar
 
 
 def generate_det_image(df: pd.DataFrame, img_w: int, img_h: int, version: int = 2) -> np.ndarray:
-    """Version dispatch used by both training (build_dataset.py) and
-    inference (v6_yolo, via QModelOnyxConfig.RENDER_VERSION)."""
+    """Dispatches detection image generation to the specified render version.
+
+    Used by both the training dataset builder (`build_dataset.py`) and the
+    production inference predictor (`v6_yolo` via `QModelOnyxConfig.RENDER_VERSION`).
+    Ensures that the render representation seen during inference matches
+    the one used during training.
+
+    Args:
+        df (pd.DataFrame): Time series data to render.
+        img_w (int): Target width of the generated image in pixels.
+        img_h (int): Target height of the generated image in pixels.
+        version (int, optional): Render version to use. Version 1 dispatches
+            to the legacy `DP.generate_channel_det`, while Version 2 (default)
+            dispatches to `generate_channel_det_v2`.
+
+    Returns:
+        np.ndarray: A 3D numpy array containing the generated BGR image.
+    """
     if version == 1:
         return DP.generate_channel_det(df, img_w=img_w, img_h=img_h)
     return generate_channel_det_v2(df, img_w=img_w, img_h=img_h)

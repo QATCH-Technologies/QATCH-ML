@@ -1,14 +1,9 @@
-"""
-env.py
-======
+"""Shared training-process environment setup and utility types.
 
-Shared training-process environment setup, plus the small result type both
-training entry points (:mod:`.train_detectors`, :mod:`.train_fill_classifier`)
-return.
-
-Both training entry points independently need the same CUDA allocator env
-var set before importing torch; this module centralizes that into one call
-so the two scripts stay in sync.
+Provides common environment configuration needed before importing PyTorch
+to reduce CUDA out-of-memory errors, as well as the standard result type
+returned by both training entry points (`train_detectors` and
+`train_fill_classifier`).
 """
 
 from __future__ import annotations
@@ -20,11 +15,12 @@ from typing import Any, Dict, Optional
 
 
 def setup_cuda_env() -> None:
-    """Reduce fragmentation-driven OOMs before torch is imported.
+    """Reduces fragmentation-driven OOMs before PyTorch is imported.
 
-    Harmless if unsupported by the installed torch. Must be called before
-    `torch`/`ultralytics` is imported anywhere in the process to take
-    effect.
+    Sets the `PYTORCH_CUDA_ALLOC_CONF` environment variable to
+    `expandable_segments:True`. This is harmless if unsupported by the
+    installed PyTorch version. It must be called before `torch` or
+    `ultralytics` is imported anywhere in the process to take effect.
     """
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
@@ -34,7 +30,7 @@ class StageResult:
     """Outcome of one completed YOLO training stage.
 
     Attributes:
-        stage (str): Tag the stage was trained under (e.g. "ch2_zoom" or
+        stage (str): Tag the stage was trained under (e.g., "ch2_zoom" or
             "fill_classifier").
         weights_path (Path): Location of the stage's best checkpoint.
         metrics (Optional[Dict[str, Any]]): Best-effort final validation
@@ -48,12 +44,13 @@ class StageResult:
 
 
 def extract_metrics(train_return: Any, model: Any = None) -> Optional[Dict[str, Any]]:
-    """Best-effort extraction of a plain-dict metrics summary from a training call.
+    """Extracts a plain-dictionary metrics summary from a training call.
 
     Ultralytics' `model.train(...)` return shape has varied across
-    versions (a metrics object with a `results_dict`, or `None` with the
+    versions (e.g., a metrics object with a `results_dict`, or `None` with the
     results attached to the model instance instead via `model.metrics`).
-    This never raises; it returns None if nothing recognizable is found
+    This function safely attempts to locate and extract these metrics without
+    raising exceptions. It returns None if nothing recognizable is found
     rather than letting a version mismatch break the training run over a
     reporting nicety.
 
@@ -64,8 +61,8 @@ def extract_metrics(train_return: Any, model: Any = None) -> Optional[Dict[str, 
             Defaults to None.
 
     Returns:
-        Optional[Dict[str, Any]]: A plain dict of metrics, or None if none
-        could be extracted from either source.
+        Optional[Dict[str, Any]]: A plain dictionary of metrics, or None if
+        none could be successfully extracted from either source.
     """
     for candidate in (train_return, getattr(model, "metrics", None)):
         if candidate is None:

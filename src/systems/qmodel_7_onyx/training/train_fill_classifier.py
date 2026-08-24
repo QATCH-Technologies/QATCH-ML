@@ -1,47 +1,28 @@
-"""
-train_fill_classifier.py
-========================
+"""Trains the onyx fill-type classifier on datasets built by build_fill_dataset.py.
 
-Trains the v7 fill-type classifier on datasets built by
-build_fill_dataset.py, using YOLO26-cls at a selectable size.
+Uses YOLO26-cls at a selectable size. Ultralytics' classify defaults are 
+LABEL-CORRUPTING on this task. The detector work established that pixel-space 
+geometric augmentation is wrong when x IS time. For the classifier, the stock 
+classify augmentations are worse than wrong - several of them silently CHANGE 
+THE TRUE CLASS while keeping the label (e.g., RandomResizedCrop, erasing, 
+fliplr, and HSV augmentations).
 
-Ultralytics' classify defaults are LABEL-CORRUPTING on this task
-----------------------------------------------------------------
-The detector work established that pixel-space geometric augmentation is
-wrong when x IS time. For the classifier the stock classify augmentations
-are worse than wrong - several of them silently CHANGE THE TRUE CLASS
-while keeping the label:
+Because of this, all pixel-space augmentation is turned off. Augmentation 
+happens in the signal domain (`v7_augment`, inside `build_fill_dataset.py`) where 
+every transform warps the POI times and state labels exactly. 
 
-  * RandomResizedCrop (driven by `scale`) - a crop that clips the
-    right edge of the frame removes the most recent transition ridge:
-    a 3ch image becomes a 2ch image wearing a 3ch label. It also crops
-    time, which the prefix-cut dataset already covers correctly (with
-    labels that follow the cut).
-  * `erasing` - random erasing can delete a ridge outright: again a
-    2ch image labeled 3ch.
-  * `fliplr` - time reversal, exactly as on the detector side.
-  * HSV / auto_augment color ops - channel identity IS signal identity
-    in these renders (R=dissipation, G=resonance, B=derivative energy);
-    hue rotation teaches that the strips are interchangeable. They are
-    not.
+Schedule rationale: The dataset has heavy per-tier upsampling duplication, 
+so explicit SGD, gentle lr0, and a cosine schedule are used. Images are 
+224x224 as saved (no resize).
 
-All of it is off. Augmentation happened in the signal domain
-(v7_augment, inside build_fill_dataset.py) where every transform warps
-the POI times - and therefore the state labels - exactly.
+Example:
+    python train_fill_classifier.py --data-root datasets/v7_fill \\
+        --size s --epochs 120 --batch 128 --project runs/v7_fill
 
-Schedule rationale (carried over from train_detectors.py)
----------------------------------------------------------
-The dataset has heavy per-tier upsampling duplication, the condition under
-which the auto-optimizer's lr0=0.01 made every detector stage peak early
-and degrade. Same medicine: explicit SGD, gentle lr0, cosine schedule.
-Images are 224x224 as saved (the exact prepare_cls_input output), so
-imgsz=224 means ultralytics performs NO resize at all - the train/deploy
-pixel contract survives the loader.
-
-Usage
------
-    python train_fill_classifier.py --data-root datasets/v7_fill \
-        --size s [--epochs 120] [--batch 128] [--project runs/v7_fill]
+Attributes:
+    DEFAULT_EPOCHS (int): Default maximum number of training epochs.
+    DEFAULT_LR0 (float): Default initial learning rate for the SGD optimizer.
+    DEFAULT_PATIENCE (int): Default early stopping patience.
 """
 
 from __future__ import annotations
@@ -73,6 +54,36 @@ def train(
     resume: bool,
     device: str,
 ) -> StageResult:
+    """Trains the fill classifier model and returns its best checkpoint.
+
+    A fresh run directory is removed before training unless `resume` is
+    enabled, preventing stale checkpoints, plots, and logs from a previous
+    dataset generation from being reused accidentally. Training uses
+    deterministic seeding, cosine learning-rate scheduling, and completely
+    disables pixel-space augmentation.
+
+    Args:
+        data_root (Path): Root directory containing the classification dataset
+            (must contain a "train" subdirectory).
+        size (str): YOLO26-cls model-size suffix, such as "n", "s", "m",
+            "l", or "xl".
+        epochs (int): Maximum number of training epochs.
+        project (Path): Directory under which the Ultralytics run directory
+            is created.
+        batch (int): Training batch size.
+        seed (int): Random seed used for deterministic training.
+        resume (bool): Whether to resume an existing run instead of removing
+            its run directory and starting fresh.
+        device (str): CUDA or device specification passed to Ultralytics.
+
+    Returns:
+        StageResult: Result containing the stage name ("fill_classifier"),
+        path to the best checkpoint, and best-effort validation metrics.
+
+    Raises:
+        SystemExit: If the `data_root / "train"` directory does not exist,
+            indicating `build_fill_dataset.py` needs to be run first.
+    """
     import shutil
 
     from ultralytics import YOLO
@@ -108,7 +119,7 @@ def train(
         lr0=DEFAULT_LR0,
         momentum=0.937,
         warmup_epochs=5.0,
-        # ---- label-corrupting pixel augmentation OFF (module docstring) ----
+        # label-corrupting pixel augmentation OFF
         scale=0.0,  # RandomResizedCrop scale -> (1.0, 1.0): no crop
         erasing=0.0,
         auto_augment=None,
@@ -125,7 +136,6 @@ def train(
         mixup=0.0,
         copy_paste=0.0,
         crop_fraction=1.0,  # val: no center crop - evaluate the full frame
-        # --------------------------------------------------------------------
         project=str(project),
         name=f"fill_yolo26{size}",
         exist_ok=True,
@@ -143,6 +153,11 @@ def train(
 
 
 def main() -> None:
+    """Parses command-line arguments and executes the classifier training process.
+
+    Command-line options control the dataset root, YOLO26 model size, epoch count,
+    batch size, device, output project directory, random seed, and resume behavior.
+    """
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--data-root", type=Path, default=paths.DATASETS_ROOT / "v7_fill")
     ap.add_argument("--size", choices=["n", "s", "m", "l", "xl"], default="s")

@@ -21,7 +21,7 @@ lessons to the streaming path. Three independent fixes, one drop-in class:
 2. PROBABILITIES OUT OF THE PREDICTOR. `predict` currently collapses the
    softmax to top-1 and discards confidence, so the debounce layer sees a
    hard integer and must treat a 51/49 flicker identically to a 99/1 call.
-   `QModelV7FillClassifier.predict_probs` returns the full distribution
+   `QModelOnyxFillClassifier.predict_probs` returns the full distribution
    over the ORDINAL state axis [-1, 0, 1, 2, 3], rendered with the v2
    derivative-energy fill render via the shared prepare_cls_input contract.
 
@@ -48,7 +48,7 @@ lessons to the streaming path. Three independent fixes, one drop-in class:
 
 The public surface of QModelV6YOLO_Live (attempt_classification -> int,
 STATUS_MAP, display-message machinery, drop-epoch gating, duration
-thresholds) is preserved; QModelV7YOLO_Live is a drop-in replacement for
+thresholds) is preserved; QModelOnyxLive is a drop-in replacement for
 the class the LiveProcess constructs.
 
 Migrated from the flat `v7_fill_live.py` module as part of the `live/`
@@ -101,16 +101,16 @@ try:
     )
     from QATCH.QModel.src.models.v6_yolo.v7_fill_render import prepare_cls_input
 except (ImportError, ModuleNotFoundError):
-    from ..inference.config import QModelV6Config
-    from ..inference.controller import QModelV6YOLO_FillClassifier
+    from ..inference.config import QModelOnyxConfig as QModelV6Config
+    from ..inference.controller import QModelOnyx_FillClassifier as QModelV6YOLO_FillClassifier
     from ..rendering.fill_render import prepare_cls_input
-    from ..rendering.legacy_dataprocessor import QModelV6YOLO_DataProcessor as DP
+    from ..rendering.legacy_dataprocessor import QModelOnyx_DataProcessor as DP
 
 # The live base class lives app-side (base_live imports QATCH.common
 # unconditionally when the app IS present), so it is imported SEPARATELY and
 # optionally: headless consumers — replay.py, audits, notebooks — need
-# preprocess_for_cls / QModelV7FillClassifier / OrdinalEvidence without
-# dragging in the application. When the base is absent, QModelV7YOLO_Live
+# preprocess_for_cls / QModelOnyxFillClassifier / OrdinalEvidence without
+# dragging in the application. When the base is absent, QModelOnyxLive
 # is still defined (over the headless placeholder base_live already
 # provides) but is not constructible.
 try:
@@ -121,7 +121,7 @@ except (ImportError, ModuleNotFoundError):
     from .base_live import _LIVE_APP_AVAILABLE as _LIVE_BASE_AVAILABLE
     from .base_live import QModelV6YOLO_Live
 
-TAG = "[QModelV7FillLive]"
+TAG = "[QModelOnyxFillLive]"
 
 # Ordinal state axis. Index i corresponds to channels i - 1.
 N_STATES = 5
@@ -187,11 +187,11 @@ def preprocess_for_cls(
     return df
 
 
-class QModelV7FillClassifier(QModelV6YOLO_FillClassifier):
+class QModelOnyxFillClassifier(QModelV6YOLO_FillClassifier):
     """Fill classifier speaking probabilities over the ordinal state axis,
     rendering through the shared v2 prepare_cls_input contract."""
 
-    TAG = "[QModelV7FillClassifier]"
+    TAG = "[QModelOnyxFillClassifier]"
 
     def predict_probs(self, df: pd.DataFrame) -> Optional[np.ndarray]:
         """Returns p, shape (5,), p[i] = P(channels == i - 1); None on
@@ -355,7 +355,7 @@ class OrdinalEvidence:
         return current_state
 
 
-class QModelV7YOLO_Live(QModelV6YOLO_Live):
+class QModelOnyxLive(QModelV6YOLO_Live):
     """Drop-in live classifier: v2 render, flat-cost preprocessing, ordinal
     monotone evidence in place of the symmetric count debounce.
 
@@ -365,25 +365,25 @@ class QModelV7YOLO_Live(QModelV6YOLO_Live):
     attempt_classification is replaced.
     """
 
-    TAG = "[QModelV7YOLO_Live]"
+    TAG = "[QModelOnyxLive]"
 
     def __init__(self, model_path: str, buffer_window_size: Optional[int] = None):
         if not _LIVE_BASE_AVAILABLE:
             raise RuntimeError(
                 "QModelV6YOLO_Live base unavailable (QATCH app modules not "
                 "importable) — headless consumers should use "
-                "QModelV7FillClassifier / OrdinalEvidence / preprocess_for_cls "
+                "QModelOnyxFillClassifier / OrdinalEvidence / preprocess_for_cls "
                 "directly, as live/replay.py does."
             )
         super().__init__(model_path, buffer_window_size)
         self._evidence = OrdinalEvidence()
 
     # ------------------------------------------------------------------
-    # Classifier plumbing: reuse QModelV7FillClassifier's methods against
+    # Classifier plumbing: reuse QModelOnyxFillClassifier's methods against
     # our own loaded model (super().__init__ chain already loaded it).
     # ------------------------------------------------------------------
     def predict_probs(self, df: pd.DataFrame) -> Optional[np.ndarray]:
-        return QModelV7FillClassifier.predict_probs(self, df)
+        return QModelOnyxFillClassifier.predict_probs(self, df)
 
     def attempt_classification(self) -> int:
         """Same contract and side effects as the v6 implementation; the

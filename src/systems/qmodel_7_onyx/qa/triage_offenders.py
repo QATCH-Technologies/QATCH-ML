@@ -29,7 +29,7 @@ full-run v2 render (POI ground truth overlaid on the strips) so the
 (a)/(b)/(c) call takes seconds per run.
 
 It also settles a cheap question with the audit's saved probabilities:
-whether the ordinal-tail decision rule (what QModelV7FillClassifier.predict
+whether the ordinal-tail decision rule (what QModelOnyxFillClassifier.predict
 uses at analysis time) beats raw argmax on the val split at the fitted
 temperature - i.e., how many of the low-confidence full-run misses the
 decision rule already softens without any retraining.

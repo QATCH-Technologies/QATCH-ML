@@ -18,7 +18,7 @@ flowchart TB
     decode["decode/dp_decode.py\njoint DP decode"]
     deployment["deployment/onyx.py + siblings\nQModelOnyx (standalone, self-contained)"]
     livebase["live/base_live.py\nQModelOnyxLive"]
-    fillive["live/fill_live.py\nQModelV7FillClassifier, OrdinalEvidence"]
+    fillive["live/fill_live.py\nQModelOnyxFillClassifier, OrdinalEvidence"]
     replay["live/replay.py"]
     qa["qa/\nbenchmark.py, audit_fill_val.py, triage_offenders.py,\nlabel_review_packet.py, analyze_replay.py"]
 
@@ -83,7 +83,7 @@ flowchart TB
 | `deployment/onyx.py` | `QModelOnyx` - the standalone reverse-cascade controller shipped under the `QATCH.QModel.models.qmodel_onyx.*` dotted-import contract; a separate, self-contained copy from `inference/controller.py`, loaded exactly as a downstream consumer loads it (see `scripts/build_and_release_qmodel_onyx.py`'s Eval stage) | `deployment.onyx_dataprocessor` (required); `deployment.onyx_spacing_prior`, `deployment.onyx_decode`, `deployment.onyx_render`, `deployment.onyx_fill_render` (optional) |
 | `deployment/onyx_live.py` | Multiprocessing live fill-classifier wrapper; mirror of `live/fill_live.py` + `live/base_live.py` | `deployment.onyx` (`QModelOnyxConfig`, `QModelOnyxFillClassifier`) |
 | `live/base_live.py` | Headless-importable live base class + process wrapper | (optional) QATCH app |
-| `live/fill_live.py` | v7 live classifier: bounded-cost preprocess, `OrdinalEvidence` | `inference.*`, `rendering.fill_render`, `live.base_live` |
+| `live/fill_live.py` | Onyx live classifier: bounded-cost preprocess, `OrdinalEvidence` | `inference.*`, `rendering.fill_render`, `live.base_live` |
 | `live/replay.py` | CLI: streaming replay benchmark | `corpus`, `live.fill_live` |
 | `qa/benchmark.py` | CLI: paired A/B decode benchmark + selftest | `corpus`, `decode.*`, `inference.controller` |
 | `qa/audit_fill_val.py` | CLI: post-training confusion/temperature audit | - (ultralytics only) |

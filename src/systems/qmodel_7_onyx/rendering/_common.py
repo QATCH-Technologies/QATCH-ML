@@ -1,12 +1,11 @@
-"""
-rendering/_common.py
-=====================
+"""Shared helper functions for detector and fill-classifier renderers.
 
-Shared helpers for the detector and fill-classifier renderers
-(`detector_render.py` / `fill_render.py`). `_strip_points` and
-`_robust_mad` used to be copy-pasted, near-identically, into both modules
-(and, for `_robust_mad`, a third time within the fill-render module
-itself); this is the one canonical implementation both now import.
+Provides canonical implementations of common signal-processing and spatial mapping
+utilities used by both `detector_render.py` and `fill_render.py`.
+
+Attributes:
+    PADDING (int): Standard pixel padding offset imported from
+        `QModelOnyx_DataProcessor`.
 """
 
 from __future__ import annotations
@@ -19,6 +18,18 @@ PADDING = DP.PADDING
 
 
 def _robust_mad(x: np.ndarray) -> float:
+    """Computes the Median Absolute Deviation (MAD) of a 1D array.
+
+    Calculates a scaled median absolute deviation estimate for robust scale
+    estimation, ignoring non-finite values (NaNs and Infinities).
+
+    Args:
+        x (np.ndarray): Input 1D numeric array.
+
+    Returns:
+        float: The robust median absolute deviation estimate (scaled by 1.4826
+        for normal consistency), or 0.0 if fewer than 8 finite values exist.
+    """
     x = x[np.isfinite(x)]
     if len(x) < 8:
         return 0.0
@@ -33,8 +44,26 @@ def _strip_points(
     p_lower: float = 1.0,
     p_upper: float = 99.0,
 ) -> np.ndarray:
-    """Same normalization/geometry contract as the v1 renderer's
-    _get_signal_points (percentile clip -> strip pixel band)."""
+    """Maps signal values to pixel coordinates within a designated strip band.
+
+    Applies percentile clipping and normalization to map floating-point signal
+    values onto a 2D grid of pixel coordinates `(x, y)` bound within a
+    specific vertical strip offset.
+
+    Args:
+        values (np.ndarray): 1D array of signal values to map.
+        img_w (int): Total image width in pixels.
+        strip_h (int): Height of an individual strip in pixels.
+        strip_idx (int): Zero-based vertical index of the target strip band.
+        p_lower (float, optional): Lower percentile for intensity clipping.
+            Defaults to 1.0.
+        p_upper (float, optional): Upper percentile for intensity clipping.
+            Defaults to 99.0.
+
+    Returns:
+        np.ndarray | None: An `(N, 2)` array of integer pixel coordinates `[x, y]`
+        ready for rendering, or `None` if fewer than 2 finite values are present.
+    """
     finite = values[np.isfinite(values)]
     if len(finite) < 2:
         return None
