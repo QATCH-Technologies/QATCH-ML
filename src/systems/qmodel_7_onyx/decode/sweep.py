@@ -1,35 +1,18 @@
-"""
-sweep.py
-========
+"""Offline decode-hyperparameter sweep over candidate pools.
 
-Offline decode-hyperparameter sweep over candidate pools dumped by
-`qa/benchmark.py --dump-candidates`.
+This module evaluates combinations of decode parameters (such as lambda,
+margin, and fraction blend) over pre-dumped candidate pools to optimize
+decoding performance. By re-decoding each run and applying the same
+accept-margin rule used by the production controller, it scores configurations
+against ground truth without requiring expensive re-harvesting[cite: 2].
 
-The YOLO harvest is the expensive part; the decode is ~2 ms. So tuning
-DECODE_LAMBDA / DECODE_MIN_MARGIN / frac_blend by re-running the cascade is
-wasteful - dump the pools once, then sweep the whole corpus per setting in
-seconds here.
+The ranking objective defaults to a regression-averse posture:
+    1. Minimize gross failures introduced vs. the cascade baseline.
+    2. Maximize gross failures fixed.
+    3. Minimize total decoded Mean Absolute Error (MAE).
 
-For every (lambda, margin, frac_blend) combination this re-decodes each run,
-applies the same accept-margin rule the controller uses, and scores against
-ground truth. The ranking objective is regression-averse by default
-(production posture: first do no harm):
-
-    1. fewest gross failures INTRODUCED vs the cascade
-    2. most gross failures FIXED
-    3. lowest total decoded MAE
-
-Outputs:
-  * printed ranked table
-  * `sweep_results.csv` with the full grid
-
-Usage
------
-    python -m src.systems.qmodel_7_onyx.decode.sweep \
-        --candidates artifacts/benchmark_decode/candidates.jsonl \
-        --prior configs/spacing_prior.json \
-        [--lambdas 0.25 0.5 1 2 4] [--margins 0 0.25 0.5 1 2] \
-        [--blends 0.5] [--gross-threshold 2.0]
+Outputs include a printed ranked table of the top settings for various
+objectives and a CSV file containing the full sweep grid[cite: 2].
 """
 
 from __future__ import annotations
@@ -52,6 +35,18 @@ LOG = get_logger("qmodel_7_onyx.decode.sweep")
 
 
 def load_dump(path: Path) -> List[Dict[str, Any]]:
+    """Load candidate pools dumped from a JSONL file.
+
+    Reads line-delimited JSON objects representing pre-computed candidate
+    pools into a list[cite: 2].
+
+    Args:
+        path (Path): Path to the JSONL dump file.
+
+    Returns:
+        List[Dict[str, Any]]: A list of dictionaries, where each dictionary
+        represents a run configuration and its candidate pools[cite: 2].
+    """
     import json
 
     rows = []
@@ -67,6 +62,15 @@ TIER_EDGES_DEFAULT = [2.66, 6.16, 18.14, 73.4]
 
 
 def _tier_of(cp, edges) -> int:
+    """Determine the tier index for a given continuous value based on boundary edges.
+
+    Args:
+        cp (float): The value (e.g., viscosity) to categorize[cite: 2].
+        edges (List[float]): A strictly ascending list of tier boundary edges[cite: 2].
+
+    Returns:
+        int: The integer index of the tier the value falls into[cite: 2].
+    """
     if cp is None or not np.isfinite(cp):
         return len(edges) + 1
     for i, e in enumerate(edges):
@@ -76,11 +80,22 @@ def _tier_of(cp, edges) -> int:
 
 
 def tier_weights(rows: List[Dict[str, Any]], edges) -> Dict[int, float]:
-    """Inverse-frequency weights per viscosity tier, mean-normalized to 1.
-    An unweighted objective is dominated by the easy low-viscosity bulk
-    (~60% of the corpus under 6 cP) and will happily trade the rare
-    high-viscosity tier - the product's actual hard case - for marginal
-    bulk gains. Tier weighting makes each tier count equally."""
+    """Calculate inverse-frequency weights per category tier.
+
+    An unweighted objective is often dominated by the easily decoded bulk
+    majority and might trade performance on rare, difficult cases for marginal
+    bulk gains. Tier weighting forces each tier to count equally by mean-normalizing
+    the inverse-frequency weights to 1[cite: 2].
+
+    Args:
+        rows (List[Dict[str, Any]]): A list of dictionaries representing
+            the dumped run configurations containing tier-defining metrics[cite: 2].
+        edges (List[float]): A list of tier boundary edges[cite: 2].
+
+    Returns:
+        Dict[int, float]: A dictionary mapping tier indices to their
+        calculated inverse-frequency weights[cite: 2].
+    """
     from collections import Counter
 
     counts = Counter(_tier_of(r.get("viscosity_cP"), edges) for r in rows)
@@ -98,9 +113,32 @@ def evaluate(
     weights: Optional[Dict[int, float]] = None,
     edges=None,
 ) -> Dict[str, Any]:
-    """Decode every run at (lam, margin) and aggregate paired stats vs the
-    cascade picks recorded in the dump. When `weights` is given, also
-    accumulates tier-weighted gross count and MAE."""
+    """Decode runs and aggregate performance statistics against ground truth.
+
+    Decodes every run at the specified parameters using :meth:`.dp_decode` and aggregates
+    paired statistics against the baseline picks recorded in the dump. When `weights`
+    is given, it also accumulates tier-weighted gross error counts and MAE[cite: 2].
+
+    Args:
+        rows (List[Dict[str, Any]]): A list of run dictionaries containing
+            ground truth, present POIs, and candidate pools[cite: 2].
+        prior (SpacingPrior): The :class:`SpacingPrior` used to score
+            candidate configurations[cite: 2].
+        lam (float | Dict[str, float]): The decode lambda parameter(s)
+            to apply during dynamic programming decoding[cite: 2].
+        margin (float): The accept-margin rule applied to optionally override
+            the baseline picks[cite: 2].
+        gross_threshold (float): The absolute error threshold in seconds
+            beyond which a decoded POI is considered a gross failure[cite: 2].
+        weights (Dict[int, float], optional): Tier weights keyed by tier
+            index. Defaults to None[cite: 2].
+        edges (List[float], optional): A list of tier boundary edges used
+            if tier weights are applied. Defaults to None[cite: 2].
+
+    Returns:
+        Dict[str, Any]: A dictionary containing aggregated evaluation metrics
+        such as MAE, gross failures, fixed failures, and net improvements[cite: 2].
+    """
     abs_errs: List[float] = []
     n_gross_decoded = n_gross_cascade = fixed = introduced = 0
     n_pairs = 0
@@ -169,6 +207,14 @@ def evaluate(
 
 
 def main() -> None:
+    """Execute the offline decode-hyperparameter sweep.
+
+    Parses command-line arguments to sweep over combinations of decode lambda,
+    margins, and blend fractions[cite: 2]. Evaluates configurations using :class:`SpacingPrior`
+    and outputs a ranked table of top settings based on multiple ranking objectives
+    (e.g., conservative, gross failures, MAE, tier-weighted) while saving the full grid
+    of results to a CSV file[cite: 2].
+    """
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
         "--candidates",
@@ -275,13 +321,7 @@ def main() -> None:
         "w_gross",
         "w_mae_s",
     ]
-    # Three objectives, three postures. There is no single "recommended"
-    # setting: the conservative ranking minimizes regressions on previously
-    # working runs (introduced) and will always favour large margins where
-    # the decode barely acts; the gross ranking minimizes TOTAL failures,
-    # treating a fixed run and a broken run as equal and opposite; the mae
-    # ranking optimizes average accuracy. Pick by production cost model: if
-    # a regression costs users about what a fix gains them, use "gross".
+
     rankings = {
         "conservative (fewest regressions)": df.sort_values(
             ["gross_introduced", "net_gross_improvement", "mae_decoded_s"],

@@ -1,14 +1,12 @@
-"""
-fit_prior.py
-============
+"""Fit and persist a spacing prior from complete-fill run configurations.
 
-Fit the SpacingPrior from data/raw complete-fill configurations, using the
-same POI acceptance rule the evaluation corpus uses (:func:`corpus.truth_times`)
-so partial fills are correctly excluded from the prior (we only learn spacing
-from runs where all POIs are genuinely present).
+Collects accepted POI timestamps from raw runs using the same truth-selection
+logic used by the evaluation corpus, retaining only configurations in which
+all expected POIs are present. The resulting complete-fill configurations are
+used to fit a :class:`SpacingPrior`, which is then written to the configured
+output path for use during decoding.
 
-Usage
------
+Usage:
     python -m src.systems.qmodel_7_onyx.decode.fit_prior \
         --raw-root path/to/data/raw --out configs/spacing_prior.json
 """
@@ -32,6 +30,19 @@ LOG = get_logger("qmodel_7_onyx.decode.fit_prior")
 
 
 def _find_run_csv(run_dir: Path) -> Optional[Path]:
+    """Locate the primary signal CSV within a run directory.
+
+    Searches for CSV files while excluding POI annotation files and returns
+    the first matching signal file.
+
+    Args:
+        run_dir (pathlib.Path): Directory containing the files associated with
+            a single run.
+
+    Returns:
+        pathlib.Path | None: Path to the run's signal CSV, or `None` when no
+        suitable CSV is found.
+    """
     cands = [p for p in run_dir.glob("*.csv") if not p.name.lower().endswith("_poi.csv")]
     return cands[0] if cands else None
 
@@ -39,6 +50,27 @@ def _find_run_csv(run_dir: Path) -> Optional[Path]:
 def collect_complete_configs(
     raw_root: Path, time_col: str, limit: Optional[int] = None
 ) -> np.ndarray:
+    """Collect POI timing configurations from complete runs.
+
+    Iterates through run directories, loads the signal timestamps, derives
+    accepted POI times using the shared truth-selection rule, and retains only
+    runs containing the full expected POI sequence. The resulting configurations
+    provide the training data for the spacing prior.
+
+    Args:
+        raw_root (pathlib.Path): Root directory containing per-run data.
+        time_col (str): Preferred signal column containing timestamps. The
+            first data column is used when this column is unavailable.
+        limit (int | None, optional): Maximum number of runs to inspect.
+            Defaults to `None`.
+
+    Returns:
+        numpy.ndarray: Two-dimensional array containing one complete POI timing
+        configuration per row, ordered according to :data:`POI_ORDER`.
+
+    Raises:
+        SystemExit: If no complete-fill configurations are found.
+    """
     rows = []
     n = 0
     for d in sorted(Path(raw_root).iterdir()):
@@ -67,7 +99,13 @@ def collect_complete_configs(
     return np.array(rows, dtype=float)
 
 
-def main():
+def main() -> None:
+    """Fit and save the spacing prior from the configured raw dataset.
+
+    Parses command-line options, collects complete-fill POI configurations,
+    fits a :class:`SpacingPrior`, reports fitted gap statistics, and saves the
+    resulting prior to the requested output path.
+    """
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--raw-root", default=paths.DATA_ROOT, type=Path)
     ap.add_argument("--time-col", default="Relative_time")

@@ -1,63 +1,20 @@
-"""
-dp_decode.py
-============
+"""Joint dynamic-programming decode over candidate POI detections.
 
-Joint configuration decode over YOLO candidate detections.
+Provides a global alternative to independent per-POI confidence selection by
+choosing a temporally ordered configuration of candidate detections under
+learned spacing constraints and a spacing prior. The decoder supports partial
+fills, non-adjacent present POIs, span-conditioned likelihoods, and a
+production-safe greedy fallback when no complete admissible path exists.
 
-Problem
--------
-The production cascade keeps only the single highest-confidence detection per
-POI (`best_dets`) and cuts the signal at it. That greedy, per-POI choice is
-exactly what produces locally-plausible-but-globally-illogical placements, and
-because the cascade *cuts* on each pick, one bad early detection corrupts every
-later one.
+The module is intentionally independent of the surrounding predictor: inputs
+and outputs are represented by plain dictionaries and lightweight data
+classes, allowing the decoder to be integrated into different inference
+pipelines.
 
-This module replaces the greedy pick with a global decode: given several
-CANDIDATE detections per present POI (time + confidence), choose one candidate
-per POI such that the configuration is
-
-    (a) strictly time-ordered (hard),
-    (b) feasible under the learned per-gap bounds (hard, with slack),
-    (c) maximal in   sum(detection confidence)  +  lambda * spacing log-lik,
-
-where the spacing log-likelihood comes from the learned SpacingPrior. This is
-the EDA-selected design: flat, pairwise prior + monotonic constraint, solved
-exactly by dynamic programming over the candidate lattice.
-
-Span handling (important)
--------------------------
-The prior's span-fraction component was fitted on COMPLETE fills with
-span = t(POI5) - t(POI1). Two consequences honoured here:
-
-  * On partial (prefix) fills the fraction component is RE-REFERENCED to
-    the span of the present prefix via SpacingPrior.gap_loglik_scoped (the
-    fitted frac medians assume the complete-fill span and would otherwise be
-    systematically biased). This keeps the scale-coupling - the observed
-    early gaps anchor the run's scale and later gaps must be proportionate -
-    active on partial fills, where it is the main defence against
-    fast-fill-shaped decoy configurations on slow (high-viscosity) runs.
-    With fewer than three placed POIs there is no ratio information and the
-    density is seconds-only.
-  * The span is not known until the configuration is chosen, and a
-    per-edge "span so far" proxy breaks DP optimality. But the span is
-    FULLY DETERMINED by the first and last placed candidates, so the decode
-    conditions on that pair: for each (first, last) candidate combination it
-    runs an exact DP with the span fixed, and keeps the best consistently
-    re-scored configuration. With the per-POI candidate cap this is at most
-    K^2 small DPs and yields the exact argmax of the blended objective -
-    no fixed-point approximation that could converge to the wrong basin
-    (e.g. a compressed fast-fill-shaped decoy on a slow run).
-
-Non-adjacent present POIs (e.g. POI2 and POI4 present with POI3 unplaceable)
-are scored against the COMPOSITION of the intervening fitted gaps via
-SpacingPrior.composed_stat, not against the first gap's stats.
-
-It only decodes the POIs that are actually present (the fill-count gate /
-type_cls has already decided how many channels exist), so partial fills are
-handled by passing fewer POIs - no spurious late POIs are introduced.
-
-Inputs / outputs are plain dicts so this drops in alongside the existing
-predictor without depending on its internals.
+The primary entry point is :func:`dp_decode`. Supporting helpers prepare
+candidate lattices, perform dynamic-programming passes, condition the
+fractional spacing objective on the selected span, and provide compatible
+greedy scoring and baseline behavior.
 """
 
 from __future__ import annotations
@@ -72,12 +29,36 @@ from .spacing_prior import POI_ORDER, SpacingPrior
 
 @dataclass
 class Candidate:
+    """Represent a candidate detection for a point of interest.
+
+    Attributes:
+        time (float): Detected timestamp in seconds.
+        conf (float): Detection confidence, expected to lie in the range
+            `[0, 1]`.
+    """
+
     time: float  # detected timestamp (seconds)
-    conf: float  # YOLO confidence in [0,1]
+    conf: float  # confidence in [0,1]
 
 
 @dataclass
 class DecodeResult:
+    """Contain the selected POI configuration and its decode metrics.
+
+    Attributes:
+        chosen (Dict[str, Candidate]): Mapping from POI name to the selected
+            candidate.
+        total_score (float): Combined confidence and spacing-prior score of
+            the selected configuration.
+        spacing_loglik (float): Unweighted spacing log-likelihood accumulated
+            across the selected configuration.
+        conf_sum (float): Confidence contribution to the total score.
+        feasible (bool): Whether the selected configuration satisfies the
+            requested feasibility constraints.
+        fallback_used (bool): Whether relaxed decoding or greedy fallback was
+            required.
+    """
+
     chosen: Dict[str, Candidate]  # poi_name -> chosen candidate
     total_score: float
     spacing_loglik: float
@@ -87,19 +68,34 @@ class DecodeResult:
 
 
 def _clip01(x: float) -> float:
+    """Clamp a numeric value to the unit interval.
+
+    Args:
+        x (float): Value to constrain.
+
+    Returns:
+        float: `x` limited to the range `[0.0, 1.0]`.
+    """
     return max(0.0, min(1.0, x))
 
 
 def _lam_between(lam, i: int, j: int) -> float:
-    """Resolve the spacing-prior weight for the edge between global POI
-    indices i and j. lam may be a scalar (uniform weight, the historical
-    behaviour) or a dict keyed by pair name ("POI2->POI3") mapping to
-    per-edge weights; missing keys default to 1.0. For a composed edge
-    spanning absent POIs, the mean of the spanned pairs' weights is used.
-    Per-edge weights exist because the prior's value is not uniform: on
-    sharp, well-detected events (ch1/POI3) a broad gap prior mostly drags
-    correct detections, while on ambiguous events (POI4/POI5) it is the
-    main defence - one scalar cannot serve both."""
+    """Resolve the spacing-prior weight for a POI pair.
+
+    Supports either a single scalar weight applied uniformly to all spacing
+    edges or a mapping containing individual weights for global POI pairs.
+    When a pair spans intervening POIs, the weights of the constituent
+    adjacent pairs are averaged.
+
+    Args:
+        lam (float | dict): Global spacing-prior weight or mapping of pair
+            names to individual weights.
+        i (int): Global index of the first POI in the edge.
+        j (int): Global index of the second POI in the edge.
+
+    Returns:
+        float: Effective spacing-prior weight for the requested edge.
+    """
     if not isinstance(lam, dict):
         return float(lam)
     names = [f"{POI_ORDER[k]}->{POI_ORDER[k + 1]}" for k in range(i, j)]
@@ -112,7 +108,24 @@ def _prep_candidates(
     min_conf: float,
     max_candidates: int,
 ) -> Dict[str, List[Candidate]]:
-    """Filter, dedupe, cap and time-sort candidate lists per present POI."""
+    """Prepare candidate detections for dynamic-programming decode.
+
+    Filters candidates by confidence when possible, preserves a POI when
+    filtering would otherwise remove all of its candidates, deduplicates
+    timestamps, limits each POI to the highest-confidence candidates, and
+    finally sorts candidates chronologically for lattice traversal.
+
+    Args:
+        candidates (Dict[str, List[Candidate]]): Candidate detections grouped
+            by POI name.
+        present (List[str]): Ordered POIs that should participate in decoding.
+        min_conf (float): Minimum preferred confidence threshold.
+        max_candidates (int): Maximum number of candidates retained per POI.
+
+    Returns:
+        Dict[str, List[Candidate]]: Prepared, deduplicated, confidence-capped,
+        time-sorted candidate lists.
+    """
     cand: Dict[str, List[Candidate]] = {}
     for p in present:
         cs = [c for c in candidates.get(p, []) if c.conf >= min_conf]
@@ -143,7 +156,26 @@ def _score_config(
     conf_weight: float,
     use_frac: bool,
 ) -> Tuple[float, float, float]:
-    """Consistently (re-)score a configuration. Returns (total, spacing_ll, conf_sum)."""
+    """Score a complete candidate configuration under the decode objective.
+
+    Combines detection confidence with pairwise spacing log-likelihood while
+    respecting the global POI ordering and any intervening POIs. When enabled,
+    the spacing prior uses the span of the selected configuration for its
+    fractional component.
+
+    Args:
+        chosen (Dict[str, Candidate]): Selected candidate for each placed POI.
+        placeable (List[str]): Ordered POIs participating in the configuration.
+        prior (SpacingPrior): Learned spacing model used to evaluate gaps.
+        lam (float | dict): Global or per-edge spacing-prior weight.
+        conf_weight (float): Weight applied to summed detection confidence.
+        use_frac (bool): Whether the span-dependent fractional likelihood is
+            enabled.
+
+    Returns:
+        Tuple[float, float, float]: Combined objective, unweighted spacing
+        log-likelihood, and weighted confidence sum.
+    """
     g_index = {POI_ORDER[i]: i for i in range(len(POI_ORDER))}
     placed = [p for p in placeable if p in chosen]
     conf_sum = conf_weight * sum(_clip01(chosen[p].conf) for p in placed)
@@ -173,9 +205,30 @@ def _dp_pass(
     require_feasible: bool,
     span_for_frac: float,
 ) -> Optional[Dict[str, Candidate]]:
-    """One exact DP over the lattice. span_for_frac <= 0 disables the
-    fraction component (seconds-only). Returns the argmax configuration or
-    None if no admissible ordered path exists."""
+    """Run one exact dynamic-programming pass over the candidate lattice.
+
+    Evaluates temporally ordered candidate paths while optionally enforcing the
+    learned gap-feasibility constraints. Each transition contributes its
+    spacing-prior score and the confidence of the newly selected candidate.
+
+    Args:
+        cand (Dict[str, List[Candidate]]): Prepared candidate lists keyed by
+            POI name.
+        placeable (List[str]): Ordered POIs to decode.
+        prior (SpacingPrior): Learned spacing model.
+        lam (float | dict): Global or per-edge spacing-prior weight.
+        conf_weight (float): Weight applied to candidate confidence.
+        feas_slack (float): Multiplicative tolerance applied to learned gap
+            bounds.
+        require_feasible (bool): Whether infeasible gap transitions should be
+            rejected.
+        span_for_frac (float): Fixed span used by the fractional prior
+            component. Non-positive values disable that component.
+
+    Returns:
+        Dict[str, Candidate] | None: Highest-scoring admissible configuration,
+        or `None` when no complete path exists.
+    """
     g_index = {POI_ORDER[i]: i for i in range(len(POI_ORDER))}
     span_lo, span_hi = g_index[placeable[0]], g_index[placeable[-1]]
     P = len(placeable)
@@ -235,12 +288,29 @@ def _span_conditioned_decode(
     feas_slack: float,
     require_feasible: bool,
 ) -> Optional[Dict[str, Candidate]]:
-    """Exact decode of the blended (seconds + span-fraction) objective.
+    """Perform an exact span-conditioned decode.
 
-    The span-fraction denominators depend only on the first and last placed
-    candidates, so we enumerate those pairs, fix the span, and run an exact
-    DP for each. Returns the best configuration under consistent re-scoring,
-    or None if no admissible path exists for any pair."""
+    Enumerates possible first and last candidates, fixes their resulting span,
+    and runs a dynamic-programming pass for each endpoint pair. The resulting
+    configurations are consistently rescored under the complete
+    span-dependent objective so the best valid configuration can be selected.
+
+    Args:
+        cand (Dict[str, List[Candidate]]): Prepared candidate lists keyed by
+            POI name.
+        placeable (List[str]): Ordered POIs participating in decoding.
+        prior (SpacingPrior): Learned spacing model.
+        lam (float | dict): Global or per-edge spacing-prior weight.
+        conf_weight (float): Weight applied to candidate confidence.
+        feas_slack (float): Multiplicative tolerance applied to learned gap
+            bounds.
+        require_feasible (bool): Whether gap-feasibility constraints must be
+            satisfied.
+
+    Returns:
+        Dict[str, Candidate] | None: Highest-scoring span-consistent
+        configuration, or `None` when no admissible configuration exists.
+    """
     first, last = placeable[0], placeable[-1]
     best_chosen: Optional[Dict[str, Candidate]] = None
     best_score = -1e18
@@ -282,24 +352,46 @@ def dp_decode(
     require_feasible: bool = True,
     max_candidates: int = 10,
 ) -> DecodeResult:
-    """Decode the optimal ordered configuration.
+    """Decode the best globally consistent POI configuration.
 
-    candidates:   poi_name -> list of Candidate (any order); only present_pois
-                  are used. Each present POI must have >=1 candidate.
-    present_pois: ordered subset of POI_ORDER that type_cls says are present.
-    lam:          weight on the spacing prior relative to confidence.
-    conf_weight:  weight on summed detection confidence.
-    feas_slack:   multiplicative slack on learned gap bounds.
-    min_conf:     drop candidates below this confidence before decoding.
-    require_feasible: if True, only fully gap-feasible paths are allowed; if no
-                  such path exists we fall back (see fallback_used).
-    max_candidates: per-POI cap (top-K by confidence) on the lattice width.
+    Considers only POIs identified as present, prepares their candidate
+    detections, and selects a configuration that maximizes the combined
+    detection-confidence and learned-spacing objective. Consecutive placed
+    POIs are required to be strictly time-ordered, while learned gap
+    constraints can be enforced as hard constraints.
 
-    Returns the best DecodeResult. Spacing terms are applied between
-    consecutive *present* POIs using the global POI_ORDER indices, composing
-    intervening fitted gaps when the pair is not globally adjacent. The
-    span-fraction component of the prior is used whenever at least three
-    POIs are placeable, with prefix-scoped span semantics (see module doc).
+    When enough POIs are present for meaningful ratio information, the
+    span-dependent spacing component is handled through exact
+    span-conditioned dynamic programming. Non-adjacent present POIs are scored
+    using the composition of the intervening fitted gaps.
+
+    If no fully feasible configuration exists, the decoder first attempts a
+    relaxed ordered decode. If that also fails, it falls back to independent
+    highest-confidence selection for each available POI.
+
+    Args:
+        candidates (Dict[str, List[Candidate]]): Candidate detections grouped
+            by POI name.
+        present_pois (Sequence[str]): POIs determined to be present by the
+            upstream fill/type classification stage.
+        prior (SpacingPrior): Learned model used for gap feasibility and
+            spacing likelihood.
+        lam (float | dict, optional): Weight applied to spacing likelihood,
+            either globally or per POI pair. Defaults to 1.0.
+        conf_weight (float, optional): Weight applied to summed detection
+            confidence. Defaults to 1.0.
+        feas_slack (float, optional): Multiplicative slack applied to learned
+            gap-feasibility bounds. Defaults to 1.5.
+        min_conf (float, optional): Preferred minimum confidence for candidate
+            filtering. Defaults to 0.0.
+        require_feasible (bool, optional): Whether the initial decode must
+            satisfy learned gap constraints. Defaults to True.
+        max_candidates (int, optional): Maximum candidates retained per POI.
+            Defaults to 10.
+
+    Returns:
+        DecodeResult: Selected configuration and its objective components,
+        together with feasibility and fallback status.
     """
     present = [p for p in POI_ORDER if p in present_pois]
     if not present:
@@ -316,7 +408,7 @@ def dp_decode(
     # eligible too.
     use_frac = len(placeable) >= 3 and prior.frac_blend > 0
 
-    # ---- decode: exact under the full objective. With frac active the
+    # decode: exact under the full objective. With frac active the
     # decode is span-conditioned (see _span_conditioned_decode); otherwise a
     # single seconds-only DP is already exact.
     if use_frac:
@@ -359,9 +451,24 @@ def _greedy_result(
     lam: float,
     conf_weight: float,
 ) -> DecodeResult:
-    """Per-POI greedy selection (highest confidence), used as the production-safe
-    floor when no ordered/feasible joint path exists. Never drops a POI that has
-    candidates, so the decoder is never worse than current behaviour."""
+    """Create a decode result using independent highest-confidence selection.
+
+    Provides a production-safe fallback when no complete ordered candidate path
+    can be constructed. Every POI with an available candidate remains eligible
+    for selection.
+
+    Args:
+        cand (Dict[str, List[Candidate]]): Prepared candidate lists keyed by
+            POI name.
+        placeable (List[str]): Ordered POIs participating in decoding.
+        prior (SpacingPrior): Learned spacing model used for result scoring.
+        lam (float | dict): Global or per-edge spacing-prior weight.
+        conf_weight (float): Weight applied to detection confidence.
+
+    Returns:
+        DecodeResult: Result containing the independently selected candidates
+        and their objective metrics.
+    """
     chosen = {p: max(cand[p], key=lambda c: c.conf) for p in placeable if cand[p]}
     total, sll, csum = _score_config(chosen, placeable, prior, lam, conf_weight, False)
     return DecodeResult(chosen, total, sll, csum, False, True)
@@ -373,10 +480,25 @@ def score_configuration(
     lam: float = 1.0,
     conf_weight: float = 1.0,
 ) -> float:
-    """Score an arbitrary configuration under the SAME objective and frac
-    rules dp_decode uses, so external configurations (e.g. the production
-    cascade's picks) are directly comparable to DecodeResult.total_score.
-    Used by the controller's accept-margin (hysteresis) test."""
+    """Score an externally selected configuration using the decode objective.
+
+    Applies the same confidence, spacing, and span-fraction rules used by
+    :func:`dp_decode`, allowing independently generated configurations to be
+    evaluated on the same objective scale.
+
+    Args:
+        chosen (Dict[str, Candidate]): Candidate selection keyed by POI name.
+        prior (SpacingPrior): Learned spacing model used to score the
+            configuration.
+        lam (float | dict, optional): Global or per-edge spacing-prior weight.
+            Defaults to 1.0.
+        conf_weight (float, optional): Weight applied to summed detection
+            confidence. Defaults to 1.0.
+
+    Returns:
+        float: Combined configuration score, or a large negative sentinel when
+        no POIs are present.
+    """
     placeable = [p for p in POI_ORDER if p in chosen]
     if not placeable:
         return -1e18
@@ -387,8 +509,22 @@ def score_configuration(
 def greedy_baseline(
     candidates: Dict[str, List[Candidate]], present_pois: Sequence[str]
 ) -> Dict[str, Candidate]:
-    """The current production behaviour: pick the highest-confidence candidate
-    per POI independently (no joint reasoning). Used for A/B comparison."""
+    """Select the highest-confidence candidate independently for each POI.
+
+    Provides the non-joint baseline behavior used for comparison with the
+    dynamic-programming decoder. No temporal ordering or spacing constraints
+    are applied during selection.
+
+    Args:
+        candidates (Dict[str, List[Candidate]]): Candidate detections grouped
+            by POI name.
+        present_pois (Sequence[str]): POIs for which candidates should be
+            considered.
+
+    Returns:
+        Dict[str, Candidate]: Highest-confidence candidate available for each
+        requested POI.
+    """
     out = {}
     for p in present_pois:
         cs = candidates.get(p, [])

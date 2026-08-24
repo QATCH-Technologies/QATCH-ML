@@ -90,7 +90,6 @@ class SpacingPrior:
     bound_lo_pct: float = 0.5
     bound_hi_pct: float = 99.5
 
-    # ------------------------------------------------------------------ fit
     @staticmethod
     def fit(
         configs_sec: np.ndarray,
@@ -145,7 +144,6 @@ class SpacingPrior:
             )
         return prior
 
-    # ----------------------------------------------------- composed gaps
     def composed_stat(self, i: int, j: int) -> GapStat:
         """Return statistics for the composed gap POI_ORDER[i] -> POI_ORDER[j].
 
@@ -199,7 +197,6 @@ class SpacingPrior:
         cache[key] = gs
         return gs
 
-    # -------------------------------------------------------------- scoring
     def _stat_loglik(self, gs: GapStat, gap_sec: float, span_sec: float) -> float:
         """Blend the seconds and span-fraction log-normal log-densities for one gap statistic.
 
@@ -376,7 +373,6 @@ class SpacingPrior:
             gap_sec > 0 and gap_sec >= gs.min_gap_sec / slack and gap_sec <= gs.max_gap_sec * slack
         )
 
-    # ----------------------------------------------------------- whole config
     def config_loglik(self, times_sec: List[float]) -> float:
         """Compute the total spacing log-likelihood of a full ordered configuration.
 
@@ -393,7 +389,6 @@ class SpacingPrior:
             total += self.gap_loglik(i, times_sec[i + 1] - times_sec[i], span)
         return total
 
-    # --------------------------------------------------------------- persist
     def save(self, path: Path) -> None:
         """Serialize this prior to a JSON file.
 
