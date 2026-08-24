@@ -1,54 +1,21 @@
-"""Builds the per-stage YOLO detection datasets for the cascade detectors.
+"""Build per-stage YOLO detection datasets for cascade-based detectors.
 
-Renders one detection dataset per cascade stage (init / ch1 / ch2 / ch3,
-plus zoom-refinement variants) from discovered runs, with the following
-properties:
+Renders training and validation datasets for each cascade stage, including
+zoom-refinement stages, from discovered runs. Dataset generation preserves
+run-level train/validation separation, applies signal-domain augmentation to
+training variants, performs per-tier upsampling, and generates positive and
+negative samples using slicing behavior that mirrors inference.
 
-  1. LEAKAGE-PROOF SPLIT. Train/val is split by run (group split, via
-     :func:`.splitting.stratified_group_split`): every rendered variant -
-     augmented or not, every stage frame - of a run lands on one side only.
-     The split is stratified by (viscosity tier x fill count) so rare tiers
-     are present in BOTH splits. Validation images are rendered from
-     UN-augmented signal only: val measures the model, not the augmentation
-     pipeline. A split that lets augmented or partial-fill variants of a
-     training run leak into val makes every metric used for model selection
-     optimistic.
+Rendered images use the same geometry and rendering pipeline as inference so
+that training and deployment distributions remain aligned. Each stage
+produces its own YOLO-compatible `images/` and `labels/` hierarchy,
+`data.yaml` configuration, and the overall build records its split and
+sample statistics in a top-level `manifest.json`.
 
-  2. SIGNAL-DOMAIN AUGMENTATION (:mod:`..augmentation`): monotone time-warp
-     (the high-viscosity synthesizer), noise injection, amplitude jitter. POI
-     labels are warped exactly with the signal.
+The module can be invoked directly as a command-line program or through the
+:func:`build` function.
 
-  3. PER-TIER UPSAMPLING (:func:`.splitting.repeat_factor`). Each training
-     run is rendered `base_variants` x `repeat(tier)` times. Each repeat
-     draws FRESH augmentation, so upsampling adds geometry diversity rather
-     than duplicating pixels - duplication alone cannot fix a sparsely
-     populated tier, but a handful of runs stretch-warped across a wide
-     scale range covers the slow-fill manifold that raw duplication cannot.
-
-  4. CASCADE-MATCHED SLICING + NEGATIVES. Each stage's frames are sliced the
-     way inference slices them: canonical cuts (between the target POI and
-     the next), WIDE cuts (anywhere after the target - matching the decode
-     layer's conservative harvest slices), and NEGATIVE cuts (before the
-     target, or from partial fills): the target POI is absent and the label
-     file is empty. A detector that never sees its target absent during
-     training hallucinates a box on every frame at inference and relies
-     entirely on the fill classifier being right.
-
-  5. DYNAMIC BOXES. Box width = measured temporal extent of the transition
-     (:func:`..augmentation.dynamic_box_width_sec`), clamped in pixels - so
-     stretched slow-fill events keep IoU-trainable boxes instead of a fixed
-     pixel size that starves them.
-
-Rendering uses the same :func:`..rendering.detector_render.generate_det_image`
-as inference, at the same 2560x384 geometry, so train and deploy
-distributions match by construction.
-
-Split and per-tier upsampling logic (:func:`.splitting.stratified_group_split`,
-:func:`.splitting.repeat_factor`) lives in :mod:`.splitting`, shared with
-:mod:`.build_fill_classifier`.
-
-Usage
------
+Usage:
     python -m src.systems.qmodel_7_onyx.dataset.build_detectors \
         --raw-root data/raw --tiers tiers.json --out datasets/v7 \
         [--base-variants 2] [--val-frac 0.15] [--repeat-cap 8] [--seed 7]
@@ -141,11 +108,6 @@ CUT_MARGIN_S = 0.4  # keep the anchor event fully inside positive frames
 MIN_SLICE_S = 3.0
 
 
-# ===========================================================================
-#  Per-stage sample generation
-# ===========================================================================
-
-
 def _sample_cut(
     rng: np.random.Generator,
     anchor_t: Optional[float],
@@ -153,25 +115,31 @@ def _sample_cut(
     t0: float,
     t1: float,
 ) -> Tuple[Optional[float], bool]:
-    """Pick a cut time for one stage sample, matching inference's slicing.
+    """Select a stage sample's temporal cut using inference-matched sampling.
 
-    Samples a canonical cut (between the anchor POI and the next one), a
-    wide cut (anywhere after the anchor, matching the decode layer's
-    conservative harvest slices), or a negative cut (before the anchor, so
-    the target is absent from the frame) according to the module-level
-    `P_CANONICAL` / `P_WIDE` / `P_NEGATIVE` probabilities.
+    Chooses between canonical, wide, and negative slicing modes according to the
+    module-level sampling probabilities. Positive cuts retain the stage target
+    within the resulting frame, while negative cuts deliberately exclude the
+    target so detectors learn to distinguish target-present and target-absent
+    samples.
+
+    Partial runs without an anchor POI are treated as negative samples and receive
+    a usable cut when the available signal is long enough.
 
     Args:
-        rng (numpy.random.Generator): Source of randomness for the cut draw.
-        anchor_t (float, optional): Time of the stage's target POI, or
-            `None` for a partial fill where the target never happened.
-        next_t (float, optional): Time of the following stage's POI, if any.
-        t0 (float): Start time of the run's usable signal.
-        t1 (float): End time of the run's usable signal.
+        rng (numpy.random.Generator): Random-number generator used to select the
+            cut mode and sample the cut position.
+        anchor_t (float, optional): Time of the stage's target or anchor POI.
+            `None` indicates that the target is absent from the run.
+        next_t (float, optional): Time of the following POI, when one exists.
+            Used to bound canonical cuts.
+        t0 (float): Start time of the usable signal.
+        t1 (float): End time of the usable signal.
 
     Returns:
-        Tuple[float, bool]: `(cut_time, is_negative)`. `cut_time` is
-        `None` when no usable cut exists for this run/stage combination.
+        tuple[float | None, bool]: A tuple containing the selected cut time and a
+        flag indicating whether the resulting sample is negative. The cut time is
+        `None` when no valid slice can be produced.
     """
     if anchor_t is None:
         # partial fill: the stage's target never happened -> negative frame,
@@ -205,23 +173,35 @@ def _render_and_label(
     is_negative: bool,
     t_start: Optional[float] = None,
 ) -> Optional[Tuple[np.ndarray, List[str]]]:
-    """Slice a run, render it, and emit the stage's YOLO label lines.
+    """Render a temporal slice and generate its YOLO detection labels.
+
+    Extracts either a cascade prefix slice or an explicit zoom window, renders the
+    signal using the detector rendering pipeline, and creates dynamically sized
+    YOLO bounding boxes for target POIs that fall within the slice. Negative
+    samples intentionally receive no label boxes.
+
+    Bounding-box widths are derived from the measured temporal extent of each
+    transition and converted into image coordinates. Multi-target stages receive
+    an additional overlap constraint so closely spaced events remain separately
+    localizable.
 
     Args:
-        df_p (pandas.DataFrame): Preprocessed run signal.
-        cut_t (float): End of the slice (exclusive).
-        stage (str): Stage key into :data:`ALL_STAGES` / :data:`BOX_SPEC`.
-        poi_times (Dict[str, float]): POI name -> time, for this run/variant.
-        is_negative (bool): Whether this sample should carry no label boxes
-            (the target POI is outside the slice).
-        t_start (float, optional): Start of the slice. `None` gives the
-            cascade's prefix slice `[..., cut_t)`; a value gives a zoom
-            window `[t_start, cut_t)`.
+        df_p (pandas.DataFrame): Preprocessed signal dataframe containing the
+            columns required by the detector renderer.
+        cut_t (float): Exclusive end time of the slice.
+        stage (str): Detector stage whose target definitions and box geometry
+            should be used.
+        poi_times (dict[str, float]): Mapping of POI names to their timestamps for
+            the current run or augmented variant.
+        is_negative (bool): Whether the slice is intended to exclude the target
+            and therefore should contain no detection labels.
+        t_start (float, optional): Inclusive start time for an explicit zoom
+            window. If omitted, the slice begins at the start of the signal.
 
     Returns:
-        Tuple[numpy.ndarray, List[str]]: The rendered image and its YOLO
-        label lines (empty list for a negative sample), or `None` when the
-        slice is too short to render.
+        tuple[numpy.ndarray, list[str]] | None: The rendered image and YOLO label
+        lines, or `None` when the selected slice is too short or otherwise
+        unsuitable for rendering.
     """
     if t_start is None:
         sl = df_p[df_p[COL_TIME] < cut_t]
@@ -262,11 +242,6 @@ def _render_and_label(
     return img, lines
 
 
-# ===========================================================================
-#  Build
-# ===========================================================================
-
-
 def build(
     raw_root: Path,
     tiers_path: Path,
@@ -277,31 +252,41 @@ def build(
     seed: int = 7,
     limit: Optional[int] = None,
 ) -> None:
-    """Discover runs, split them, and render the per-stage YOLO datasets.
+    """Build the complete per-stage YOLO detector dataset.
 
-    Writes an `images/` + `labels/` tree and a `data.yaml` per stage
-    under `out_root`, plus a top-level `manifest.json` recording the
-    split, tier counts, and per-stage/split sample counts. `out_root` is
-    replaced if it already exists.
+    Discovers and deduplicates raw runs, creates a leakage-safe stratified
+    run-level train/validation split, renders training and validation samples for
+    each cascade stage, and writes the resulting YOLO dataset hierarchy.
+
+    Training runs may receive multiple signal variants through per-tier
+    upsampling and fresh signal-domain augmentation. Validation runs are rendered
+    from the clean signal only. Both cascade and zoom-refinement stages are
+    generated, with positive, negative, and inference-matched slicing modes.
+
+    The output directory is recreated when it already exists. Each stage receives
+    its own `images/`, `labels/`, and `data.yaml` files, while a top-level
+    `manifest.json` records configuration, split membership, tier information,
+    and generated sample counts.
 
     Args:
-        raw_root (Path): Root directory of raw per-run data.
-        tiers_path (Path): Path to a saved :class:`.TierScheme` (see
-            :mod:`..tiers`).
-        out_root (Path): Destination directory for the rendered dataset.
-        base_variants (int, optional): Base number of rendered variants per
-            training run, before per-tier upsampling. Defaults to 2.
-        val_frac (float, optional): Target validation fraction per stratum.
-            Defaults to 0.15.
-        repeat_cap (int, optional): Maximum per-tier upsampling repeat
-            factor (see :func:`.splitting.repeat_factor`). Defaults to 8.
-        seed (int, optional): Seed for the split and all sampling. Defaults
-            to 7.
-        limit (int, optional): If set, only the first `limit` discovered
-            runs are used. Defaults to None.
+        raw_root (pathlib.Path): Root directory containing raw per-run datasets.
+        tiers_path (pathlib.Path): Path to the serialized tier scheme used for
+            stratification and per-tier sampling.
+        out_root (pathlib.Path): Destination directory for the generated detector
+            datasets.
+        base_variants (int, optional): Number of base training variants rendered
+            for each run before per-tier repetition is applied. Defaults to 2.
+        val_frac (float, optional): Target fraction of each stratification group
+            assigned to validation. Defaults to 0.15.
+        repeat_cap (int, optional): Maximum repetition factor applied to a training
+            tier. Defaults to 8.
+        seed (int, optional): Random seed controlling splitting, sampling, and
+            augmentation. Defaults to 7.
+        limit (int, optional): Maximum number of discovered runs to process. If
+            `None`, all discovered runs are used.
 
     Raises:
-        SystemExit: If no runs are discovered under `raw_root`.
+        SystemExit: If no usable runs are discovered beneath `raw_root`.
     """
     rng = np.random.default_rng(seed)
     tiers = TierScheme.load(tiers_path)
@@ -331,11 +316,22 @@ def build(
     counts = defaultdict(int)
 
     def emit(stage: str, split_name: str, name: str, img: np.ndarray, lines: List[str]) -> None:
-        # Rect training disables per-epoch shuffling (ultralytics), so disk
-        # order IS the sample order. Hash-prefixing the filename turns the
-        # sorted directory listing into a fixed pseudo-random permutation,
-        # decorrelating neighbouring samples (same run / same tier) without
-        # shuffle support.
+        """Write a rendered detector sample and its YOLO labels to disk.
+
+        Prefixes the sample name with a deterministic hash so lexicographic file
+        ordering provides a stable pseudo-randomized sample order when the training
+        loader does not shuffle files on disk. Updates aggregate positive and negative
+        sample counts for the generated dataset manifest.
+
+        Args:
+            stage (str): Detector stage associated with the sample.
+            split_name (str): Dataset split receiving the sample, such as `"train"`
+                or `"val"`.
+            name (str): Base sample identifier.
+            img (numpy.ndarray): Rendered detector image.
+            lines (list[str]): YOLO label lines for the image. An empty list denotes a
+                negative sample.
+        """
         import hashlib
 
         h = hashlib.blake2s(f"{stage}/{name}".encode(), digest_size=4).hexdigest()
@@ -347,6 +343,16 @@ def build(
         counts[(stage, split_name, "neg" if not lines else "pos")] += 1
 
     def process_run(rid: str, split_name: str) -> None:
+        """Generate all detector samples associated with one run.
+
+        Loads the run's raw signal, determines its tier-specific training repetition
+        count, applies clean or augmented signal variants, and generates both cascade
+        and zoom-refinement samples for the requested dataset split.
+
+        Args:
+            rid (str): Identifier of the run to process.
+            split_name (str): Dataset split receiving the generated samples.
+        """
         rec = by_id[rid]
         try:
             df_raw = pd.read_csv(rec.csv_path)
@@ -382,7 +388,7 @@ def build(
                 img, lines = res
                 emit(stage, split_name, f"{rid}_v{v}", img, lines)
 
-            # ---- zoom samples (window around the target POI)
+            # zoom samples (window around the target POI)
             for zstage, zspec in ZOOM_STAGES.items():
                 target = next(iter(zspec["targets"]))
                 pt = poi_a.get(target)
@@ -420,7 +426,6 @@ def build(
     for rid in split.val_ids:
         process_run(rid, "val")
 
-    # data.yaml per stage + manifest
     for stage, spec in ALL_STAGES.items():
         names = "\n".join(f"  {k}: {v}" for k, v in spec["names"].items())
         (out_root / stage / "data.yaml").write_text(
@@ -448,7 +453,11 @@ def build(
 
 
 def main() -> None:
-    """CLI entry point: parse arguments and run :func:`build`."""
+    """Run the detector dataset builder from the command line.
+
+    Parses dataset-generation options, resolves the configured input and output
+    paths, and delegates dataset construction to :func:`build`.
+    """
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--raw-root", type=Path, default=paths.DATA_ROOT)
     ap.add_argument("--tiers", type=Path, default=paths.TIERS_JSON)

@@ -1,65 +1,22 @@
-"""Builds the fill-type classification dataset for the live fill classifier.
+"""Build the fill-type classification dataset for a live fill classifier.
 
-Renders the fill-TYPE classification dataset (no_fill / initial_fill / 1ch /
-2ch / 3ch) in ultralytics classify folder format, with the following
-properties:
+Renders prefix-based classification samples for each fill state in a
+classifier-compatible directory structure. Dataset generation preserves
+run-level train/validation separation, matches the temporal distribution seen
+by the live classifier, excludes ambiguous transition regions, oversamples
+latency-critical post-transition frames, and applies signal-domain
+augmentation with corresponding POI timing adjustments.
 
-  1. LEAKAGE-PROOF SPLIT - reuses :func:`.splitting.stratified_group_split`
-     (shared with :mod:`.build_detectors`): train/val split by run,
-     stratified by (viscosity tier x fill count). Every prefix cut and
-     augmented variant of a run lands on one side only. A classifier sees
-     dozens of prefix frames per run, so run-level split leakage inflates
-     val accuracy dramatically - a classifier that memorizes a run's noise
-     texture aces val on that run's other prefixes.
+Training samples are balanced across achievable fill states rather than being
+weighted by the amount of time each state occupies. Validation uses only
+unaugmented variants so evaluation reflects classifier performance rather than
+augmentation behavior.
 
-  2. LIVE-MATCHED SLICING. The live classifier never sees a full run until
-     the run is over - it sees a GROWING PREFIX, one frame per chunk. So
-     the training distribution is prefix cuts: for each run, cut times are
-     sampled per achievable class and the label is the fill state AT the
-     cut (see :func:`fill_state_at`: t<POI1 -> no_fill; POI1<=t<POI3 ->
-     initial_fill; POI3<=t<POI4 -> 1ch; POI4<=t<POI5 -> 2ch; t>=POI5 ->
-     3ch). The full run is always emitted too - that is the analysis-time
-     distribution, which is just the prefix at t=end. One model serves both
-     duties, because both duties are points on the same prefix continuum.
+Rendered samples use the same preprocessing and final input preparation as
+the deployed classifier, keeping training and inference image distributions
+aligned.
 
-  3. TRANSITION DEAD ZONES + HARD BANDS (the dynamic-box insight, inverted).
-     :func:`..augmentation.dynamic_box_width_sec` measures each transition's
-     actual temporal extent. DURING a transition the label is genuinely
-     ambiguous - the ridge is half-formed - so cuts inside the measured
-     extent are SKIPPED rather than taught with a hard label the pixels
-     don't yet support (mid-transition frames are what the live debounce
-     exists to ride out; training a confident label there just teaches
-     confident flicker). Immediately AFTER the transition completes sits
-     the hard band: the earliest moment the new state is visually present
-     (one barely-grown ridge). These are the latency-critical live frames -
-     every second of delayed confirmation is a second of delayed operator
-     feedback - so the hard band is deliberately oversampled. See
-     :func:`class_intervals` and :func:`sample_cuts`.
-
-  4. SIGNAL-DOMAIN AUGMENTATION (:mod:`..augmentation`), labels exact.
-     Time-warp is again the high-viscosity synthesizer, and for the
-     classifier it is doubly load-bearing: stretching manufactures the
-     slow-fill geometry where late transitions flatten - the 2ch/3ch
-     confusion zone. POI times warp with the signal, so every cut's state
-     label stays exact by construction.
-
-  5. PER-TIER UPSAMPLING with fresh augmentation per repeat (see
-     :func:`.splitting.repeat_factor`), and PER-CLASS-BALANCED cuts per run
-     (each achievable state contributes the same number of cuts), so class
-     balance does not simply mirror state dwell times (long 3ch tails would
-     otherwise dominate).
-
-  6. TRAIN/DEPLOY RENDER MATCH, taken one step further than the detector:
-     images are saved as the exact 224x224
-     :func:`..rendering.fill_render.prepare_cls_input` output the predictor
-     feeds the model - including the 640->224 INTER_AREA resize - so there
-     is no resize-kernel mismatch between training and inference at all.
-
-Val is variant-0 (un-augmented) only: it measures the model, not the
-augmentation pipeline.
-
-Usage
------
+Usage:
     python -m src.systems.qmodel_7_onyx.dataset.build_fill_classifier \
         --raw-root data/raw --tiers tiers.json --out datasets/v7_fill \
         [--base-variants 2] [--cuts-per-class 2] [--hard-cuts 1] \
@@ -94,9 +51,7 @@ LOG = get_logger("qmodel_7_onyx.dataset.build_fill_classifier")
 
 FILL_RENDER_VERSION = 3  # must match the predictor's fill render version
 
-# Ordinal class order - index == channels + 1. Folder names match
-# QModelOnyxConfig.FILL_CLASS_MAP keys so the trained model's label names map
-# straight through _map_label_to_channels.
+# Ordinal class order - index == channels + 1
 CLASS_NAMES = ["no_fill", "initial_fill", "1ch", "2ch", "3ch"]
 
 # State boundaries in POI space: state k begins at BOUNDARY_POI[k].
@@ -113,7 +68,21 @@ HARD_SPAN_S = 4.0  # width of the oversampled just-confirmed band
 
 
 def fill_state_at(t: float, poi: Dict[str, float]) -> int:
-    """Ordinal state index (0..4) of the run at time t."""
+    """Return the fill-state class active at a given time.
+
+    Determines the ordinal fill state by comparing the requested time against
+    the configured POI state boundaries. Missing boundaries are ignored, so
+    the latest confirmed state remains active until another available
+    boundary is reached.
+
+    Args:
+        t (float): Signal time at which the fill state should be evaluated.
+        poi (dict[str, float]): Mapping of POI names to their timestamps.
+
+    Returns:
+        int: Ordinal fill-state index corresponding to the state active at
+        `t`.
+    """
     state = 0
     for k in (1, 2, 3, 4):
         pt = poi.get(BOUNDARY_POI[k])
@@ -125,14 +94,27 @@ def fill_state_at(t: float, poi: Dict[str, float]) -> int:
 def class_intervals(
     poi: Dict[str, float], df_p: pd.DataFrame, t0: float, t1: float
 ) -> Dict[int, Tuple[float, float]]:
-    """Per-state sampleable cut interval [lo, hi], with dead zones carved
-    out around each boundary transition using its MEASURED extent:
+    """Determine valid temporal sampling intervals for each fill state.
 
-        lo(state k) = boundary_k + SETTLE_FRAC * width_k + margin
-        hi(state k) = boundary_{k+1} - PRE_FRAC * width_{k+1} - margin
+    Builds one sampleable interval per state while excluding transition
+    regions whose measured temporal extent makes the state visually ambiguous.
+    The beginning of each state is delayed until the transition has sufficiently
+    settled, while the end is shortened before the next transition begins.
 
-    States whose interval is empty (e.g. two transitions nearly back to
-    back) simply contribute no cuts - better absent than mislabeled."""
+    States with missing boundaries or insufficient usable duration are omitted
+    from the returned mapping.
+
+    Args:
+        poi (dict[str, float]): Mapping of POI names to their timestamps.
+        df_p (pandas.DataFrame): Preprocessed signal used to estimate transition
+            extents.
+        t0 (float): Start time of the usable signal.
+        t1 (float): End time of the usable signal.
+
+    Returns:
+        dict[int, tuple[float, float]]: Mapping from ordinal fill-state indices
+        to inclusive sampling intervals represented as `(start, end)`.
+    """
     bounds: List[Tuple[int, Optional[float], float]] = []  # (state, t_boundary, width)
     for k in (1, 2, 3, 4):
         pt = poi.get(BOUNDARY_POI[k])
@@ -163,10 +145,28 @@ def sample_cuts(
     cuts_per_class: int,
     hard_cuts: int,
 ) -> List[Tuple[float, int, bool]]:
-    """Returns (cut_time, state, is_hard). Uniform cuts across each state's
-    interval plus hard-band cuts hugging the interval's left edge - the
-    just-confirmed frames where live latency is decided. State 0 has no
-    'just confirmed' moment, so it takes only uniform cuts."""
+    """Sample classifier cut times across the available fill states.
+
+    Draws uniformly distributed cuts within each state's valid interval and
+    optionally adds extra samples near the beginning of each nonzero state.
+    These additional hard-band samples emphasize frames immediately after a
+    transition has visually settled.
+
+    Args:
+        rng (numpy.random.Generator): Random-number generator used to sample
+            cut positions.
+        intervals (dict[int, tuple[float, float]]): Sampleable temporal
+            intervals keyed by fill-state index.
+        cuts_per_class (int): Number of regular cuts to sample for each
+            available state.
+        hard_cuts (int): Number of additional post-transition cuts to sample
+            for each nonzero state.
+
+    Returns:
+        list[tuple[float, int, bool]]: Sample specifications containing the cut
+        time, fill-state index, and whether the sample belongs to a
+        transition-adjacent hard band.
+    """
     out: List[Tuple[float, int, bool]] = []
     for state, (lo, hi) in intervals.items():
         for _ in range(cuts_per_class):
@@ -190,6 +190,47 @@ def build(
     seed: int = 7,
     limit: Optional[int] = None,
 ) -> None:
+    """Build the complete fill-state classification dataset.
+
+    Discovers and deduplicates runs, creates a leakage-safe stratified
+    train/validation split, generates clean and augmented signal variants,
+    samples state-balanced prefix cuts, and renders classifier-ready images
+    for each fill state.
+
+    Training runs receive tier-dependent repetition and fresh augmentation,
+    while validation runs use only the clean variant. Each run also contributes
+    a completed-run sample representing the final analysis-time state.
+
+    The output directory is recreated when it already exists. Samples are
+    organized by dataset split and class name, and a `manifest.json` records
+    generation settings, split membership, tier information, and sample
+    counts.
+
+    Args:
+        raw_root (pathlib.Path): Root directory containing raw per-run data.
+        tiers_path (pathlib.Path): Path to the serialized tier scheme used for
+            stratification and per-tier repetition.
+        out_root (pathlib.Path): Destination directory for the generated
+            classification dataset.
+        base_variants (int, optional): Base number of training variants
+            generated for each run before tier-specific repetition. Defaults
+            to 2.
+        cuts_per_class (int, optional): Number of regular prefix cuts sampled
+            for each achievable fill state per variant. Defaults to 2.
+        hard_cuts (int, optional): Number of additional transition-adjacent
+            cuts sampled for each nonzero fill state. Defaults to 1.
+        val_frac (float, optional): Target validation fraction within each
+            stratification group. Defaults to 0.15.
+        repeat_cap (int, optional): Maximum tier-specific repetition factor
+            applied to training runs. Defaults to 8.
+        seed (int, optional): Random seed controlling splitting, sampling, and
+            augmentation. Defaults to 7.
+        limit (int, optional): Maximum number of discovered runs to process.
+            If `None`, all discovered runs are used.
+
+    Raises:
+        SystemExit: If no usable runs are discovered beneath `raw_root`.
+    """
     rng = np.random.default_rng(seed)
     tiers = TierScheme.load(tiers_path)
     runs = dedupe_runs(discover_runs(raw_root))
@@ -215,12 +256,31 @@ def build(
     counts = defaultdict(int)
 
     def emit(split_name: str, state: int, name: str, img: np.ndarray) -> None:
+        """Write a rendered classifier sample to its state-specific directory.
+
+        Args:
+            split_name (str): Dataset split receiving the sample.
+            state (int): Ordinal fill-state index used to select the class
+                directory.
+            name (str): Base identifier for the generated sample.
+            img (numpy.ndarray): Prepared classifier input image.
+        """
         cname = CLASS_NAMES[state]
         h = hashlib.blake2s(f"fill/{name}".encode(), digest_size=4).hexdigest()
         cv2.imwrite(str(out_root / split_name / cname / f"{h}_{name}.png"), img)
         counts[(split_name, cname)] += 1
 
     def process_run(rid: str, split_name: str) -> None:
+        """Generate classification samples for a single run.
+
+        Loads the run data, creates the required clean or augmented variants,
+        determines valid state-specific sampling intervals, generates prefix cuts,
+        and emits both sampled prefix frames and the completed-run analysis frame.
+
+        Args:
+            rid (str): Identifier of the run to process.
+            split_name (str): Dataset split receiving the generated samples.
+        """
         rec = by_id[rid]
         try:
             df_raw = pd.read_csv(rec.csv_path)
@@ -293,6 +353,11 @@ def build(
 
 
 def main() -> None:
+    """Run the fill-classification dataset builder from the command line.
+
+    Parses dataset-generation options and delegates construction to
+    :func:`build`.
+    """
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--raw-root", type=Path, default=paths.DATA_ROOT)
     ap.add_argument("--tiers", type=Path, default=paths.TIERS_JSON)
