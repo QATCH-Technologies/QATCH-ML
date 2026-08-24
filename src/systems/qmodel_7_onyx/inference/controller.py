@@ -9,12 +9,12 @@ Ch1, Ch2, Ch3).
 Key Components:
 - QModelOnyx: The main controller class.
 - QModelOnyx_Detector: A wrapper for individual YOLO model instances.
-- QModelOnyxConfig: Configuration constants for the pipeline (see ``inference/config.py``).
+- QModelOnyxConfig: Configuration constants for the pipeline (see `inference/config.py`).
 
-As of this migration into ``inference/``, the previously-orphaned
-``inference/crosscheck.py`` (fill-verdict cross-check via the zoom
-detectors) is wired in as an optional stage of ``QModelOnyx.predict()``
-- see ``_crosscheck_fill`` and the ``crosscheck`` keyword argument.
+As of this migration into `inference/`, the previously-orphaned
+`inference/crosscheck.py` (fill-verdict cross-check via the zoom
+detectors) is wired in as an optional stage of `QModelOnyx.predict()`
+- see `_crosscheck_fill` and the `crosscheck` keyword argument.
 
 Dependencies:
 - ultralytics (YOLO)
@@ -93,8 +93,8 @@ from ..rendering.detector_render import generate_det_image as _gen_det_image  # 
 _RENDER_V2_AVAILABLE = True
 
 # Fill-verdict cross-check (zoom-detector based under-count rescue /
-# over-count advisory veto). See ``_crosscheck_fill`` below for the
-# wiring into ``predict()``.
+# over-count advisory veto). See `_crosscheck_fill` below for the
+# wiring into `predict()`.
 from .config import QModelOnyxConfig  # noqa: E402
 from .crosscheck import verify_claimed_poi, verify_fill_count  # noqa: E402
 
@@ -714,12 +714,12 @@ class QModelOnyx:
         num_channels: int,
     ) -> Tuple[int, Dict[str, Any]]:
         """
-        Optional post-cascade fill-count cross-check (see ``crosscheck.py``).
+        Optional post-cascade fill-count cross-check (see `crosscheck.py`).
 
-        Runs AFTER the reverse cascade has produced ``final_results`` for the
-        current ``num_channels`` and BEFORE configuration-prior decode, using
+        Runs AFTER the reverse cascade has produced `final_results` for the
+        current `num_channels` and BEFORE configuration-prior decode, using
         the controller's own already-loaded zoom detectors
-        (``self._detectors["ch{1,2,3}_zoom"]``) - the same assets
+        (`self._detectors["ch{1,2,3}_zoom"]`) - the same assets
         `_refine_with_zoom` uses post-decode.
 
         Two checks, both advisory/conservative:

@@ -2,14 +2,14 @@
 corpus.py
 =========
 
-Shared corpus-discovery library: walks ``data/raw``-style run directories,
+Shared corpus-discovery library: walks `data/raw`-style run directories,
 parses ground-truth POI times, and reads per-run viscosity. Every other
 stage (dataset building, tier discovery, benchmarking, audit/triage tools)
 starts from :func:`discover_runs`.
 
 This module consolidates logic that used to be duplicated across
-``benchmark_decode.py`` (``_truth_times``) and ``fit_prior.py``
-(``parse_present``) - both implemented the same "strictly-ascending,
+`benchmark_decode.py` (`_truth_times`) and `fit_prior.py`
+(`parse_present`) - both implemented the same "strictly-ascending,
 non-tail POI" acceptance rule independently, which is exactly the kind of
 duplication that drifts out of sync silently. :func:`truth_times` is now the
 single source of truth for what counts as a valid POI mark, used both to fit
@@ -66,10 +66,10 @@ class RunRecord:
 def truth_times(poi_path: Path, time_axis: np.ndarray) -> Dict[str, float]:
     """Chain-space ground-truth POI times: strictly-ascending, non-tail
     prefix. A POI is accepted only if its row index is present, non-tail (at
-    least ``tail_tol`` samples before the end of the run), in range, and
+    least `tail_tol` samples before the end of the run), in range, and
     strictly later than the previous accepted POI's time. This is the single
     acceptance rule used both to fit the spacing prior (only complete-fill
-    configurations, i.e. ``len(truth_times(...)) == len(POI_ORDER)``, are
+    configurations, i.e. `len(truth_times(...)) == len(POI_ORDER)`, are
     used) and to build the evaluation corpus (prefixes are accepted as
     partial fills)."""
     try:
@@ -109,7 +109,7 @@ def _viscosity_from_frame(df: pd.DataFrame) -> Optional[float]:
 
 def run_viscosity(run_dir: Path) -> Optional[float]:
     """Mean viscosity_avg from a run's analyze output. Looks at loose
-    ``*analyze_out*.csv`` files first, then inside ``analyze-N.zip``
+    `*analyze_out*.csv` files first, then inside `analyze-N.zip`
     archives."""
     for p in run_dir.glob("*analyze_out*.csv"):
         try:

@@ -19,7 +19,7 @@ properties:
      labels are warped exactly with the signal.
 
   3. PER-TIER UPSAMPLING (:func:`.splitting.repeat_factor`). Each training
-     run is rendered ``base_variants`` x ``repeat(tier)`` times. Each repeat
+     run is rendered `base_variants` x `repeat(tier)` times. Each repeat
      draws FRESH augmentation, so upsampling adds geometry diversity rather
      than duplicating pixels - duplication alone cannot fix a sparsely
      populated tier, but a handful of runs stretch-warped across a wide
@@ -159,19 +159,19 @@ def _sample_cut(
     wide cut (anywhere after the anchor, matching the decode layer's
     conservative harvest slices), or a negative cut (before the anchor, so
     the target is absent from the frame) according to the module-level
-    ``P_CANONICAL`` / ``P_WIDE`` / ``P_NEGATIVE`` probabilities.
+    `P_CANONICAL` / `P_WIDE` / `P_NEGATIVE` probabilities.
 
     Args:
         rng (numpy.random.Generator): Source of randomness for the cut draw.
         anchor_t (float, optional): Time of the stage's target POI, or
-            ``None`` for a partial fill where the target never happened.
+            `None` for a partial fill where the target never happened.
         next_t (float, optional): Time of the following stage's POI, if any.
         t0 (float): Start time of the run's usable signal.
         t1 (float): End time of the run's usable signal.
 
     Returns:
-        Tuple[float, bool]: ``(cut_time, is_negative)``. ``cut_time`` is
-        ``None`` when no usable cut exists for this run/stage combination.
+        Tuple[float, bool]: `(cut_time, is_negative)`. `cut_time` is
+        `None` when no usable cut exists for this run/stage combination.
     """
     if anchor_t is None:
         # partial fill: the stage's target never happened -> negative frame,
@@ -214,13 +214,13 @@ def _render_and_label(
         poi_times (Dict[str, float]): POI name -> time, for this run/variant.
         is_negative (bool): Whether this sample should carry no label boxes
             (the target POI is outside the slice).
-        t_start (float, optional): Start of the slice. ``None`` gives the
-            cascade's prefix slice ``[..., cut_t)``; a value gives a zoom
-            window ``[t_start, cut_t)``.
+        t_start (float, optional): Start of the slice. `None` gives the
+            cascade's prefix slice `[..., cut_t)`; a value gives a zoom
+            window `[t_start, cut_t)`.
 
     Returns:
         Tuple[numpy.ndarray, List[str]]: The rendered image and its YOLO
-        label lines (empty list for a negative sample), or ``None`` when the
+        label lines (empty list for a negative sample), or `None` when the
         slice is too short to render.
     """
     if t_start is None:
@@ -279,9 +279,9 @@ def build(
 ) -> None:
     """Discover runs, split them, and render the per-stage YOLO datasets.
 
-    Writes an ``images/`` + ``labels/`` tree and a ``data.yaml`` per stage
-    under ``out_root``, plus a top-level ``manifest.json`` recording the
-    split, tier counts, and per-stage/split sample counts. ``out_root`` is
+    Writes an `images/` + `labels/` tree and a `data.yaml` per stage
+    under `out_root`, plus a top-level `manifest.json` recording the
+    split, tier counts, and per-stage/split sample counts. `out_root` is
     replaced if it already exists.
 
     Args:
@@ -297,11 +297,11 @@ def build(
             factor (see :func:`.splitting.repeat_factor`). Defaults to 8.
         seed (int, optional): Seed for the split and all sampling. Defaults
             to 7.
-        limit (int, optional): If set, only the first ``limit`` discovered
+        limit (int, optional): If set, only the first `limit` discovered
             runs are used. Defaults to None.
 
     Raises:
-        SystemExit: If no runs are discovered under ``raw_root``.
+        SystemExit: If no runs are discovered under `raw_root`.
     """
     rng = np.random.default_rng(seed)
     tiers = TierScheme.load(tiers_path)

@@ -32,7 +32,7 @@ All transforms take and return (df_raw, poi_times) so labels stay exact.
 
 Dynamic boxes
 -------------
-``dynamic_box_width_sec`` measures the actual temporal extent of the fill
+`dynamic_box_width_sec` measures the actual temporal extent of the fill
 transition around each POI from the dissipation derivative, so slow
 (high-viscosity) events get proportionally wider boxes instead of the fixed
 pixel size the current model was trained with. Width is clamped to sane
@@ -207,7 +207,7 @@ def dynamic_box_width_sec(
     """Temporal extent of the fill transition around poi_t, in seconds.
 
     Measures where the smoothed |d(dissipation)/dt| within a local window
-    exceeds ``active_frac`` of its local peak - i.e. the duration of the
+    exceeds `active_frac` of its local peak - i.e. the duration of the
     transition itself. Slow (high-viscosity) events therefore get wider
     boxes automatically; the fixed-pixel-size assumption the current model
     was trained with is what starved it of gradient on stretched events.

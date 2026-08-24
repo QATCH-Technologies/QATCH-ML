@@ -5,7 +5,7 @@ paths.py
 Canonical filesystem roots for the qmodel_7_onyx pipeline, resolved from this
 package's own location rather than the current working directory. Every
 stage (dataset build, training, decode, live, QA) that used to default to a
-bare ``Path("data/raw")``-style relative path now imports its default from
+bare `Path("data/raw")`-style relative path now imports its default from
 here, so every CLI behaves the same regardless of the directory it is
 launched from.
 

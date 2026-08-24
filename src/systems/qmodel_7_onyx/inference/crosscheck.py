@@ -39,7 +39,7 @@ Integration point: the :class:`QModelOnyx` controller calls this module
 immediately after the reverse cascade completes and before
 configuration-prior decode (see :meth:`QModelOnyx._crosscheck_fill`).
 The zoom detectors, thresholds, and window geometry default to the
-:class:`QModelOnyxConfig` ``REFINE_*`` settings unless overridden.
+:class:`QModelOnyxConfig` `REFINE_*` settings unless overridden.
 
 Example:
     from .crosscheck import verify_fill_count

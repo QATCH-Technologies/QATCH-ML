@@ -11,8 +11,8 @@ risking drifting apart on) the same leakage-sensitive logic independently.
     by (viscosity tier x fill count) so rare tiers are present in both
     splits.
 
-  * :func:`repeat_factor` - per-tier upsampling. ``repeat = clip(sqrt(n_max /
-    n_tier), 1, cap)``, so rare tiers are rendered proportionally more often.
+  * :func:`repeat_factor` - per-tier upsampling. `repeat = clip(sqrt(n_max /
+    n_tier), 1, cap)`, so rare tiers are rendered proportionally more often.
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ def stratified_group_split(
     Each run is assigned to exactly one split (a group split by run id), so
     no rendered variant of a run - augmented or not, any stage frame - can
     leak across the train/val boundary. Runs are stratified by
-    ``(tier, n_pois)``: every stratum with at least two runs contributes at
+    `(tier, n_pois)`: every stratum with at least two runs contributes at
     least one run to val, so no tier is invisible to validation.
 
     Args:
@@ -95,7 +95,7 @@ def repeat_factor(tier: int, tier_counts: Dict[int, int], cap: int) -> int:
         cap (int): Maximum allowed repeat factor.
 
     Returns:
-        int: Repeat factor, ``clip(sqrt(n_max / n_tier), 1, cap)``.
+        int: Repeat factor, `clip(sqrt(n_max / n_tier), 1, cap)`.
     """
     n_max = max(tier_counts.values())
     n = max(1, tier_counts.get(tier, 1))

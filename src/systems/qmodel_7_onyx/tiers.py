@@ -8,30 +8,30 @@ Tiers are fitted on log10(viscosity_cP) - fill dynamics scale roughly
 multiplicatively with viscosity, so log-space is where cluster structure
 lives. Three fitters:
 
-  * ``log_uniform`` (default): bins of equal width in log10(cP), spanning
+  * `log_uniform` (default): bins of equal width in log10(cP), spanning
     the observed min..max. This is the only method that guarantees the
     top edge tracks the actual tail of the corpus - the corpus here has
     a 95th percentile around 46 cP but individual runs up to ~1800 cP, and
     both of the count-balanced methods below place their top edge around
     11-17 cP because that's where the *count* quantile falls, silently
     lumping every run from there to 1800 cP into one "N+" bucket.
-  * ``gmm``: Gaussian mixture with BIC model selection over k (uses
+  * `gmm`: Gaussian mixture with BIC model selection over k (uses
     scikit-learn when available). Bin edges are placed at the posterior
     decision boundaries between adjacent components. Cluster-seeking, not
     range-seeking: BIC penalizes extra components that only serve a
     sparsely-populated tail, so it tends to underrepresent high-viscosity
     runs the same way quantile does (just less severely).
-  * ``quantile``: equal-*count* bins (no dependency). Guarantees balanced
+  * `quantile`: equal-*count* bins (no dependency). Guarantees balanced
     support per tier but, for a right-skewed corpus, that balance is
     exactly what collapses the tail.
 
-Whichever method is used, bins with fewer than ``min_support`` runs are merged into their
+Whichever method is used, bins with fewer than `min_support` runs are merged into their
 neighbour, because a stratification bin you cannot populate in BOTH train
 and val splits is worse than no bin: it silently degrades to noise in the
 sampler and in the benchmark's per-tier tables (the 150+ cP tier with n=15
 in the current corpus is exactly this).
 
-The result is persisted to ``configs/tiers.json`` and consumed by:
+The result is persisted to `configs/tiers.json` and consumed by:
   * dataset/build_detectors.py, dataset/build_fill_classifier.py - stratified
     group split + per-tier upsampling
   * qa/benchmark.py - per-tier reporting
@@ -133,8 +133,8 @@ def _merge_small_bins(edges: List[float], log_v: np.ndarray, min_support: int) -
 
 
 def _log_uniform_edges(log_v: np.ndarray, n_bins: int) -> List[float]:
-    """Interior edges of ``n_bins`` bins of equal width spanning
-    ``log_v``'s observed range - the only scheme whose top edge tracks the
+    """Interior edges of `n_bins` bins of equal width spanning
+    `log_v`'s observed range - the only scheme whose top edge tracks the
     actual max of a right-skewed corpus rather than a count quantile."""
     lo, hi = float(log_v.min()), float(log_v.max())
     return list(np.linspace(lo, hi, n_bins + 1)[1:-1])

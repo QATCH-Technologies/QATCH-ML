@@ -7,9 +7,9 @@ The public entry point is :class:`Workspace` + :class:`Pipeline`::
     pipeline = Pipeline(Workspace(data_root="path/to/raw"))
     result = pipeline.run()
 
-See :mod:`.pipeline` for the full API, or ``ARCHITECTURE.md`` for how the
-individual subpackages (``corpus``, ``tiers``, ``decode``, ``rendering``,
-``dataset``, ``training``, ``inference``, ``live``, ``qa``) fit together.
+See :mod:`.pipeline` for the full API, or `ARCHITECTURE.md` for how the
+individual subpackages (`corpus`, `tiers`, `decode`, `rendering`,
+`dataset`, `training`, `inference`, `live`, `qa`) fit together.
 """
 
 from .pipeline import (

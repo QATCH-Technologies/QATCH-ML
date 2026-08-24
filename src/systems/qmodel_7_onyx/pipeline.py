@@ -2,24 +2,24 @@
 pipeline.py
 ===========
 
-The public entry point for this system: ``Workspace`` + ``Pipeline``.
+The public entry point for this system: `Workspace` + `Pipeline`.
 
 Today, going from "a folder of raw data" to "trained model weights" means
 running six CLI scripts by hand in a specific order, with path-wiring
 enforced only by convention (every stage happens to default to the same
-``paths.py`` constants - override one flag and the chain silently breaks
-until a downstream ``FileNotFoundError``):
+`paths.py` constants - override one flag and the chain silently breaks
+until a downstream `FileNotFoundError`):
 
     decode.fit_prior -> tiers -> dataset.build_detectors ->
     dataset.build_fill_classifier -> training.train_detectors ->
     training.train_fill_classifier
 
-``Workspace`` is the single source of truth for every path a pipeline stage
-reads or writes (no ``"v7"``/``"v7_fill"`` literals repeated at the call
-site). ``Pipeline`` wraps the underlying stage functions - none of which are
+`Workspace` is the single source of truth for every path a pipeline stage
+reads or writes (no `"v7"`/`"v7_fill"` literals repeated at the call
+site). `Pipeline` wraps the underlying stage functions - none of which are
 renamed or altered in behavior beyond now returning their results instead of
-``None`` - behind three methods (``prepare``, ``build_datasets``, ``train``)
-plus a ``run()`` convenience that chains all three:
+`None` - behind three methods (`prepare`, `build_datasets`, `train`)
+plus a `run()` convenience that chains all three:
 
     from src.systems.qmodel_7_onyx import Workspace, Pipeline
 
@@ -27,14 +27,14 @@ plus a ``run()`` convenience that chains all three:
     result = pipeline.run()
     print(result.training.weights)   # {"init": Path(...), ..., "fill_classifier": Path(...)}
 
-Each stage is also usable on its own (``pipeline.prepare()``,
-``pipeline.build_datasets(targets=["fill_classifier"])``,
-``pipeline.train(detector_stages=["ch2_zoom"])``) for callers who want more
-control than the one-shot ``run()``.
+Each stage is also usable on its own (`pipeline.prepare()`,
+`pipeline.build_datasets(targets=["fill_classifier"])`,
+`pipeline.train(detector_stages=["ch2_zoom"])`) for callers who want more
+control than the one-shot `run()`.
 
-``fit_tiers()``/``collect_complete_configs()``/the dataset builders raise
-bare ``SystemExit`` today (correct for a CLI, wrong for a library call) -
-``Pipeline`` converts those into :class:`PipelineError` so a programmatic
+`fit_tiers()`/`collect_complete_configs()`/the dataset builders raise
+bare `SystemExit` today (correct for a CLI, wrong for a library call) -
+`Pipeline` converts those into :class:`PipelineError` so a programmatic
 caller gets a normal, catchable exception instead of its process being
 killed.
 """
@@ -71,7 +71,7 @@ _DEFAULT_DETECTOR_IMGSZ = 1536
 
 class PipelineError(RuntimeError):
     """Raised for any pipeline-stage failure that would otherwise surface as
-    a bare ``SystemExit`` (insufficient/missing data, an unknown target
+    a bare `SystemExit` (insufficient/missing data, an unknown target
     name, etc.) - always catchable, never kills the caller's process."""
 
 
@@ -98,7 +98,7 @@ class Workspace:
 
     Defaults to this repo's :mod:`paths` constants; override any field to
     point a :class:`Pipeline` at a different data/output location entirely
-    (not just via the ``QMODEL_*`` environment variables ``paths.py``
+    (not just via the `QMODEL_*` environment variables `paths.py`
     supports) - e.g. a fresh project working with its own raw-data folder.
     """
 
@@ -152,8 +152,8 @@ class PreparationResult:
 @dataclass
 class DatasetBuildResult:
     """What :meth:`Pipeline.build_datasets` built. Fields for a target that
-    wasn't requested stay ``None`` rather than being omitted, so callers can
-    check ``result.fill_manifest is not None`` uniformly."""
+    wasn't requested stay `None` rather than being omitted, so callers can
+    check `result.fill_manifest is not None` uniformly."""
 
     detector_manifest: Optional[dict] = None
     fill_manifest: Optional[dict] = None
@@ -165,7 +165,7 @@ class DatasetBuildResult:
 class TrainingResult:
     """What :meth:`Pipeline.train` produced: best-checkpoint path and
     (best-effort) final validation metrics per trained stage, keyed by stage
-    name (``"init"``, ``"ch1_zoom"``, ..., ``"fill_classifier"``)."""
+    name (`"init"`, `"ch1_zoom"`, ..., `"fill_classifier"`)."""
 
     weights: Dict[str, Path] = field(default_factory=dict)
     metrics: Dict[str, Optional[dict]] = field(default_factory=dict)
@@ -350,10 +350,10 @@ class Pipeline:
         build_kwargs: Optional[dict] = None,
         train_kwargs: Optional[dict] = None,
     ) -> PipelineResult:
-        """``prepare()`` -> ``build_datasets()`` -> ``train()``, one call.
+        """`prepare()` -> `build_datasets()` -> `train()`, one call.
 
-        Pass per-stage keyword overrides via ``prepare_kwargs``/
-        ``build_kwargs``/``train_kwargs`` (each forwarded to the matching
+        Pass per-stage keyword overrides via `prepare_kwargs`/
+        `build_kwargs`/`train_kwargs` (each forwarded to the matching
         method) when the defaults aren't right for a particular run.
         """
         preparation = self.prepare(**(prepare_kwargs or {}))
