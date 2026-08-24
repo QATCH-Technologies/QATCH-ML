@@ -1,15 +1,15 @@
 """Shared loguru-based logging configuration for QATCH-ML.
 
-Usable from any module under ``src/`` (systems and utils alike) in place of
-ad hoc ``logging.getLogger`` calls or the various hand-rolled
-``Log.d/i/w/e`` fallback shims scattered across the codebase for
+Usable from any module under `src/` (systems and utils alike) in place of
+ad hoc `logging.getLogger` calls or the various hand-rolled
+`Log.d/i/w/e` fallback shims scattered across the codebase for
 QATCH-app-optional headless operation.
 
 A colorized console sink is installed at import time, at level
-``QATCH_LOG_LEVEL`` (environment variable, default ``INFO``). Call
+`QATCH_LOG_LEVEL` (environment variable, default `INFO`). Call
 :func:`configure_logging` explicitly - typically once from a CLI's
-``main()`` - to change the level and/or add a rotating file sink under
-``log_dir``. It is safe to call more than once: existing sinks are removed
+`main()` - to change the level and/or add a rotating file sink under
+`log_dir`. It is safe to call more than once: existing sinks are removed
 first, so re-configuring never duplicates log lines.
 
 Example:
@@ -19,7 +19,7 @@ Example:
         logger.info("message")
 
     Or bind a module-scoped logger carrying a fixed tag (mirrors the
-    ``TAG = "[Name]"`` convention used across qmodel_7_onyx modules)::
+    `TAG = "[Name]"` convention used across qmodel_7_onyx modules)::
 
         from src.utils.logger import get_logger
         log = get_logger("dataset_fetcher")
@@ -53,15 +53,15 @@ def configure_logging(
     serialize: bool = False,
 ) -> None:
     """(Re)configure the shared logger: one colorized console sink, plus an
-    optional rotating file sink under ``log_dir``.
+    optional rotating file sink under `log_dir`.
 
     Args:
         level (Optional[str], optional): Log level name. Defaults to the
-            ``QATCH_LOG_LEVEL`` environment variable, then ``"INFO"``.
+            `QATCH_LOG_LEVEL` environment variable, then `"INFO"`.
         log_dir (Optional[Path], optional): If given, also write a rotating
             file sink here (created if it does not already exist). Defaults
             to None (console sink only).
-        log_file (str, optional): Filename within ``log_dir``. Defaults to
+        log_file (str, optional): Filename within `log_dir`. Defaults to
             "qatch-ml.log".
         rotation (str, optional): Passed straight through to loguru's file
             sink. Defaults to "10 MB".
@@ -90,14 +90,14 @@ def configure_logging(
 
 
 def get_logger(tag: str):
-    """Return a logger bound with a fixed ``tag`` field.
+    """Return a logger bound with a fixed `tag` field.
 
     The tag is shown in place of the default "qatch-ml" tag in the
-    console/file format, mirroring the ``TAG = "[Name]"`` convention used
+    console/file format, mirroring the `TAG = "[Name]"` convention used
     across qmodel_7_onyx modules.
 
     Args:
-        tag (str): Tag value to bind onto the logger's ``extra`` context.
+        tag (str): Tag value to bind onto the logger's `extra` context.
 
     Returns:
         loguru.Logger: A logger instance bound with the given tag.

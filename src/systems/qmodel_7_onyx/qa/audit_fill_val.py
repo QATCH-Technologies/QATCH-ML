@@ -22,7 +22,7 @@ Also fits the probability TEMPERATURE the live evidence layer needs: a
 classifier trained to saturation produces raw probabilities that carry
 no marginal-vs-certain signal (everything reads near-1.0 confident), so
 T is fit by minimizing NLL of p^(1/T) on the val split; write the
-result into ``live.fill_live.PROB_TEMPERATURE``.
+result into `live.fill_live.PROB_TEMPERATURE`.
 
 Outputs
 -------
@@ -73,10 +73,10 @@ def parse_name(stem: str):
     """Split a dataset image stem into (run id, variant, cut tag).
 
     Args:
-        stem (str): filename stem in ``{hash}_{rid}_v{v}_{tag}{k}`` form.
+        stem (str): filename stem in `{hash}_{rid}_v{v}_{tag}{k}` form.
 
     Returns:
-        tuple: ``(run_id, variant, tag)``, or ``(stem, "?", "?")`` if the
+        tuple: `(run_id, variant, tag)`, or `(stem, "?", "?")` if the
             stem does not match the expected naming convention.
     """
     m = NAME_RE.match(stem)
@@ -88,20 +88,20 @@ def parse_name(stem: str):
 def fit_temperature(prob_rows: np.ndarray, true_idx: np.ndarray) -> float:
     """Fit a scalar probability temperature by 1-D NLL minimization.
 
-    Minimizes the NLL of ``p^(1/T)`` (renormalized) over a log-spaced
+    Minimizes the NLL of `p^(1/T)` (renormalized) over a log-spaced
     grid followed by local refinement. Operates on probabilities rather
     than logits, since logits are not exposed uniformly across model
-    backends - this is exactly the space ``PROB_TEMPERATURE`` acts in.
+    backends - this is exactly the space `PROB_TEMPERATURE` acts in.
 
     Args:
         prob_rows (np.ndarray): per-sample class-probability rows,
-            shape ``(n, n_classes)``.
+            shape `(n, n_classes)`.
         true_idx (np.ndarray): true class index per sample, shape
-            ``(n,)``.
+            `(n,)`.
 
     Returns:
-        tuple[float, float, float]: fitted temperature ``T``, the NLL at
-            ``T=1.0``, and the NLL at the fitted ``T``.
+        tuple[float, float, float]: fitted temperature `T`, the NLL at
+            `T=1.0`, and the NLL at the fitted `T`.
     """
     p = np.clip(prob_rows, 1e-12, 1.0)
 
@@ -120,7 +120,7 @@ def fit_temperature(prob_rows: np.ndarray, true_idx: np.ndarray) -> float:
 def main() -> None:
     """CLI entry point: run inference over the val split, print the
     tag/class/direction/offender-run breakdown, fit the probability
-    temperature, and write ``misses.csv`` / ``val_probs.npz`` / the
+    temperature, and write `misses.csv` / `val_probs.npz` / the
     copied miss images to the output directory.
     """
     ap = argparse.ArgumentParser(description=__doc__)

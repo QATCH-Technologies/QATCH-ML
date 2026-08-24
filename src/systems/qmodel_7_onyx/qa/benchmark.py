@@ -1,10 +1,10 @@
 """Paired A/B benchmark for the configuration-prior decode.
 
 Measures the before/after effect of the configuration-prior decode
-(``decode_config=True``) against the production greedy cascade, paired on
+(`decode_config=True`) against the production greedy cascade, paired on
 the same runs and the same YOLO inferences: each run goes through
-:meth:`QModelOnyx.predict` with ``decode_config=True`` once, and the
-cascade's pre-decode placements are read back from the ``_decode.cascade``
+:meth:`QModelOnyx.predict` with `decode_config=True` once, and the
+cascade's pre-decode placements are read back from the `_decode.cascade`
 snapshot, so both arms come from a single pass.
 
 Headline outputs:
@@ -17,15 +17,15 @@ Headline outputs:
     any decoder can achieve. If oracle recall is low, the remaining work is
     harvest-side (detector/augmentation), not decode-side.
 
-Outputs written to ``--output``:
-  * ``ab_metrics.csv``          - per-POI global aggregate, both arms
-  * ``ab_metrics_by_tier.csv``  - per-POI per-tier breakdown, both arms
-  * ``per_run_results.csv``     - one row per (run, POI) with both errors
-  * ``regressions.csv``         - cases the decode made grossly worse
-  * ``regression_plots/``       - diagnostic figure per regression run
+Outputs written to `--output`:
+  * `ab_metrics.csv`          - per-POI global aggregate, both arms
+  * `ab_metrics_by_tier.csv`  - per-POI per-tier breakdown, both arms
+  * `per_run_results.csv`     - one row per (run, POI) with both errors
+  * `regressions.csv`         - cases the decode made grossly worse
+  * `regression_plots/`       - diagnostic figure per regression run
 
-Viscosity tiers are taken from the run's ``*_analyze_out.csv`` (mean of
-``viscosity_avg``) when present; runs without one land in the "unknown"
+Viscosity tiers are taken from the run's `*_analyze_out.csv` (mean of
+`viscosity_avg`) when present; runs without one land in the "unknown"
 tier rather than being dropped. Corpus discovery, dedup, and truth parsing
 live in :mod:`..corpus` - this module is the benchmark CLI + aggregation
 layer built on top of it.
@@ -172,7 +172,7 @@ class _PairedCounts:
     oracle_dists: List[float] = field(default_factory=list)
 
     def oracle_recall(self, tol: float) -> float:
-        """Fraction of recorded runs where truth lies within ``tol`` of the nearest candidate.
+        """Fraction of recorded runs where truth lies within `tol` of the nearest candidate.
 
         Args:
             tol (float): Tolerance, in seconds.
@@ -216,7 +216,7 @@ def _print_global(
         gross_threshold (float): Absolute error, in seconds, above which an
             observation counts as a gross failure.
         n_runs (int): Number of runs the summary was computed over.
-        decode_stats (Dict[str, Any]): ``moved``/``fallback``/``unused``
+        decode_stats (Dict[str, Any]): `moved`/`fallback`/`unused`
             decode-usage statistics, as returned by :func:`run_benchmark`.
         output_dir (Path): Directory the benchmark's CSV/plot outputs were
             written to, shown in the header for reference.
@@ -293,7 +293,7 @@ def _print_tier(
 
     Args:
         g (Dict[str, Dict[int, _POIMetrics]]): Greedy-cascade metrics,
-            keyed by POI then by tier index into ``TIER_LABELS``.
+            keyed by POI then by tier index into `TIER_LABELS`.
         d (Dict[str, Dict[int, _POIMetrics]]): Decoded metrics, keyed the
             same way as `g`.
         gross_threshold (float): Absolute error, in seconds, above which an

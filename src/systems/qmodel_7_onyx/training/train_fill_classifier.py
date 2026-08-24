@@ -12,14 +12,14 @@ wrong when x IS time. For the classifier the stock classify augmentations
 are worse than wrong - several of them silently CHANGE THE TRUE CLASS
 while keeping the label:
 
-  * RandomResizedCrop (driven by ``scale``) - a crop that clips the
+  * RandomResizedCrop (driven by `scale`) - a crop that clips the
     right edge of the frame removes the most recent transition ridge:
     a 3ch image becomes a 2ch image wearing a 3ch label. It also crops
     time, which the prefix-cut dataset already covers correctly (with
     labels that follow the cut).
-  * ``erasing`` - random erasing can delete a ridge outright: again a
+  * `erasing` - random erasing can delete a ridge outright: again a
     2ch image labeled 3ch.
-  * ``fliplr`` - time reversal, exactly as on the detector side.
+  * `fliplr` - time reversal, exactly as on the detector side.
   * HSV / auto_augment color ops - channel identity IS signal identity
     in these renders (R=dissipation, G=resonance, B=derivative energy);
     hue rotation teaches that the strips are interchangeable. They are

@@ -5,11 +5,11 @@ build_and_release_qmodel_onyx.py
 
 One-command release pipeline for the qmodel_7_onyx system: pulls fresh runs
 from Dropbox, (re)builds the YOLO datasets, trains the requested models,
-drops the trained weights into a ready-to-ship ``qmodel_onyx/`` folder, and
+drops the trained weights into a ready-to-ship `qmodel_onyx/` folder, and
 evaluates that deployed package against ground truth. There is no longer a
-separate ``eval_onyx_deployment.py`` script -- its logic lives here as the
-Eval stage below; drive it with the ``--eval-*`` flags (or skip it with
-``--skip-eval``).
+separate `eval_onyx_deployment.py` script -- its logic lives here as the
+Eval stage below; drive it with the `--eval-*` flags (or skip it with
+`--skip-eval`).
 
 Seven stages, run in order (any can be skipped with a flag - see --help):
 
@@ -280,7 +280,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def stage_fetch(args: argparse.Namespace, workspace: Workspace) -> Optional[int]:
-    """Purges ``workspace.data_root`` and re-copies the full run corpus from
+    """Purges `workspace.data_root` and re-copies the full run corpus from
     Dropbox, so every fetch is a clean mirror rather than an incremental
     blend with whatever was fetched on a prior run. Returns the number of
     run directories retained, or None if the stage was skipped."""
@@ -432,9 +432,9 @@ def _load_standalone(alias: str, path: Path) -> types.ModuleType:
 
 
 def load_onyx_controller(deployment_dir: Path, model_assets: Dict[str, Any]) -> Any:
-    """Loads the deployment package's ``onyx.py`` + siblings (in their
+    """Loads the deployment package's `onyx.py` + siblings (in their
     required dependency order) under the exact dotted path they import each
-    other by, and constructs ``QModelOnyx(model_assets)``."""
+    other by, and constructs `QModelOnyx(model_assets)`."""
     ns = "QATCH.QModel.models.qmodel_onyx"
     aliases = [
         f"{ns}.onyx_dataprocessor",

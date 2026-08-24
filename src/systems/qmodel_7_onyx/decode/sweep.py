@@ -3,7 +3,7 @@ sweep.py
 ========
 
 Offline decode-hyperparameter sweep over candidate pools dumped by
-``qa/benchmark.py --dump-candidates``.
+`qa/benchmark.py --dump-candidates`.
 
 The YOLO harvest is the expensive part; the decode is ~2 ms. So tuning
 DECODE_LAMBDA / DECODE_MIN_MARGIN / frac_blend by re-running the cascade is
@@ -21,7 +21,7 @@ ground truth. The ranking objective is regression-averse by default
 
 Outputs:
   * printed ranked table
-  * ``sweep_results.csv`` with the full grid
+  * `sweep_results.csv` with the full grid
 
 Usage
 -----

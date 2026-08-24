@@ -2,17 +2,17 @@
 
 ## Setup
 
-```
+``
 pip install -e ".[dev]"
-```
+``
 
 ## Running tests
 
-```
+``
 pytest                     # full suite
 pytest tests/decode/       # one subpackage
 pytest -k dp_decode        # by name
-```
+``
 
 The suite covers every pure-logic module (corpus discovery, spacing prior,
 DP decode, tier fitting, augmentation, rendering salience math, dataset
@@ -35,12 +35,12 @@ the fitted spacing prior.
 [Ruff](https://docs.astral.sh/ruff/) handles both linting and formatting;
 config lives in `pyproject.toml`'s `[tool.ruff]`/`[tool.ruff.lint]`.
 
-```
+``
 ruff check .            # lint
 ruff check --fix .      # lint, auto-fixing what's safe to
 ruff format .           # format
 ruff format --check .   # format, check only (what CI runs)
-```
+``
 
 Note `pyupgrade` (`UP*`) rules are deliberately not enabled - this codebase
 consistently uses `typing.Optional`/`List`/`Dict` rather than the PEP 604/585

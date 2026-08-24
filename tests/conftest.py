@@ -1,9 +1,9 @@
 """Shared fixtures for the qmodel_7_onyx test suite.
 
-``make_run`` builds a synthetic run directory in the same layout
-``corpus.discover_runs`` expects (a signal CSV + a headerless ``*_poi.csv``
+`make_run` builds a synthetic run directory in the same layout
+`corpus.discover_runs` expects (a signal CSV + a headerless `*_poi.csv`
 of raw row indices, with row 2 being the legacy POI2-shim row that
-``corpus.truth_times`` skips), without needing any real QATCH data on disk.
+`corpus.truth_times` skips), without needing any real QATCH data on disk.
 """
 
 from __future__ import annotations

@@ -39,8 +39,8 @@ class QModelOnyxConfig:
         DECODE_LAMBDA (float): Default weight of the spacing log-likelihood
             relative to detection confidence in configuration-prior decode.
         DECODE_LAMBDA_PAIRS (Optional[Dict[str, float]]): Per-edge override
-            of ``DECODE_LAMBDA``, keyed by ``"POI_i->POI_j"``; edges not
-            listed fall back to ``DECODE_LAMBDA``.
+            of `DECODE_LAMBDA`, keyed by `"POI_i->POI_j"`; edges not
+            listed fall back to `DECODE_LAMBDA`.
         DECODE_CONF_WEIGHT (float): Weight on summed (clipped) detection
             confidence in the decode objective.
         DECODE_FEAS_SLACK (float): Multiplicative slack applied to the

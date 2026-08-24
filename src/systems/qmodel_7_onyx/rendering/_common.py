@@ -3,9 +3,9 @@ rendering/_common.py
 =====================
 
 Shared helpers for the detector and fill-classifier renderers
-(``detector_render.py`` / ``fill_render.py``). ``_strip_points`` and
-``_robust_mad`` used to be copy-pasted, near-identically, into both modules
-(and, for ``_robust_mad``, a third time within the fill-render module
+(`detector_render.py` / `fill_render.py`). `_strip_points` and
+`_robust_mad` used to be copy-pasted, near-identically, into both modules
+(and, for `_robust_mad`, a third time within the fill-render module
 itself); this is the one canonical implementation both now import.
 """
 

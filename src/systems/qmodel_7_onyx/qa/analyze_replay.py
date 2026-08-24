@@ -10,12 +10,12 @@ populations with different fixes:
   * MACHINERY-LOSS: runs the model gets right statically but the evidence
     layer never confirms - missed confirmations from thresholds/bars
     tuned too conservative. These are recoverable with a threshold
-    change alone, which is what ``live/replay.py --sweep`` quantifies.
+    change alone, which is what `live/replay.py --sweep` quantifies.
 
 Reads one or more machine configs from a replay JSON (produced by
-``live/replay.py``, optionally with ``--sweep`` and/or ``--legacy`` for a
+`live/replay.py`, optionally with `--sweep` and/or `--legacy` for a
 comparison table), and optionally cross-references a static audit's
-``misses.csv`` (see :mod:`.audit_fill_val`) to tag failing runs as
+`misses.csv` (see :mod:`.audit_fill_val`) to tag failing runs as
 known-static-offenders vs machinery-only.
 
 Usage
@@ -45,16 +45,16 @@ def summarize_machine(name: str, per_run: dict) -> dict:
 
     Args:
         name (str): key of the machine config within each run's
-            ``scores`` mapping.
-        per_run (dict): replay JSON's ``per_run`` mapping of run id ->
-            record, each holding a ``scores`` dict keyed by machine name.
+            `scores` mapping.
+        per_run (dict): replay JSON's `per_run` mapping of run id ->
+            record, each holding a `scores` dict keyed by machine name.
 
     Returns:
-        dict: aggregate stats for this machine - ``missed_by_state``
-            (Counter of unconfirmed classes), ``failing``,
-            ``false_fwd_runs``, and ``backward_runs`` (sorted run-id
-            lists), and ``lat_by_state`` (confirmation latencies as
-            ``np.ndarray`` per class).
+        dict: aggregate stats for this machine - `missed_by_state`
+            (Counter of unconfirmed classes), `failing`,
+            `false_fwd_runs`, and `backward_runs` (sorted run-id
+            lists), and `lat_by_state` (confirmation latencies as
+            `np.ndarray` per class).
     """
     missed_by_state = Counter()
     failing, false_fwd_runs, backward_runs = [], [], []

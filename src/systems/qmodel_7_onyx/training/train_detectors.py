@@ -8,9 +8,9 @@ to train on a single 24 GB GPU (e.g. an RTX 4090) in hours rather than days.
 
 Why training uses a custom rectangular trainer
 ------------------------------------------------
-Ultralytics' ``DetectionTrainer`` hard-codes ``rect=mode == "val"`` inside
-``build_dataset``, so the ``rect=True`` train argument passed to
-``model.train(...)`` is silently ignored for the TRAINING loader. A wide,
+Ultralytics' `DetectionTrainer` hard-codes `rect=mode == "val"` inside
+`build_dataset`, so the `rect=True` train argument passed to
+`model.train(...)` is silently ignored for the TRAINING loader. A wide,
 short render therefore gets letterboxed into a square the size of its long
 edge, which is mostly black padding - several times the pixel count of the
 real content, comfortably enough to spill a 24 GB GPU's budget into a much
@@ -108,17 +108,17 @@ DEFAULT_PATIENCE = 30
 
 
 def _make_rect_trainer():
-    """Build a ``DetectionTrainer`` subclass that forces genuinely rectangular TRAIN batches.
+    """Build a `DetectionTrainer` subclass that forces genuinely rectangular TRAIN batches.
 
     Defined lazily so this module can be imported without ultralytics
-    installed. Mirrors the upstream ``build_dataset`` exactly except with
-    ``rect=True`` for both train and val modes. With a single shared aspect
+    installed. Mirrors the upstream `build_dataset` exactly except with
+    `rect=True` for both train and val modes. With a single shared aspect
     ratio across the dataset this yields one fixed batch shape instead of
     square letterboxing (see the module docstring for why that matters).
 
     Returns:
-        type: A ``DetectionTrainer`` subclass, ready to pass as the
-        ``trainer`` argument to ``model.train(...)``.
+        type: A `DetectionTrainer` subclass, ready to pass as the
+        `trainer` argument to `model.train(...)`.
     """
     from ultralytics.data import build_yolo_dataset
     from ultralytics.models.yolo.detect import DetectionTrainer
@@ -170,7 +170,7 @@ def train_stage(
 
     Args:
         data_root (Path): Root of the datasets built by build_dataset.py;
-            ``data_root / stage`` must contain a ``data.yaml``.
+            `data_root / stage` must contain a `data.yaml`.
         stage (str): Stage name to train, e.g. "init", "ch2", "ch3_zoom".
         size (str): YOLO26 size letter ("n", "s", "m", "l", "xl").
         epochs (int): Maximum number of training epochs.
@@ -187,7 +187,7 @@ def train_stage(
         validation metrics.
 
     Raises:
-        SystemExit: If ``data_root / stage / "data.yaml"`` does not exist,
+        SystemExit: If `data_root / stage / "data.yaml"` does not exist,
             i.e. build_dataset.py has not been run for this stage yet.
     """
     import shutil

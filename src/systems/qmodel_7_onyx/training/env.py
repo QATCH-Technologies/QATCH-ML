@@ -23,7 +23,7 @@ def setup_cuda_env() -> None:
     """Reduce fragmentation-driven OOMs before torch is imported.
 
     Harmless if unsupported by the installed torch. Must be called before
-    ``torch``/``ultralytics`` is imported anywhere in the process to take
+    `torch`/`ultralytics` is imported anywhere in the process to take
     effect.
     """
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
@@ -50,17 +50,17 @@ class StageResult:
 def extract_metrics(train_return: Any, model: Any = None) -> Optional[Dict[str, Any]]:
     """Best-effort extraction of a plain-dict metrics summary from a training call.
 
-    Ultralytics' ``model.train(...)`` return shape has varied across
-    versions (a metrics object with a ``results_dict``, or ``None`` with the
-    results attached to the model instance instead via ``model.metrics``).
+    Ultralytics' `model.train(...)` return shape has varied across
+    versions (a metrics object with a `results_dict`, or `None` with the
+    results attached to the model instance instead via `model.metrics`).
     This never raises; it returns None if nothing recognizable is found
     rather than letting a version mismatch break the training run over a
     reporting nicety.
 
     Args:
-        train_return (Any): The value returned by ``model.train(...)``.
+        train_return (Any): The value returned by `model.train(...)`.
         model (Any, optional): The trained model instance, consulted as a
-            fallback when ``train_return`` doesn't carry metrics directly.
+            fallback when `train_return` doesn't carry metrics directly.
             Defaults to None.
 
     Returns:

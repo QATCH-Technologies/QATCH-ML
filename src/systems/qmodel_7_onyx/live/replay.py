@@ -21,7 +21,7 @@ PROB_TEMPERATURE) -> OrdinalEvidence - without the QATCH process plumbing.
 Drop gating is emulated with the drop signal at POI1 (the UI fires it at
 drop application; POI1 is the closest ground-truth proxy).
 
-``--legacy`` additionally runs the SAME probability stream through the v6
+`--legacy` additionally runs the SAME probability stream through the v6
 decision rule (argmax + symmetric count-of-3 debounce) so the evidence
 layer's contribution is isolated from the model's: same model, same
 frames, two state machines, one table.
@@ -96,7 +96,7 @@ def replay_run(
     gate: bool,
     machines: Dict[str, object],
 ) -> Optional[dict]:
-    """Streams one run through every state machine in ``machines`` on a
+    """Streams one run through every state machine in `machines` on a
     shared probability stream. Returns per-machine transition logs plus
     inference timing."""
     df_raw = df_raw.sort_values(COL_TIME).reset_index(drop=True)

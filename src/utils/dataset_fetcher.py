@@ -108,7 +108,7 @@ class DatasetFetcher:
         source_dir (Path): Path to the source data directory.
         target_dir (Path): Path to the target data directory.
         num_files (Optional[int]): Optional limit on the number of new runs to process.
-        max_workers (Optional[int]): Maximum thread-pool size. ``None`` lets the
+        max_workers (Optional[int]): Maximum thread-pool size. `None` lets the
             executor choose based on available CPUs.
         existing_runs (Set[str]): Set of POI filenames for runs already processed.
         run_dirs (List[Path]): List of target run directories created during processing.
@@ -119,8 +119,8 @@ class DatasetFetcher:
             substring against every line of a run's XML file. This is a
             data-quality denylist, not a filesystem path - extend it here for
             a permanent change, or override per-instance via the
-            ``bad_batches`` constructor argument (equivalently, per-invocation
-            via ``--exclude-batch`` on the CLI).
+            `bad_batches` constructor argument (equivalently, per-invocation
+            via `--exclude-batch` on the CLI).
     """
 
     BAD_BATCHES = ["MM240506", "DD240501"]
@@ -143,8 +143,8 @@ class DatasetFetcher:
             max_workers (Optional[int], optional): Maximum number of worker threads for
                 the thread pools. Defaults to None (executor-chosen).
             bad_batches (Optional[List[str]], optional): Batch identifiers to reject
-                during XML validation, replacing the class-level ``BAD_BATCHES``
-                default. Defaults to None (use ``BAD_BATCHES``).
+                during XML validation, replacing the class-level `BAD_BATCHES`
+                default. Defaults to None (use `BAD_BATCHES`).
         """
         self.source_dir = Path(source_dir)
         self.target_dir = Path(target_dir)
@@ -165,7 +165,7 @@ class DatasetFetcher:
     # ------------------------------------------------------------------
 
     def _record_failure(self, run_id: str, stage: str, reason: str) -> None:
-        """Append a :class:`FailureRecord` to ``self.failures`` in a thread-safe manner.
+        """Append a :class:`FailureRecord` to `self.failures` in a thread-safe manner.
 
         Args:
             run_id (str): Identifier for the failing run.
@@ -185,7 +185,7 @@ class DatasetFetcher:
         """Load the identifiers of previously processed runs from the target directory.
 
         It looks for files ending with '_poi.csv' (omitting those starting with 'Dithered_')
-        and stores their names in the ``existing_runs`` set.
+        and stores their names in the `existing_runs` set.
         """
         for poi_file in self.target_dir.rglob("*_poi.csv"):
             if poi_file.name.startswith("Dithered_"):
@@ -504,7 +504,7 @@ class DatasetFetcher:
         """Process all stored run directories in parallel.
 
         Uses a thread pool to execute :meth:`process_run_dir` for each run directory
-        in ``run_dirs``.
+        in `run_dirs`.
         """
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             tasks = [executor.submit(self.process_run_dir, run_dir) for run_dir in self.run_dirs]
@@ -516,7 +516,7 @@ class DatasetFetcher:
 
         Prints a summary table to the console. If *report_path* is provided the
         full failure list is also written as a CSV file with the columns:
-        ``timestamp``, ``run_id``, ``stage``, ``reason``.
+        `timestamp`, `run_id`, `stage`, `reason`.
 
         Args:
             report_path (Optional[Path], optional): Path to write the CSV report.

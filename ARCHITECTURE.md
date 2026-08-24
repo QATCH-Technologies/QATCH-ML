@@ -2,7 +2,7 @@
 
 ## Data flow
 
-```mermaid
+``mermaid
 flowchart TB
     raw["data/raw/&lt;run_id&gt;/\n(*.csv, *_poi.csv, analyze-*.zip)"]
     corpus["corpus.py\ndiscover_runs / dedupe_runs / truth_times"]
@@ -47,7 +47,7 @@ flowchart TB
     corpus --> qa
     replay --> qa
     tiers --> qa
-```
+``
 
 ## Module responsibility table
 

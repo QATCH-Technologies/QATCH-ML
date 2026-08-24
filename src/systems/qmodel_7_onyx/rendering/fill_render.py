@@ -37,13 +37,13 @@ The v2 classification render therefore mirrors detector_render:
 
 Train/deploy contract (the detector lesson, applied)
 ----------------------------------------------------
-``prepare_cls_input`` is the ONE function that turns a preprocessed
+`prepare_cls_input` is the ONE function that turns a preprocessed
 dataframe into the 224x224 tensor-ready image. build_fill_dataset.py saves
 its exact output; QModelV7 inference feeds its exact output. The 640->224
 INTER_AREA resize lives inside it, so training images and inference images
 are bit-identical by construction - no "same-ish render" drift.
 
-``FILL_RENDER_VERSION`` dispatches v1 (legacy weights) vs v2, the same
+`FILL_RENDER_VERSION` dispatches v1 (legacy weights) vs v2, the same
 roll-out mechanism as QModelOnyxConfig.RENDER_VERSION on the detector side.
 """
 

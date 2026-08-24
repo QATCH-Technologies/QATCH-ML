@@ -72,7 +72,7 @@ class SpacingPrior:
 
     Attributes:
         pairs (List[str]): Consecutive POI pair names in POI_ORDER order,
-            e.g. ``["POI1->POI2", ...]``.
+            e.g. `["POI1->POI2", ...]`.
         gap (Dict[str, GapStat]): Fitted :class:`GapStat` for each pair
             name in `pairs`.
         frac_blend (float): Blend weight between the seconds-based and
@@ -103,7 +103,7 @@ class SpacingPrior:
         Args:
             configs_sec (np.ndarray): Array of shape (N, P) giving POI
                 times in seconds, one strictly ascending row per
-                complete-fill run. P must equal ``len(POI_ORDER)``.
+                complete-fill run. P must equal `len(POI_ORDER)`.
             frac_blend (float, optional): Blend weight passed through to
                 the resulting :class:`SpacingPrior`. Defaults to 0.5.
             bound_lo_pct (float, optional): Lower percentile used to set
@@ -117,7 +117,7 @@ class SpacingPrior:
 
         Raises:
             AssertionError: If `configs_sec` does not have exactly
-                ``len(POI_ORDER)`` columns.
+                `len(POI_ORDER)` columns.
         """
         N, P = configs_sec.shape
         assert P == len(POI_ORDER), f"expected {len(POI_ORDER)} POIs, got {P}"
@@ -152,7 +152,7 @@ class SpacingPrior:
         Built by composing the consecutive-gap log-normals: medians add in
         linear space and variances add in log space (a standard
         log-normal-sum approximation). Exact (the fitted stat) when
-        ``j == i + 1``.
+        `j == i + 1`.
 
         Used when two *present* POIs are not globally adjacent, so the gap
         between them spans one or more absent POIs and must be scored
@@ -169,7 +169,7 @@ class SpacingPrior:
             gap.
 
         Raises:
-            ValueError: If ``j <= i``.
+            ValueError: If `j <= i`.
         """
         if j <= i:
             raise ValueError(f"composed_stat requires j > i, got ({i}, {j})")
@@ -277,8 +277,8 @@ class SpacingPrior:
     ) -> float:
         """Compute the log-likelihood of a gap with the span-fraction component re-referenced to a partial-fill span.
 
-        The fitted fraction statistics assume ``span = t(POI_last) -
-        t(POI_first)`` of a COMPLETE fill. On a prefix (partial) fill the
+        The fitted fraction statistics assume `span = t(POI_last) -
+        t(POI_first)` of a COMPLETE fill. On a prefix (partial) fill the
         decode-time span covers fewer gaps, so the fitted fraction medians
         would otherwise be systematically too small. This method
         re-derives the fraction location from the seconds medians::

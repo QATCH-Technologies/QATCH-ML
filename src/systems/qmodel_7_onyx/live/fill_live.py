@@ -10,18 +10,18 @@ lessons to the streaming path. Three independent fixes, one drop-in class:
    the ENTIRE buffer to a 5 ms grid on every chunk: a 20-minute run is
    ~240k interpolated rows, re-built, re-differenced, and median-filtered
    several times per second — cost grows linearly with run duration for an
-   image that is only 640 px wide. ``preprocess_for_cls`` widens the grid
-   step so total points never exceed ``max_points`` (default 4096, ~6 per
+   image that is only 640 px wide. `preprocess_for_cls` widens the grid
+   step so total points never exceed `max_points` (default 4096, ~6 per
    rendered column): identical to the production 5 ms grid for short
    buffers, graceful decimation for long ones. Inference cost becomes flat
    for the life of the run. (The median filter's 5-sample kernel then
    smooths a window proportional to run span — for a GLOBAL-shape
    classifier that scale-following smoothing is a feature, not a loss.)
 
-2. PROBABILITIES OUT OF THE PREDICTOR. ``predict`` currently collapses the
+2. PROBABILITIES OUT OF THE PREDICTOR. `predict` currently collapses the
    softmax to top-1 and discards confidence, so the debounce layer sees a
    hard integer and must treat a 51/49 flicker identically to a 99/1 call.
-   ``QModelV7FillClassifier.predict_probs`` returns the full distribution
+   `QModelV7FillClassifier.predict_probs` returns the full distribution
    over the ORDINAL state axis [-1, 0, 1, 2, 3], rendered with the v2
    derivative-energy fill render via the shared prepare_cls_input contract.
 
@@ -30,7 +30,7 @@ lessons to the streaming path. Three independent fixes, one drop-in class:
    cheap and it is where the remaining errors live). Fill state is
    physically monotone non-decreasing: channels do not un-fill. The
    symmetric count-of-3 debounce ignores this — three flickers backward
-   and the UI reports a channel emptying. ``OrdinalEvidence`` replaces it:
+   and the UI reports a channel emptying. `OrdinalEvidence` replaces it:
 
      * EMA over the probability vector (alpha tuned so confirmation
        latency matches the old 3-frame debounce on clean streams).
@@ -51,11 +51,11 @@ STATUS_MAP, display-message machinery, drop-epoch gating, duration
 thresholds) is preserved; QModelV7YOLO_Live is a drop-in replacement for
 the class the LiveProcess constructs.
 
-Migrated from the flat ``v7_fill_live.py`` module as part of the ``live/``
-subpackage split. The dead ``buffer_window_size`` fallback this docstring
-used to describe (computed in ``QModelV6YOLO_LiveProcess.__init__`` but
-always discarded in favour of ``None`` in ``run()``) has been removed at
-its source in ``live/base_live.py``.
+Migrated from the flat `v7_fill_live.py` module as part of the `live/`
+subpackage split. The dead `buffer_window_size` fallback this docstring
+used to describe (computed in `QModelV6YOLO_LiveProcess.__init__` but
+always discarded in favour of `None` in `run()`) has been removed at
+its source in `live/base_live.py`.
 """
 
 from __future__ import annotations
@@ -157,7 +157,7 @@ def preprocess_for_cls(
 
     step = max(TIME_STEP, span / max_points): identical to production for
     spans under TIME_STEP * max_points (~20 s at defaults), then the step
-    widens so the interpolated frame never exceeds ``max_points`` rows —
+    widens so the interpolated frame never exceeds `max_points` rows —
     flat per-chunk cost regardless of run length. The classifier's render
     is 640 px wide; carrying 240k rows into it was pure waste.
     """

@@ -8,7 +8,7 @@ anomalous fill (partial channel, wicking, bubble) - not of a trainable
 representation gap. This module produces the packet a human reviewer
 needs to make that call.
 
-For each suspect run given via ``--runs`` (see :mod:`.triage_offenders`
+For each suspect run given via `--runs` (see :mod:`.triage_offenders`
 for how the offender list is derived) this script writes one PNG page:
 raw dissipation and resonance frequency, (top) full run with all labeled
 POI verticals, and (below) ZOOMED panes around each late POI (default
@@ -62,7 +62,7 @@ POI_COLOR = {
 def _plot_pair(
     ax_d, ax_f, df: pd.DataFrame, t0: float, t1: float, poi: Dict[str, float], title: str
 ) -> None:
-    """Plot dissipation and resonance-frequency traces over ``[t0, t1]``
+    """Plot dissipation and resonance-frequency traces over `[t0, t1]`
     onto a pair of axes, with vertical markers for any POI in range.
 
     Args:
@@ -73,7 +73,7 @@ def _plot_pair(
         t0 (float): window start time.
         t1 (float): window end time.
         poi (Dict[str, float]): POI name -> time, for markers falling
-            inside ``[t0, t1]``.
+            inside `[t0, t1]`.
         title (str): subplot title placed on the dissipation axes.
     """
     m = (df[COL_TIME] >= t0) & (df[COL_TIME] <= t1)
@@ -101,16 +101,16 @@ def _plot_pair(
 def make_page(rec, pois: List[str], zoom_s: float, out: Path) -> None:
     """Render one review PNG page for a single run.
 
-    The page shows the full run followed by a zoomed pane (±``zoom_s``)
+    The page shows the full run followed by a zoomed pane (±`zoom_s`)
     around each requested POI that is present on the run, so a reviewer
     can judge full-run context and transition-level detail together.
 
     Args:
-        rec: a :class:`RunRecord` with ``run_id``, ``csv_path``,
-            ``poi_times``, and ``viscosity_cP``.
-        pois (List[str]): POI names to zoom in on, if present on ``rec``.
+        rec: a :class:`RunRecord` with `run_id`, `csv_path`,
+            `poi_times`, and `viscosity_cP`.
+        pois (List[str]): POI names to zoom in on, if present on `rec`.
         zoom_s (float): half-width in seconds of each zoomed pane.
-        out (Path): directory to write ``{run_id}_review.png`` into.
+        out (Path): directory to write `{run_id}_review.png` into.
     """
     df = pd.read_csv(rec.csv_path)
     if COL_TIME not in df.columns:
