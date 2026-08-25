@@ -112,18 +112,18 @@ from _qmodel_onyx_layout import build_model_assets, deploy_subpath, load_assets_
 
 from src.systems.qmodel_7_onyx import paths  # noqa: E402
 from src.systems.qmodel_7_onyx.corpus import (  # noqa: E402
-    TIER_LABELS,
+    TIER_EDGES,
     RunRecord,
     dedupe_runs,
     discover_runs,
     load_run_filter,
-    viscosity_tier,
 )
 from src.systems.qmodel_7_onyx.pipeline import (  # noqa: E402
     Pipeline,
     PipelineError,
     Workspace,
 )
+from src.systems.qmodel_7_onyx.tiers import TierScheme  # noqa: E402
 from src.systems.qmodel_7_onyx.training.train_detectors import STAGE_CHOICES  # noqa: E402
 from src.utils.dataset_fetcher import DatasetFetcher  # noqa: E402
 from src.utils.logger import configure_logging, get_logger  # noqa: E402
@@ -547,12 +547,48 @@ def _predicted_positions(
     return out
 
 
+def load_eval_tier_scheme(tiers_path: Path) -> TierScheme:
+    """Loads the data-driven viscosity TierScheme that stage_prepare fit from
+    raw data (see tiers.py) and saved to configs/tiers.json, so the eval's
+    per-tier breakdown always mirrors the tiers actually used for train/val
+    stratification -- not the frozen legacy edges in corpus.py. Falls back
+    to those legacy fixed edges only when no fitted tiers.json exists yet
+    (e.g. running --skip-fetch eval before any prepare stage has run)."""
+    if tiers_path.exists():
+        scheme = TierScheme.load(tiers_path)
+        LOG.info(
+            "[7/7] Eval: loaded {} viscosity tier(s) from {} (method={})",
+            len(scheme.labels),
+            tiers_path,
+            scheme.method,
+        )
+        return scheme
+    LOG.warning(
+        "[7/7] Eval: no fitted tiers.json at {} -- falling back to legacy fixed edges {}",
+        tiers_path,
+        TIER_EDGES,
+    )
+    return TierScheme(edges_cp=list(TIER_EDGES))
+
+
+def _attach_tier_labels(df: pd.DataFrame, tiers: TierScheme) -> pd.DataFrame:
+    """(Re)derives the `tier` column from the stored raw `viscosity_cP`
+    using the given TierScheme, rather than trusting whatever tier label
+    got embedded in results_long.csv at score time. This lets summary.csv
+    and the plots be regenerated with an up-to-date stratification after
+    tiers.json is refit on new incoming data, without re-scoring every run."""
+    df = df.copy()
+    df["tier"] = df["viscosity_cP"].apply(lambda v: tiers.labels[tiers.tier_of(v)])
+    return df
+
+
 def score_run(
     controller: Any,
     run: RunRecord,
     time_col: str,
     decode_config: bool,
     refine_pois: bool,
+    tiers: TierScheme,
 ) -> List[Dict[str, Any]]:
     """One run -> one result row per chain-space POI present in truth."""
     df_raw = pd.read_csv(run.csv_path)
@@ -563,7 +599,7 @@ def score_run(
         df=df_raw, decode_config=decode_config, refine_pois=refine_pois
     )
     predicted = _predicted_positions(output, time_axis)
-    tier = viscosity_tier(run.viscosity_cP)
+    tier = tiers.tier_of(run.viscosity_cP)
 
     rows: List[Dict[str, Any]] = []
     for poi in POI_KEYS:
@@ -579,7 +615,7 @@ def score_run(
             dict(
                 run_id=run.run_id,
                 poi=poi,
-                tier=TIER_LABELS[tier],
+                tier=tiers.labels[tier],
                 viscosity_cP=run.viscosity_cP,
                 true_index=true_index,
                 pred_index=pred["index"] if hit else "",
@@ -625,6 +661,7 @@ def run_eval(
     controller: Any,
     runs: List[RunRecord],
     output_dir: Path,
+    tiers: TierScheme,
     *,
     time_col: str = "Relative_time",
     decode_config: bool = True,
@@ -661,7 +698,7 @@ def run_eval(
     try:
         for run in pending:
             try:
-                rows = score_run(controller, run, time_col, decode_config, refine_pois)
+                rows = score_run(controller, run, time_col, decode_config, refine_pois, tiers)
             except Exception as exc:
                 n_failed += 1
                 LOG.warning("predict failed for run {} ({}); skipping", run.run_id, exc)
@@ -742,13 +779,16 @@ def _summarize(sub: pd.DataFrame, gross_threshold: float) -> _POIMetrics:
     return m
 
 
-def summarize(results_path: Path, output_dir: Path, gross_threshold: float) -> pd.DataFrame:
+def summarize(
+    results_path: Path, output_dir: Path, gross_threshold: float, tiers: TierScheme
+) -> pd.DataFrame:
     df = pd.read_csv(results_path)
     # Defends against the duplicate rows a crash between a run's results-flush and
     # its progress.txt write can leave behind (see run_eval's write-order comment)
     # -- keep the LAST occurrence per (run_id, poi) rather than double-counting.
     df = df.drop_duplicates(subset=["run_id", "poi"], keep="last")
     df["hit"] = df["hit"].astype(int)
+    df = _attach_tier_labels(df, tiers)
 
     overall_rows = []
     for poi in POI_KEYS:
@@ -756,7 +796,7 @@ def summarize(results_path: Path, output_dir: Path, gross_threshold: float) -> p
         m = _summarize(sub, gross_threshold)
         overall_rows.append(dict(poi=poi, tier="ALL", **vars(m), hit_rate=m.hit_rate))
     for poi in POI_KEYS:
-        for tier_label in TIER_LABELS:
+        for tier_label in tiers.labels:
             sub = df[(df["poi"] == poi) & (df["tier"] == tier_label)]
             if len(sub) == 0:
                 continue
@@ -769,7 +809,11 @@ def summarize(results_path: Path, output_dir: Path, gross_threshold: float) -> p
 
 
 def _print_summary(
-    summary: pd.DataFrame, gross_threshold: float, output_dir: Path, n_failed: int = 0
+    summary: pd.DataFrame,
+    gross_threshold: float,
+    output_dir: Path,
+    tiers: TierScheme,
+    n_failed: int = 0,
 ) -> None:
     HDR = (
         f"{'POI':<6} {'Tier':<16} {'N':>5} {'Hit%':>7}  "
@@ -795,7 +839,7 @@ def _print_summary(
                 f"{row['mae_s']:>8.3f} {row['median_ae_s']:>8.3f} {row['rmse_s']:>8.3f} "
                 f"{row['bias_s']:>+8.3f}  {row['gross_rate']:>6.1%}  {row['mean_index_err']:>10.1f}"
             )
-        for tier_label in TIER_LABELS:
+        for tier_label in tiers.labels:
             trow = sub[sub["tier"] == tier_label]
             if trow.empty:
                 continue
@@ -809,11 +853,31 @@ def _print_summary(
     print(f"{BAR}\n")
 
 
-TIER_COLORS = ["#86b6ef", "#5598e7", "#2a78d6", "#1c5cab", "#104281", "#898781"]
 GRIDLINE = "#e1e0d9"
 MUTED = "#898781"
 SECONDARY = "#52514e"
 PRIMARY = "#0b0b0b"
+
+
+def _tier_colors(tier_labels: List[str]) -> Dict[str, str]:
+    """Light -> dark blue gradient across the ordered viscosity bins, with a
+    fixed neutral grey for the trailing "unknown" bucket. Generated from
+    however many tiers the fitted TierScheme produced (fit_tiers' n_bins can
+    vary run to run as the corpus grows) rather than a hardcoded 6-tier
+    palette sized for the old fixed edges."""
+    import matplotlib.cm as cm
+    from matplotlib.colors import rgb2hex
+
+    visc_labels = tier_labels[:-1]  # everything but "unknown"
+    n = max(len(visc_labels), 1)
+    cmap = cm.get_cmap("Blues")
+    colors = {
+        label: rgb2hex(cmap(0.35 + 0.55 * (i / max(n - 1, 1))))
+        for i, label in enumerate(visc_labels)
+    }
+    if tier_labels:
+        colors[tier_labels[-1]] = MUTED
+    return colors
 
 
 def _setup_style() -> None:
@@ -875,11 +939,13 @@ def plot_bar_overall(summary: pd.DataFrame, plots_dir: Path) -> None:
     plt.close(fig)
 
 
-def plot_bar_by_tier(summary: pd.DataFrame, plots_dir: Path) -> None:
+def plot_bar_by_tier(
+    summary: pd.DataFrame, plots_dir: Path, tier_labels: List[str], tier_colors: Dict[str, str]
+) -> None:
     _setup_style()
     import matplotlib.pyplot as plt
 
-    tiers_present = [t for t in TIER_LABELS if not summary[summary["tier"] == t].empty]
+    tiers_present = [t for t in tier_labels if not summary[summary["tier"] == t].empty]
     if not tiers_present:
         return
     fig, ax = plt.subplots(figsize=(11, 5.5), dpi=150)
@@ -888,7 +954,7 @@ def plot_bar_by_tier(summary: pd.DataFrame, plots_dir: Path) -> None:
     bar_w = group_w / max(n_tier, 1)
     x = np.arange(n_poi)
     for j, tier_label in enumerate(tiers_present):
-        color = TIER_COLORS[TIER_LABELS.index(tier_label)]
+        color = tier_colors[tier_label]
         vals = []
         for poi in POI_KEYS:
             row = summary[(summary["poi"] == poi) & (summary["tier"] == tier_label)]
@@ -912,20 +978,22 @@ def plot_bar_by_tier(summary: pd.DataFrame, plots_dir: Path) -> None:
     plt.close(fig)
 
 
-def plot_violin_per_poi(results: pd.DataFrame, plots_dir: Path) -> None:
+def plot_violin_per_poi(
+    results: pd.DataFrame, plots_dir: Path, tier_labels: List[str], tier_colors: Dict[str, str]
+) -> None:
     _setup_style()
     import matplotlib.pyplot as plt
 
     hit = results[results["hit"] == 1]
     for poi in POI_KEYS:
         sub = hit[hit["poi"] == poi]
-        tiers_present = [t for t in TIER_LABELS if len(sub[sub["tier"] == t])]
+        tiers_present = [t for t in tier_labels if len(sub[sub["tier"] == t])]
         if not tiers_present:
             continue
         data = [
             sub[sub["tier"] == t]["abs_time_err_s"].to_numpy(dtype=float) for t in tiers_present
         ]
-        colors = [TIER_COLORS[TIER_LABELS.index(t)] for t in tiers_present]
+        colors = [tier_colors[t] for t in tiers_present]
 
         fig, ax = plt.subplots(figsize=(7.5, 4.5), dpi=150)
         positions = list(range(len(tiers_present)))
@@ -956,13 +1024,16 @@ def plot_violin_per_poi(results: pd.DataFrame, plots_dir: Path) -> None:
         plt.close(fig)
 
 
-def make_all_plots(results_path: Path, summary: pd.DataFrame, output_dir: Path) -> None:
+def make_all_plots(
+    results_path: Path, summary: pd.DataFrame, output_dir: Path, tiers: TierScheme
+) -> None:
     plots_dir = output_dir / "plots"
     plots_dir.mkdir(parents=True, exist_ok=True)
-    results = pd.read_csv(results_path)
+    results = _attach_tier_labels(pd.read_csv(results_path), tiers)
+    tier_colors = _tier_colors(tiers.labels)
     plot_bar_overall(summary, plots_dir)
-    plot_bar_by_tier(summary, plots_dir)
-    plot_violin_per_poi(results, plots_dir)
+    plot_bar_by_tier(summary, plots_dir, tiers.labels, tier_colors)
+    plot_violin_per_poi(results, plots_dir, tiers.labels, tier_colors)
     LOG.info("Plots -> {}", plots_dir)
 
 
@@ -970,6 +1041,8 @@ def stage_eval(args: argparse.Namespace, workspace: Workspace) -> Optional[Any]:
     if args.skip_eval:
         LOG.info("[7/7] Eval: skipped (--skip-eval).")
         return None
+
+    tiers = load_eval_tier_scheme(workspace.tiers_path)
 
     only_runs = args.eval_only_runs
     if only_runs is None:
@@ -1007,29 +1080,37 @@ def stage_eval(args: argparse.Namespace, workspace: Workspace) -> Optional[Any]:
     controller = load_onyx_controller(args.eval_deployment_dir, model_assets)
     _verify_chain_to_prod(controller)
 
+    decode_config = not args.eval_no_decode_config
+    refine_pois = not args.eval_no_refine_pois
     run_config = dict(
-        decode_config=not args.eval_no_decode_config,
-        refine_pois=not args.eval_no_refine_pois,
+        decode_config=decode_config,
+        refine_pois=refine_pois,
         assets_root=str(args.output),
         deployment_dir=str(args.eval_deployment_dir),
+        # Ties a resumed --eval-output to the tier scheme active when its rows
+        # were scored -- if tiers.json gets refit in between (new incoming
+        # data), _check_run_config forces --eval-restart instead of silently
+        # mixing old- and new-scheme tier assignments in one summary.
+        tier_edges_cp=tiers.edges_cp,
     )
     results_path, n_failed = run_eval(
         controller,
         runs,
         args.eval_output,
-        decode_config=run_config["decode_config"],
-        refine_pois=run_config["refine_pois"],
+        tiers,
+        decode_config=decode_config,
+        refine_pois=refine_pois,
         resume=not args.eval_restart,
         log_every=args.eval_log_every,
         run_config=run_config,
     )
 
     LOG.info("[7/7] Eval: summarizing...")
-    summary = summarize(results_path, args.eval_output, args.eval_gross_threshold)
-    _print_summary(summary, args.eval_gross_threshold, args.eval_output, n_failed=n_failed)
+    summary = summarize(results_path, args.eval_output, args.eval_gross_threshold, tiers)
+    _print_summary(summary, args.eval_gross_threshold, args.eval_output, tiers, n_failed=n_failed)
 
     LOG.info("[7/7] Eval: plotting...")
-    make_all_plots(results_path, summary, args.eval_output)
+    make_all_plots(results_path, summary, args.eval_output, tiers)
     LOG.info("[7/7] Eval: done -> {}", args.eval_output)
     return summary
 
