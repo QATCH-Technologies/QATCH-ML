@@ -2,8 +2,6 @@
 
 ## Data flow
 
-## Data flow
-
 ```mermaid
 flowchart TB
     raw["data/raw/&lt;run_id&gt;/\n(*.csv, *_poi.csv, analyze-*.zip)"]
