@@ -15,7 +15,7 @@ pytest -k dp_decode        # by name
 ``
 
 The suite covers every pure-logic module (corpus discovery, spacing prior,
-DP decode, tier fitting, augmentation, rendering salience math, dataset
+DP decode, tier fitting, augmentation, rendering math, dataset
 splitting, the crosscheck rescue/veto) without requiring model weights or
 `ultralytics` - YOLO-dependent
 code is tested via duck-typed stand-ins (see `tests/inference/test_crosscheck.py`
