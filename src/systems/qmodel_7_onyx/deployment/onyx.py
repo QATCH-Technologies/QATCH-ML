@@ -97,7 +97,8 @@ except (ImportError, ModuleNotFoundError):
     _DECODE_AVAILABLE = False
     Log.e(
         tag="[QModelOnyx]",
-        msg="Decode modules not found. Configuration decode disabled; falling back to cascade-only behavior.",
+        msg="Decode modules not found. Configuration decode disabled; "
+        "falling back to cascade-only behavior.",
     )
 
 

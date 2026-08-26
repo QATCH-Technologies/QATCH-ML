@@ -61,7 +61,8 @@ class TestExtractMetrics:
         assert metrics == {"precision": 0.95}
 
     def test_extracts_from_model_metrics_results_dict(self):
-        """It falls back to extracting metrics from the model instance if the return object lacks them."""
+        """It falls back to extracting metrics from the model instance if the
+        return object lacks them."""
         mock_model = MagicMock()
         mock_model.metrics.results_dict = {"recall": 0.92}  #
 

@@ -25,7 +25,7 @@ Example:
 Attributes:
     STAGE_CHOICES (list[str]): Available stages for training.
     STAGE_EPOCHS (dict[str, int]): Per-stage maximum epoch overrides.
-    STAGE_LR0 (dict[str, float]): Per-stage initial learning rate overrides, 
+    STAGE_LR0 (dict[str, float]): Per-stage initial learning rate overrides,
         specifically gentler schedules for zoom stages.
     STAGE_PATIENCE (dict[str, int]): Per-stage early-stopping patience overrides.
     DEFAULT_LR0 (float): Default initial learning rate.

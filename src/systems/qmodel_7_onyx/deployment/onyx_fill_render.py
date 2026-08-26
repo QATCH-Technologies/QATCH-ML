@@ -41,7 +41,6 @@ from __future__ import annotations
 import cv2
 import numpy as np
 import pandas as pd
-
 from QATCH.QModel.models.qmodel_onyx.onyx_render import (
     DERIV_UPPER_PCT,
     _robust_mad,
