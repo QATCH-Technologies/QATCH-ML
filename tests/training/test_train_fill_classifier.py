@@ -2,7 +2,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-# Adjust this import to match your project's structure
 import src.systems.qmodel_7_onyx.training.train_fill_classifier as tfc
 
 
@@ -114,7 +113,7 @@ class TestTrainFillClassifier:
         # Verify YOLO instantiation targets the classifier model
         mock_yolo_class.assert_called_once_with("yolo26m-cls.pt")
 
-        # Verify train arguments[cite: 10]
+        # Verify train arguments
         mock_yolo_instance.train.assert_called_once()
         _, kwargs = mock_yolo_instance.train.call_args
 
@@ -123,14 +122,14 @@ class TestTrainFillClassifier:
         assert kwargs["imgsz"] == 224
         assert kwargs["crop_fraction"] == 1.0
 
-        # Verify pixel-space augmentations that could corrupt POI labels are disabled[cite: 10]
+        # Verify pixel-space augmentations that could corrupt POI labels are disabled
         assert kwargs["scale"] == 0.0
         assert kwargs["erasing"] == 0.0
         assert kwargs["auto_augment"] is None
         assert kwargs["fliplr"] == 0.0
         assert kwargs["hsv_h"] == 0.0
 
-        # Verify StageResult is properly constructed[cite: 10]
+        # Verify StageResult is properly constructed
         assert result.stage == "fill_classifier"
         assert result.weights_path == data_root / "fill_yolo26m" / "weights" / "best.pt"
 
@@ -149,14 +148,27 @@ class TestMainIntegration:
         tfc.main()
 
         mock_train.assert_called_once()
-        _, kwargs = mock_train.call_args
+        # main() calls train(data_root, size, epochs, project, batch, seed, resume, device)
+        # positionally, so the CLI overrides/defaults must be read off .args, not kwargs.
+        args = mock_train.call_args.args
 
-        # Extracted arguments should match our CLI overrides[cite: 10]
-        assert kwargs["size"] == "l"
-        assert kwargs["epochs"] == 200
-        assert kwargs["batch"] == 32
+        # Extracted arguments should match our CLI overrides
+        assert args[1] == "l"  # size
+        assert args[2] == 200  # epochs
+        assert args[4] == 32  # batch
 
-        # Assert defaults remain correctly applied where not overridden[cite: 10]
-        assert kwargs["device"] == "0"
-        assert kwargs["seed"] == 7
-        assert kwargs["resume"] is False
+        # Assert defaults remain correctly applied where not overridden
+        assert args[7] == "0"  # device
+        assert args[5] == 7  # seed
+        assert args[6] is False  # resume
+
+    @patch.object(tfc, "train")
+    def test_main_respects_default_epochs_and_data_root(self, mock_train, monkeypatch):
+        """When --epochs/--data-root are omitted, the module-level defaults apply."""
+        monkeypatch.setattr("sys.argv", ["train_fill_classifier.py"])
+
+        tfc.main()
+
+        args = mock_train.call_args.args
+        assert args[0] == tfc.paths.DATASETS_ROOT / "onyx_fill"
+        assert args[2] == tfc.DEFAULT_EPOCHS

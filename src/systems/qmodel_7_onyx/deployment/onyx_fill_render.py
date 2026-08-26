@@ -158,8 +158,6 @@ def step_coincidence_energy(df: pd.DataFrame) -> np.ndarray:
     for scale_s in scales:
         w = int(round(scale_s / dt))
         w = max(3, min(w, (n - 1) // 2 - 1))
-        if w < 3:
-            continue
         resp = [_step_response(_series(df, c), w) for c in have]
         per_scale = np.sqrt(resp[0] * resp[1]) if len(resp) == 2 else resp[0]
         sal = np.maximum(sal, per_scale)

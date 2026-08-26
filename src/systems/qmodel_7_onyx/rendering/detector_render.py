@@ -116,8 +116,6 @@ def derivative_energy(df: pd.DataFrame) -> np.ndarray:
         for scale_s in DERIV_SCALES_S:
             w = int(round(scale_s / dt))
             w = max(2, min(w, (n - 1) // 2 - 1))
-            if w < 2:
-                continue
             d = _scaled_curv(x, w)
             s = _robust_mad(d)
             if s <= 0:

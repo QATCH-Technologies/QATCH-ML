@@ -15,9 +15,9 @@ implementation is the **`qmodel_7_onyx`** system under `src/systems/`.
 
 ## Install
 
-``
+```bash
 pip install -e ".[dev]"
-``
+```
 
 `requires-python >= 3.10`. Core dependencies (numpy, pandas, opencv-python,
 scipy, matplotlib, ultralytics, tqdm) are declared in `pyproject.toml`; the
@@ -43,7 +43,7 @@ dataset -> trained-weights sequence behind one object, so a fresh dataset
 becomes trained results without hand-chaining CLIs or re-discovering where
 each stage wrote its output:
 
-``python
+```python
 from src.systems.qmodel_7_onyx import Workspace, Pipeline
 
 # Workspace defaults to this repo's data/, datasets/, runs/, configs/ roots -
@@ -53,16 +53,16 @@ pipeline = Pipeline(Workspace(data_root="path/to/raw"))
 result = pipeline.run()  # prepare() -> build_datasets() -> train()
 print(result.training.weights)  # {"init": Path(...), ..., "fill_classifier": Path(...)}
 print(result.training.metrics)  # best-effort Ultralytics val metrics per stage
-``
+```
 
 Each stage is also callable on its own for finer control, sharing the same
 `Workspace` so paths never drift out of sync between stages:
 
-``python
+```python
 pipeline.prepare()  # fit tiers.json + spacing_prior.json
 pipeline.build_datasets(targets=["fill_classifier"])  # just the fill-classifier dataset
 pipeline.train(targets=["detectors"], detector_stages=["ch2_zoom"], epochs=50)
-``
+```
 
 Errors from insufficient/missing data raise a catchable `PipelineError`
 rather than killing the process (`SystemExit`, which is what the underlying
@@ -71,7 +71,7 @@ keyword arguments.
 
 ### CLI (equivalent, one command per stage)
 
-``
+```bash
 # discover a corpus, fit the spacing prior and viscosity tiers
 python -m src.systems.qmodel_7_onyx.decode.fit_prior --raw-root data/raw --out configs/spacing_prior.json
 python -m src.systems.qmodel_7_onyx.tiers --raw-root data/raw --out configs/tiers.json
@@ -89,7 +89,7 @@ python -m src.systems.qmodel_7_onyx.qa.benchmark --selftest
 
 # run tests
 pytest
-``
+```
 
 The same commands are also registered as console scripts after install
 (`qmodel-build-detectors`, `qmodel-train-detectors`, `qmodel-benchmark`,
@@ -107,20 +107,20 @@ truth (not a YOLO-metrics benchmark - see the script's module docstring).
 There is no separate eval script; this one command replaces the old
 `build_and_release_qmodel_onyx.py` + `eval_onyx_deployment.py` pair.
 
-``
+```bash
 python scripts/build_and_release_qmodel_onyx.py --dropbox-source "D:/Dropbox/QATCH runs"
 
 # skip Dropbox + the post-release eval, retrain one detector stage
 python scripts/build_and_release_qmodel_onyx.py \
     --skip-fetch --skip-eval --targets detectors --detector-stages ch2_zoom
-``
+```
 
 Any stage can be skipped or reconfigured - see `--help` for the full set
 of `--eval-*`/`--keep-runs`/per-stage flags.
 
 ## Directory map
 
-``
+```text
 src/systems/qmodel_7_onyx/
   pipeline.py          Workspace + Pipeline - the public API (see Quickstart above);
                        re-exported from the package's __init__.py
@@ -149,7 +149,7 @@ scripts/
   _qmodel_onyx_layout.py             shared assets_paths.json-derived deploy-layout helper
 configs/                        fitted config artifacts (spacing_prior.json, tiers.json) - versioned, not generated-per-run
 tests/                          pytest suite, mirrors the package layout above
-``
+```
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the pipeline data-flow, module
 responsibilities, and path/config conventions in more depth, and
