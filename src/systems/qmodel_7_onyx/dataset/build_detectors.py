@@ -17,7 +17,7 @@ The module can be invoked directly as a command-line program or through the
 
 Usage:
     python -m src.systems.qmodel_7_onyx.dataset.build_detectors \
-        --raw-root data/raw --tiers tiers.json --out datasets/v7 \
+        --raw-root data/raw --tiers tiers.json --out datasets/onyx \
         [--base-variants 2] [--val-frac 0.15] [--repeat-cap 8] [--seed 7]
 """
 
@@ -39,7 +39,7 @@ from src.utils.logger import get_logger
 from .. import paths
 from ..augmentation import COL_TIME, augment_run, dynamic_box_width_sec
 from ..corpus import dedupe_runs, discover_runs
-from ..rendering.legacy_dataprocessor import QModelOnyx_DataProcessor as DP
+from ..rendering.dataprocessor import QModelOnyxDataProcessor as DP
 from ..tiers import TierScheme
 from .splitting import repeat_factor, stratified_group_split
 
@@ -86,13 +86,7 @@ STAGES: Dict[str, Dict] = {
     "ch3": {"targets": {"POI5": 0}, "anchor": "POI5", "next": None, "nc": 1, "names": {0: "ch3"}},
 }
 
-# Zoom refinement stages: small windows around the target POI, re-rendered
-# at full image width. At full-run scale a slow (high-viscosity) transition
-# is a faint ~200 px smear; in a 8-40 s window it fills a large fraction of
-# the frame. These detectors serve the post-decode refinement pass in
-# v6_yolo (REFINE settings), which targets the 1-5 s error band where
-# oracle@5s exceeds oracle@1s. Windows deliberately do NOT start at the run
-# head - that is their distribution, unlike the cascade stages.
+# Zoom refinement stages
 ZOOM_STAGES: Dict[str, Dict] = {
     "ch1_zoom": {"targets": {"POI3": 0}, "nc": 1, "names": {0: "ch1z"}},
     "ch2_zoom": {"targets": {"POI4": 0}, "nc": 1, "names": {0: "ch2z"}},
@@ -461,7 +455,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--raw-root", type=Path, default=paths.DATA_ROOT)
     ap.add_argument("--tiers", type=Path, default=paths.TIERS_JSON)
-    ap.add_argument("--out", type=Path, default=paths.DATASETS_ROOT / "v7")
+    ap.add_argument("--out", type=Path, default=paths.DATASETS_ROOT / "onyx")
     ap.add_argument("--base-variants", type=int, default=2)
     ap.add_argument("--val-frac", type=float, default=0.15)
     ap.add_argument("--repeat-cap", type=int, default=8)

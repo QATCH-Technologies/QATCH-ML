@@ -111,7 +111,7 @@ def _best_zoom_hit(
 ) -> Optional[dict]:
     """Slides zoom windows over [t_start, t_end], returns the single best
     detection {time, conf, window} across all windows/widths, or None.
-    Detector is a QModelOnyx_Detector wrapping a *_zoom model (single
+    Detector is a QModelOnyxDetector wrapping a *_zoom model (single
     class -> predict_single returns {0: {time, conf}} when it fires)."""
     t = pd.to_numeric(df_p[COL_TIME], errors="coerce").to_numpy(dtype=float)
     best: Optional[dict] = None
@@ -159,7 +159,7 @@ def verify_fill_count(
         poi_times: POI times known so far (cascade output or labels);
             detected upgrades are ADDED to a copy in the result evidence,
             not mutated in place.
-        zoom_detectors: {channel_index: QModelOnyx_Detector} for the
+        zoom_detectors: {channel_index: QModelOnyxDetector} for the
             available zoom stages, e.g. {1: ch1_zoom, 2: ch2_zoom,
             3: ch3_zoom}. Missing entries stop the climb (no-op beyond).
     """

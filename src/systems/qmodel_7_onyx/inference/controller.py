@@ -8,7 +8,7 @@ Ch1, Ch2, Ch3).
 
 Key Components:
 - QModelOnyx: The main controller class.
-- QModelOnyx_Detector: A wrapper for individual YOLO model instances.
+- QModelOnyxDetector: A wrapper for individual YOLO model instances.
 - QModelOnyxConfig: Configuration constants for the pipeline (see `inference/config.py`).
 
 As of this migration into `inference/`, the previously-orphaned
@@ -20,14 +20,6 @@ Dependencies:
 - ultralytics (YOLO)
 - pandas, numpy, matplotlib
 - QATCH internal modules (Logger, DataProcessor, FillClassifier)
-
-Author:
-    Paul MacNichol (paul.macnichol@qatchtech.com)
-Date:
-    2026-04-29
-
-Version:
-    6.1.2
 """
 
 import datetime
@@ -41,6 +33,8 @@ import numpy as np
 import pandas as pd
 
 from src.utils.logger import get_logger
+
+from ..rendering.dataprocessor import QModelOnyxDataProcessor
 
 _log = get_logger("qmodel_7_onyx.inference.controller")
 
@@ -64,7 +58,7 @@ class Log:  # headless fallback, matching the rest of qmodel_7_onyx
 
 
 Log.i(tag="[HEADLESS OPERATION]", msg="Running...")
-from ..rendering.legacy_dataprocessor import QModelOnyx_DataProcessor
+
 
 try:
     # New project requirement as of 2026-01-12
@@ -99,7 +93,7 @@ from .config import QModelOnyxConfig  # noqa: E402
 from .crosscheck import verify_claimed_poi, verify_fill_count  # noqa: E402
 
 
-class QModelOnyx_FillClassifier:
+class QModelOnyxFillClassifier:
     """
     Handles the classification of the run state (e.g., no_fill, initial_fill, 1ch, 2ch, 3ch).
 
@@ -108,7 +102,7 @@ class QModelOnyx_FillClassifier:
     dictates how many channels (if any) the subsequent detection pipeline should search for.
     """
 
-    TAG = "[QModelOnyx_FillClassifier]"
+    TAG = "[QModelOnyxFillClassifier]"
 
     def __init__(self, model_path: str):
         """
@@ -161,7 +155,7 @@ class QModelOnyx_FillClassifier:
         strip_height = QModelOnyxConfig.FILL_GEN_H // 3
 
         try:
-            img_high_res = QModelOnyx_DataProcessor.generate_fill_cls(
+            img_high_res = QModelOnyxDataProcessor.generate_fill_cls(
                 df, img_h=strip_height, img_w=QModelOnyxConfig.FILL_GEN_W
             )
         except Exception as e:
@@ -235,7 +229,7 @@ class QModelOnyx_FillClassifier:
         return 0
 
 
-class QModelOnyx_Detector:
+class QModelOnyxDetector:
     """
     Generic wrapper for a single YOLO detector instance.
 
@@ -301,7 +295,7 @@ class QModelOnyx_Detector:
                 version=QModelOnyxConfig.RENDER_VERSION,
             )
         else:
-            img_base = QModelOnyx_DataProcessor.generate_channel_det(
+            img_base = QModelOnyxDataProcessor.generate_channel_det(
                 df, img_w=QModelOnyxConfig.IMG_WIDTH, img_h=QModelOnyxConfig.IMG_HEIGHT
             )
         results = self.model(img_base, verbose=False, conf=QModelOnyxConfig.CONF_THRESHOLD)
@@ -377,7 +371,7 @@ class QModelOnyx_Detector:
                 version=QModelOnyxConfig.RENDER_VERSION,
             )
         else:
-            img_base = QModelOnyx_DataProcessor.generate_channel_det(
+            img_base = QModelOnyxDataProcessor.generate_channel_det(
                 df, img_w=QModelOnyxConfig.IMG_WIDTH, img_h=QModelOnyxConfig.IMG_HEIGHT
             )
         results = self.model(img_base, verbose=False, conf=QModelOnyxConfig.CONF_THRESHOLD)
@@ -483,13 +477,13 @@ class QModelOnyx:
         the path provided in `model_assets`.
 
         Returns:
-            Any: The loaded `QModelOnyx_FillClassifier` instance, or None if loading failed
+            Any: The loaded `QModelOnyxFillClassifier` instance, or None if loading failed
             or no path was provided.
         """
         if self._fill_classifier is None:
             model_path = self.model_assets.get("fill_classifier")
             if model_path:
-                self._fill_classifier = QModelOnyx_FillClassifier(model_path)
+                self._fill_classifier = QModelOnyxFillClassifier(model_path)
         return self._fill_classifier
 
     def _load_detector_by_name(self, name: str) -> Any:
@@ -500,7 +494,7 @@ class QModelOnyx:
             name (str): The key for the detector to load (e.g., "init", "ch1", "ch2", "ch3").
 
         Returns:
-            Any: The loaded `QModelOnyx_Detector` instance, or None if the path is missing
+            Any: The loaded `QModelOnyxDetector` instance, or None if the path is missing
             or loading fails.
         """
         if self._detectors.get(name) is None:
@@ -508,7 +502,7 @@ class QModelOnyx:
             model_path = detector_paths.get(name)
             if model_path:
                 try:
-                    self._detectors[name] = QModelOnyx_Detector(model_path)
+                    self._detectors[name] = QModelOnyxDetector(model_path)
                 except Exception as e:
                     Log.e(self.TAG, f"Error while loading detector '{name}': {e}")
                     return None
@@ -1212,7 +1206,7 @@ class QModelOnyx:
             if progress_signal:
                 progress_signal.emit(10, "Data Loaded")
 
-            master_df = QModelOnyx_DataProcessor.preprocess_dataframe(
+            master_df = QModelOnyxDataProcessor.preprocess_dataframe(
                 raw_df.copy(),
                 baseline_freq=avg_res_freq,
                 baseline_diss=avg_diss,

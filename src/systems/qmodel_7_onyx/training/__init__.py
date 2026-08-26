@@ -1,4 +1,4 @@
-"""Training entry points for the v7 cascade detectors and fill classifier.
+"""Training entry points for the onyx cascade detectors and fill classifier.
 
 This subpackage holds the standalone training scripts (`train_detectors.py`,
 `train_fill_classifier.py`) that fine-tune YOLO26 models on datasets built

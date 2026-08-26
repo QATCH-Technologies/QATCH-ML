@@ -272,7 +272,8 @@ class SpacingPrior:
     def gap_loglik_scoped(
         self, i: int, j: int, gap_sec: float, span_sec: float, span_lo: int, span_hi: int
     ) -> float:
-        """Compute the log-likelihood of a gap with the span-fraction component re-referenced to a partial-fill span.
+        """Compute the log-likelihood of a gap with the span-fraction component re-referenced to a
+        partial-fill span.
 
         The fitted fraction statistics assume `span = t(POI_last) -
         t(POI_first)` of a COMPLETE fill. On a prefix (partial) fill the

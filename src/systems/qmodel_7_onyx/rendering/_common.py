@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .legacy_dataprocessor import QModelOnyx_DataProcessor as DP
+from .dataprocessor import QModelOnyxDataProcessor as DP
 
 PADDING = DP.PADDING
 
@@ -43,7 +43,7 @@ def _strip_points(
     strip_idx: int,
     p_lower: float = 1.0,
     p_upper: float = 99.0,
-) -> np.ndarray:
+) -> np.ndarray | None:
     """Maps signal values to pixel coordinates within a designated strip band.
 
     Applies percentile clipping and normalization to map floating-point signal

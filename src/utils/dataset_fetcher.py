@@ -40,11 +40,6 @@ from src.utils.logger import configure_logging, get_logger
 LOG = get_logger("dataset_fetcher")
 
 
-# ---------------------------------------------------------------------------
-# Failure reporting
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class FailureRecord:
     """Captures a single run failure for post-run reporting.
@@ -67,11 +62,6 @@ class FailureRecord:
         return f"[{ts}] {self.run_id!r:40s}  stage={self.stage:<16s}  {self.reason}"
 
 
-# ---------------------------------------------------------------------------
-# Fast file copy
-# ---------------------------------------------------------------------------
-
-
 def fast_copy(src: Path, dst: Path, buffer_size: int = 1024 * 1024) -> None:
     """Copy a file from src to dst using a larger buffer size to improve performance.
 
@@ -82,11 +72,6 @@ def fast_copy(src: Path, dst: Path, buffer_size: int = 1024 * 1024) -> None:
     """
     with src.open("rb") as fsrc, dst.open("wb") as fdst:
         shutil.copyfileobj(fsrc, fdst, buffer_size)
-
-
-# ---------------------------------------------------------------------------
-# DatasetFetcher
-# ---------------------------------------------------------------------------
 
 
 class DatasetFetcher:

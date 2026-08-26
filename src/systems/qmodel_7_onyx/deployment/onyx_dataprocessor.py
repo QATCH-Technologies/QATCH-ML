@@ -11,14 +11,6 @@ Dependencies:
 - opencv-python (cv2)
 - pandas, numpy, matplotlib
 - scipy.signal (medfilt)
-
-Author:
-    Paul MacNichol (paul.macnichol@qatchtech.com)
-Date:
-    2026-07-06
-
-Version:
-    7.0.0
 """
 
 from typing import Any, Optional

@@ -18,11 +18,13 @@ The three populations have very different costs:
     high-viscosity late flattening), that is a data/augmentation lever,
     not a model lever.
 
-Also fits the probability TEMPERATURE the live evidence layer needs: a
+Also fits the probability TEMPERATURE that `predict_probs` needs: a
 classifier trained to saturation produces raw probabilities that carry
 no marginal-vs-certain signal (everything reads near-1.0 confident), so
 T is fit by minimizing NLL of p^(1/T) on the val split; write the
-result into `live.fill_live.PROB_TEMPERATURE`.
+result into `deployment.onyx.QModelOnyxConfig.PROB_TEMPERATURE` (and
+mirror it into the nanovis app's live classifier config, which consumes
+the same probability vector for its evidence smoothing).
 
 Outputs
 -------
@@ -33,8 +35,8 @@ Outputs
 
 Usage
 -----
-    python -m src.systems.qmodel_7_onyx.qa.audit_fill_val --data-root datasets/v7_fill \
-        --weights runs/v7_fill/fill_yolo26s/weights/best.pt \
+    python -m src.systems.qmodel_7_onyx.qa.audit_fill_val --data-root datasets/onyx_fill \
+        --weights runs/onyx_fill/fill_yolo26s/weights/best.pt \
         [--out artifacts/audit_fill] [--device 0]
 """
 
@@ -124,11 +126,11 @@ def main() -> None:
     copied miss images to the output directory.
     """
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--data-root", type=Path, default=paths.DATASETS_ROOT / "v7_fill")
+    ap.add_argument("--data-root", type=Path, default=paths.DATASETS_ROOT / "onyx_fill")
     ap.add_argument(
         "--weights",
         type=Path,
-        default=paths.RUNS_ROOT / "v7_fill" / "fill_yolo26s" / "weights" / "best.pt",
+        default=paths.RUNS_ROOT / "onyx_fill" / "fill_yolo26s" / "weights" / "best.pt",
     )
     ap.add_argument("--out", type=Path, default=paths.ARTIFACTS_ROOT / "audit_fill")
     ap.add_argument("--device", default="0")
@@ -219,7 +221,10 @@ def main() -> None:
     T, nll1, nllT = fit_temperature(all_probs, all_true)
     print(f"\nsaturation: {sat:.1%} of val frames predicted with p>0.999")
     print(f"fitted PROB_TEMPERATURE = {T:.2f}  (val NLL {nll1:.4f} -> {nllT:.4f})")
-    print("-> set live.fill_live.PROB_TEMPERATURE to this value (ships with the weights).")
+    print(
+        "-> set deployment.onyx.QModelOnyxConfig.PROB_TEMPERATURE to this value "
+        "(ships with the weights)."
+    )
 
     with open(args.out / "misses.csv", "w", newline="") as f:
         w = csv.DictWriter(

@@ -14,12 +14,6 @@ Key Components:
 - QModelOnyx: The main controller class.
 - QModelOnyxDetector: A wrapper for individual detector model instances.
 - QModelOnyxConfig: Configuration constants for the pipeline.
-
-Author(s):
-    Paul MacNichol (paul.macnichol@qatchtech.com)
-
-Date:
-    2026-07-09
 """
 
 import datetime

@@ -1,83 +1,30 @@
 #!/usr/bin/env python3
-"""
-build_and_release_qmodel_onyx.py
-=================================
+"""Builds, trains, releases, and evaluates the QModel Onyx production package.
 
-One-command release pipeline for the qmodel_7_onyx system: pulls fresh runs
-from Dropbox, (re)builds the YOLO datasets, trains the requested models,
-drops the trained weights into a ready-to-ship `qmodel_onyx/` folder, and
-evaluates that deployed package against ground truth. There is no longer a
-separate `eval_onyx_deployment.py` script -- its logic lives here as the
-Eval stage below; drive it with the `--eval-*` flags (or skip it with
-`--skip-eval`).
+Runs the end-to-end release pipeline in ordered stages: fetch the current
+raw corpus, prepare viscosity tiers and spacing priors, build training
+datasets, train selected model stages, deploy their best checkpoints,
+optionally clean up completed training runs, and evaluate the resulting
+deployment against POI ground truth.
 
-Seven stages, run in order (any can be skipped with a flag - see --help):
+The deployment evaluation is performed against the released package through
+the same deployment controller and asset layout used by downstream
+consumers. Evaluation results include per-POI timing/index errors, hit rates,
+gross-error rates, viscosity-tier breakdowns, and diagnostic plots.
 
-  1. Fetch   - copy new runs from a local Dropbox sync folder into data/raw
-               (via src/utils/dataset_fetcher.py).
-  2. Prepare - fit the viscosity-tier scheme + spacing prior from data/raw.
-  3. Build   - render the YOLO datasets (cascade/zoom detectors + fill
-               classifier) from the tier scheme.
-  4. Train   - train the requested detector stages and/or fill classifier
-               (thin wrapper around Ultralytics YOLO training).
-  5. Release - copy the best checkpoint of every stage that was just trained
-               into:
-
-                   qmodel_onyx/
-                     classifiers/fill_classifier/type_cls.pt
-                     detectors/init_detector/init.pt
-                     detectors/ch1_detector/ch1.pt
-                     detectors/ch2_detector/ch2.pt
-                     detectors/ch3_detector/ch3.pt
-                     detectors/ch1_zoom_detector/ch1_zoom.pt
-                     detectors/ch2_zoom_detector/ch2_zoom.pt
-                     detectors/ch3_zoom_detector/ch3_zoom.pt
-                     spacing_prior.json
-
-               (the folder layout is read straight from assets_paths.json,
-               so it can never drift out of sync with what the production
-               controller expects).
-  6. Cleanup - purge each just-deployed stage's own run directory (its
-               Ultralytics checkpoints/logs/plots) now that Release has
-               copied out its best checkpoint. Scoped to exactly the stages
-               deployed THIS invocation, never the whole runs/ tree --
-               --detector-stages lets separate invocations train different
-               stages independently, and a sibling stage's still-in-progress
-               or --resume-pending run dir may legitimately be sitting right
-               next to the ones this invocation just finished.
-  7. Eval    - score the qmodel_onyx/ package Release just wrote against
-               *_poi.csv ground truth: for each point of interest, how far
-               is the deployed model's predicted position from truth,
-               broken out by viscosity tier. Not a YOLO-metrics benchmark
-               (see qa/benchmark.py for that) -- it measures what a
-               deployed run actually produces, loaded exactly as a
-               downstream consumer loads it (see the "Deployment eval
-               internals" section below for the full rationale). Defaults
-               to scoring only the detector dataset's held-out val split --
-               the one honest eval set for a model trained on this corpus.
-
-Examples
---------
-Full pipeline, everything, defaults::
-
-    python scripts/build_and_release_qmodel_onyx.py \\
+Usage:
+    python scripts/build_and_release_qmodel_onyx.py \
         --dropbox-source "D:/Dropbox/QATCH runs"
 
-Skip the Dropbox fetch (data/raw is already up to date), train only the
-fill classifier::
-
-    python scripts/build_and_release_qmodel_onyx.py \\
+    python scripts/build_and_release_qmodel_onyx.py \
         --skip-fetch --targets fill_classifier
 
-Retrain a single detector stage after adding a few hundred new runs::
-
-    python scripts/build_and_release_qmodel_onyx.py \\
-        --dropbox-source "D:/Dropbox/QATCH runs" \\
+    python scripts/build_and_release_qmodel_onyx.py \
+        --dropbox-source "D:/Dropbox/QATCH runs" \
         --targets detectors --detector-stages ch2_zoom
 
-Train without touching Dropbox or running the post-release eval::
-
-    python scripts/build_and_release_qmodel_onyx.py --skip-fetch --skip-eval
+    python scripts/build_and_release_qmodel_onyx.py \
+        --skip-fetch --skip-eval
 """
 
 from __future__ import annotations
@@ -92,16 +39,11 @@ import time
 import types
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
-# scripts/ lives outside the src/ package tree; make `import src...` work
-# even without an editable install (`pip install -e .`), and make the
-# sibling `_qmodel_onyx_layout` helper importable regardless of whether this
-# file is run directly (script dir already on sys.path[0]) or imported as
-# `scripts.build_and_release_qmodel_onyx` (it isn't, in that mode).
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SCRIPTS_DIR = Path(__file__).resolve().parent
 for _p in (_REPO_ROOT, _SCRIPTS_DIR):
@@ -132,15 +74,8 @@ LOG = get_logger("build_and_release_qmodel_onyx")
 
 DEFAULT_RELEASE_DIR = paths.REPO_ROOT / "qmodel_onyx"
 DEFAULT_DEPLOYMENT_DIR = paths.REPO_ROOT / "src" / "systems" / "qmodel_7_onyx" / "deployment"
-
-# Chain-space truth name (corpus.py's POI_ORDER) -> production output name
-# (QModelOnyx.POI_MAP). POI3 in chain space is the fourth production id
-# because production id 3 is a legacy shim row the controller never
-# populates (deleted from final_results before formatting) - mirrors
-# qa/benchmark.py's identical CHAIN_TO_PROD.
 CHAIN_TO_PROD = {"POI1": "POI1", "POI2": "POI2", "POI3": "POI4", "POI4": "POI5", "POI5": "POI6"}
 POI_KEYS = list(CHAIN_TO_PROD)
-
 RESULTS_COLUMNS = [
     "run_id",
     "poi",
@@ -155,9 +90,20 @@ RESULTS_COLUMNS = [
     "time_err_s",
     "abs_time_err_s",
 ]
+GRIDLINE = "#e1e0d9"
+MUTED = "#898781"
+SECONDARY = "#52514e"
+PRIMARY = "#0b0b0b"
 
 
 def parse_args() -> argparse.Namespace:
+    """Parses command-line arguments for the release pipeline.
+
+    Returns:
+        Parsed command-line options controlling data fetching, workspace
+        locations, dataset construction, training, deployment, cleanup, and
+        post-release evaluation.
+    """
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -279,11 +225,21 @@ def parse_args() -> argparse.Namespace:
     return ap.parse_args()
 
 
-def stage_fetch(args: argparse.Namespace, workspace: Workspace) -> Optional[int]:
-    """Purges `workspace.data_root` and re-copies the full run corpus from
-    Dropbox, so every fetch is a clean mirror rather than an incremental
-    blend with whatever was fetched on a prior run. Returns the number of
-    run directories retained, or None if the stage was skipped."""
+def stage_fetch(args: argparse.Namespace, workspace: Workspace) -> int | None:
+    """Refreshes the raw run corpus from the configured Dropbox source.
+
+    The existing raw-data directory is removed before fetching so the result
+    is a clean mirror of the current source rather than an incremental blend
+    with previously fetched runs.
+
+    Args:
+        args: Parsed command-line arguments containing fetch configuration.
+        workspace: Pipeline workspace defining the raw-data destination.
+
+    Returns:
+        Number of run directories retained after the refresh, or `None` if
+        fetching was skipped or the configured source was unavailable.
+    """
     if args.skip_fetch:
         LOG.info("[1/7] Fetch: skipped (--skip-fetch).")
         return None
@@ -297,11 +253,6 @@ def stage_fetch(args: argparse.Namespace, workspace: Workspace) -> Optional[int]
         )
         return None
 
-    # dataset_fetcher only ever *adds* runs (it skips anything whose _poi.csv
-    # already exists under target_dir) - it never removes a run that was
-    # deleted/superseded upstream. Wipe data_root first so every fetch is a
-    # full, clean mirror of what's currently live in Dropbox, never a stale
-    # blend of this run's and some earlier run's corpus.
     if workspace.data_root.exists():
         LOG.info("[1/7] Fetch: purging stale raw corpus at {}", workspace.data_root)
         shutil.rmtree(workspace.data_root)
@@ -327,6 +278,15 @@ def stage_fetch(args: argparse.Namespace, workspace: Workspace) -> Optional[int]
 
 
 def stage_prepare(pipeline: Pipeline):
+    """Fits the viscosity-tier scheme and spacing prior from the raw corpus.
+
+    Args:
+        pipeline: Pipeline configured with the current workspace.
+
+    Returns:
+        Preparation results produced by :meth:`Pipeline.prepare`, including
+        the fitted tier scheme and generated spacing-prior artifact.
+    """
     LOG.info("[2/7] Prepare: fitting viscosity tiers + spacing prior from raw data...")
     result = pipeline.prepare()
     LOG.info(
@@ -339,6 +299,16 @@ def stage_prepare(pipeline: Pipeline):
 
 
 def stage_build(pipeline: Pipeline, args: argparse.Namespace):
+    """Builds the requested YOLO training and validation datasets.
+
+    Args:
+        pipeline: Pipeline configured with the current workspace.
+        args: Parsed command-line arguments specifying the model targets to
+            build.
+
+    Returns:
+        Dataset-build results produced by :meth:`Pipeline.build_datasets`.
+    """
     LOG.info("[3/7] Build: rendering YOLO datasets for {}...", args.targets)
     result = pipeline.build_datasets(targets=args.targets)
     if result.detector_manifest is not None:
@@ -361,6 +331,20 @@ def stage_build(pipeline: Pipeline, args: argparse.Namespace):
 
 
 def stage_train(pipeline: Pipeline, args: argparse.Namespace):
+    """Trains the requested detector and/or fill-classifier stages.
+
+    Training configuration is forwarded from the command line to the
+    pipeline, including model size, epochs, batch size, image size, device,
+    random seed, selected detector stages, and resume behavior.
+
+    Args:
+        pipeline: Pipeline configured with the current workspace.
+        args: Parsed command-line arguments containing training configuration.
+
+    Returns:
+        Training results produced by :meth:`Pipeline.train`, including the
+        best checkpoint path for each successfully trained stage.
+    """
     stages = args.detector_stages or STAGE_CHOICES
     if "detectors" in args.targets:
         LOG.info(
@@ -389,10 +373,24 @@ def stage_train(pipeline: Pipeline, args: argparse.Namespace):
 
 
 def _deploy_stage(
-    assets_map: Dict[str, Any], stage: str, weights_path: Path, *roots: Path
-) -> List[Path]:
-    """Copies weights_path to <root>/<deploy_subpath> under every root given.
-    Returns the list of destination paths actually written."""
+    assets_map: dict[str, Any], stage: str, weights_path: Path, *roots: Path
+) -> list[Path]:
+    """Copies a trained stage checkpoint into one or more deployment roots.
+
+    The destination relative path is resolved from the shared asset map so
+    the release layout remains synchronized with the production asset
+    configuration.
+
+    Args:
+        assets_map: Asset-path configuration describing deployment locations.
+        stage: Logical model stage whose checkpoint is being deployed.
+        weights_path: Path to the trained checkpoint to copy.
+        *roots: Deployment roots beneath which the stage-specific asset path
+            is created.
+
+    Returns:
+        Paths of the checkpoint files written under each deployment root.
+    """
     subpath = deploy_subpath(assets_map, stage)
     written = []
     for root in roots:
@@ -403,7 +401,19 @@ def _deploy_stage(
     return written
 
 
-def stage_cleanup(args: argparse.Namespace, deployed_run_dirs: List[Path]) -> None:
+def stage_cleanup(args: argparse.Namespace, deployed_run_dirs: list[Path]) -> None:
+    """Removes training run directories for stages deployed in this release.
+
+    Cleanup is intentionally scoped to the run directories associated with
+    checkpoints successfully deployed during the current invocation. It
+    never removes unrelated training runs.
+
+    Args:
+        args: Parsed command-line arguments containing the `--keep-runs`
+            setting.
+        deployed_run_dirs: Training run directories corresponding to
+            checkpoints copied during the release stage.
+    """
     if args.keep_runs:
         LOG.info("[6/7] Cleanup: skipped (--keep-runs).")
         return
@@ -420,6 +430,19 @@ def stage_cleanup(args: argparse.Namespace, deployed_run_dirs: List[Path]) -> No
 
 
 def _load_standalone(alias: str, path: Path) -> types.ModuleType:
+    """Loads a Python module from a filesystem path under a supplied alias.
+
+    Args:
+        alias: Fully qualified module name to register in `sys.modules`.
+        path: Filesystem path to the module source.
+
+    Returns:
+        The loaded module object.
+
+    Raises:
+        ImportError: If a module specification or loader cannot be created
+            for `path`.
+    """
     if alias in sys.modules:
         return sys.modules[alias]
     spec = importlib.util.spec_from_file_location(alias, path)
@@ -431,10 +454,23 @@ def _load_standalone(alias: str, path: Path) -> types.ModuleType:
     return mod
 
 
-def load_onyx_controller(deployment_dir: Path, model_assets: Dict[str, Any]) -> Any:
-    """Loads the deployment package's `onyx.py` + siblings (in their
-    required dependency order) under the exact dotted path they import each
-    other by, and constructs `QModelOnyx(model_assets)`."""
+def load_onyx_controller(deployment_dir: Path, model_assets: dict[str, Any]) -> Any:
+    """Loads the deployment Onyx controller and its sibling modules.
+
+    Deployment modules are loaded in their required dependency order under
+    the dotted module namespace expected by their imports. Existing aliases
+    are evicted first so repeated evaluations cannot accidentally reuse
+    modules loaded from a different deployment directory.
+
+    Args:
+        deployment_dir: Directory containing the deployment `onyx.py` and
+            its sibling modules.
+        model_assets: Deployment asset mapping passed to the
+            `QModelOnyx` constructor.
+
+    Returns:
+        An initialized deployment `QModelOnyx` controller.
+    """
     ns = "QATCH.QModel.models.qmodel_onyx"
     aliases = [
         f"{ns}.onyx_dataprocessor",
@@ -464,13 +500,19 @@ def load_onyx_controller(deployment_dir: Path, model_assets: Dict[str, Any]) -> 
 
 
 def _verify_chain_to_prod(controller: Any) -> None:
-    """CHAIN_TO_PROD is a hand-maintained mirror of the deployment
-    controller's own POI_MAP + DECODE_ID_TO_NAME (see the section docstring
-    above: this eval exists to catch onyx.py drifting from the training
-    repo). If that numbering ever changes without CHAIN_TO_PROD being
-    updated in lockstep, _predicted_positions would silently score every run
-    for the drifted POI as a miss instead of raising -- so check for drift
-    explicitly, loudly, and once, right after the controller loads."""
+    """Validates the evaluation POI mapping against the deployment controller.
+
+    Compares the locally maintained chain-space-to-production mapping with
+    the controller's `POI_MAP` and `DECODE_ID_TO_NAME` definitions to
+    detect numbering drift before any evaluation results are generated.
+
+    Args:
+        controller: Loaded deployment `QModelOnyx` controller.
+
+    Raises:
+        SystemExit: If the controller exposes POI mappings that disagree with
+            `CHAIN_TO_PROD`.
+    """
     cls = type(controller)
     poi_map = getattr(cls, "POI_MAP", None)
     decode_map = getattr(cls, "DECODE_ID_TO_NAME", None)
@@ -489,16 +531,22 @@ def _verify_chain_to_prod(controller: Any) -> None:
         )
 
 
-def _validate_and_prune_assets(model_assets: Dict[str, Any]) -> Dict[str, Any]:
-    """QModelOnyx guards every asset EXCEPT fill_classifier against a
-    missing-but-non-empty path: detectors and the spacing prior catch (or
-    pre-check) a bad path and degrade gracefully, but fill_classifier's
-    loader does neither -- a missing file raises FileNotFoundError on
-    EVERY single predict() call (never cached as a permanent failure),
-    each one caught by predict()'s own outer try/except and printing a
-    full traceback. Null it out here if missing, so a partially-deployed
-    package degrades the same way the other assets already do instead of
-    spamming one traceback per run in the corpus."""
+def _validate_and_prune_assets(model_assets: dict[str, Any]) -> dict[str, Any]:
+    """Validates deployment asset paths and disables missing optional assets.
+
+    Missing fill-classifier weights are replaced with `None` so evaluation
+    degrades without repeatedly triggering loader errors. Missing detector
+    weights and spacing-prior files are reported while retaining their
+    configured paths because the deployment controller already handles those
+    cases gracefully.
+
+    Args:
+        model_assets: Deployment asset mapping to validate and potentially
+            modify.
+
+    Returns:
+        The validated asset mapping.
+    """
     fc = model_assets.get("fill_classifier")
     if fc and not Path(fc).exists():
         LOG.warning(
@@ -530,11 +578,23 @@ def _validate_and_prune_assets(model_assets: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _predicted_positions(
-    output: Dict[str, Any], time_axis: np.ndarray
-) -> Dict[str, Dict[str, float]]:
-    """chain-space POI name -> {"index": int, "t": float} for every POI the
-    controller actually placed (index >= 0); omits POIs it didn't."""
-    out: Dict[str, Dict[str, float]] = {}
+    output: dict[str, Any], time_axis: np.ndarray
+) -> dict[str, dict[str, float]]:
+    """Extracts valid predicted POI positions from controller output.
+
+    Converts production-space POI identifiers into chain-space names and
+    records the first valid predicted index and corresponding time.
+
+    Args:
+        output: POI prediction mapping returned by the deployment controller.
+        time_axis: Raw signal time axis used to convert predicted indices to
+            timestamps.
+
+    Returns:
+        Mapping from chain-space POI names to dictionaries containing
+        `index` and `t` for each POI the controller successfully placed.
+    """
+    out: dict[str, dict[str, float]] = {}
     n = len(time_axis)
     for chain, prod in CHAIN_TO_PROD.items():
         rec = output.get(prod, {})
@@ -548,12 +608,19 @@ def _predicted_positions(
 
 
 def load_eval_tier_scheme(tiers_path: Path) -> TierScheme:
-    """Loads the data-driven viscosity TierScheme that stage_prepare fit from
-    raw data (see tiers.py) and saved to configs/tiers.json, so the eval's
-    per-tier breakdown always mirrors the tiers actually used for train/val
-    stratification -- not the frozen legacy edges in corpus.py. Falls back
-    to those legacy fixed edges only when no fitted tiers.json exists yet
-    (e.g. running --skip-fetch eval before any prepare stage has run)."""
+    """Loads the viscosity-tier scheme used for deployment evaluation.
+
+    Prefers the fitted `tiers.json` produced during pipeline preparation
+    so evaluation stratification matches the current training/validation
+    scheme. Falls back to the legacy fixed corpus edges when no fitted tier
+    configuration exists.
+
+    Args:
+        tiers_path: Path to the persisted fitted tier scheme.
+
+    Returns:
+        The loaded or fallback :class:`TierScheme`.
+    """
     if tiers_path.exists():
         scheme = TierScheme.load(tiers_path)
         LOG.info(
@@ -572,11 +639,19 @@ def load_eval_tier_scheme(tiers_path: Path) -> TierScheme:
 
 
 def _attach_tier_labels(df: pd.DataFrame, tiers: TierScheme) -> pd.DataFrame:
-    """(Re)derives the `tier` column from the stored raw `viscosity_cP`
-    using the given TierScheme, rather than trusting whatever tier label
-    got embedded in results_long.csv at score time. This lets summary.csv
-    and the plots be regenerated with an up-to-date stratification after
-    tiers.json is refit on new incoming data, without re-scoring every run."""
+    """Recomputes viscosity-tier labels from stored viscosity measurements.
+
+    This allows summaries and plots to be regenerated using a newly fitted
+    tier scheme without rerunning model inference.
+
+    Args:
+        df: Evaluation results containing a `viscosity_cP` column.
+        tiers: Tier scheme used to classify viscosity values.
+
+    Returns:
+        A copy of `df` with its `tier` column replaced by labels derived
+        from `tiers`.
+    """
     df = df.copy()
     df["tier"] = df["viscosity_cP"].apply(lambda v: tiers.labels[tiers.tier_of(v)])
     return df
@@ -589,8 +664,28 @@ def score_run(
     decode_config: bool,
     refine_pois: bool,
     tiers: TierScheme,
-) -> List[Dict[str, Any]]:
-    """One run -> one result row per chain-space POI present in truth."""
+) -> list[dict[str, Any]]:
+    """Scores one deployed run against its POI ground truth.
+
+    Loads the raw run, executes the deployment controller, resolves predicted
+    and true POI positions using production index logic, and creates one
+    result row for each ground-truth POI present in the run.
+
+    Args:
+        controller: Loaded deployment `QModelOnyx` controller.
+        run: Corpus record containing the raw CSV, POI times, run identifier,
+            and viscosity measurement.
+        time_col: Preferred raw-data column containing the time axis.
+        decode_config: Whether the controller should perform configuration
+            decoding.
+        refine_pois: Whether the controller should refine POIs with zoom
+            detectors.
+        tiers: Viscosity tier scheme used to label the result.
+
+    Returns:
+        list of result dictionaries, one for each ground-truth POI reached by
+        the run.
+    """
     df_raw = pd.read_csv(run.csv_path)
     tcol = time_col if time_col in df_raw.columns else df_raw.columns[0]
     time_axis = pd.to_numeric(df_raw[tcol], errors="coerce").to_numpy(dtype=float)
@@ -601,13 +696,14 @@ def score_run(
     predicted = _predicted_positions(output, time_axis)
     tier = tiers.tier_of(run.viscosity_cP)
 
-    rows: List[Dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
     for poi in POI_KEYS:
         true_t = run.poi_times.get(poi)
         if true_t is None:
-            continue  # POI not reached in this (possibly partial) run -- not scored
-        # Reuse production's own index resolution (not a local reimplementation) so
-        # true_index and pred_index are always computed by the identical method.
+            continue  # POI not reached in this (possibly partial) run, not scored
+
+        # Reuse production's own index resolution so
+        # true_index and pred_index are always computed the same.
         true_index = controller._get_raw_index(df_raw, true_t)
         pred = predicted.get(poi)
         hit = pred is not None
@@ -630,15 +726,24 @@ def score_run(
     return rows
 
 
-def _check_run_config(output_dir: Path, run_config: Optional[Dict[str, Any]], resume: bool) -> None:
-    """Resumability keys on run_id alone, which says nothing about WHICH
-    configuration (decode_config, refine_pois, assets_root, deployment_dir)
-    produced the rows already on disk. Without this check, re-running with
-    a changed flag against the same --eval-output and no --eval-restart
-    would find every run_id already "done" and silently report the FIRST
-    run's config, mislabeled as the new one. Recorded/compared only when the
-    caller supplies run_config (stage_eval() does; direct run_eval() callers
-    such as tests may omit it to skip this check entirely)."""
+def _check_run_config(output_dir: Path, run_config: dict[str, Any] | None, resume: bool) -> None:
+    """Validates evaluation configuration before resuming prior results.
+
+    Prevents results generated with one evaluation configuration from being
+    silently mixed with results generated using different deployment,
+    decoding, refinement, asset, or tier-scheme settings.
+
+    Args:
+        output_dir: Directory containing persisted evaluation state.
+        run_config: Configuration describing the current evaluation, or
+            `None` to disable configuration checking.
+        resume: Whether the caller intends to resume existing evaluation
+            progress.
+
+    Raises:
+        SystemExit: If persisted configuration differs from the supplied
+            configuration while resuming.
+    """
     if run_config is None:
         return
     config_path = output_dir / "run_config.json"
@@ -659,7 +764,7 @@ def _check_run_config(output_dir: Path, run_config: Optional[Dict[str, Any]], re
 
 def run_eval(
     controller: Any,
-    runs: List[RunRecord],
+    runs: list[RunRecord],
     output_dir: Path,
     tiers: TierScheme,
     *,
@@ -668,10 +773,32 @@ def run_eval(
     refine_pois: bool = True,
     resume: bool = True,
     log_every: int = 25,
-    run_config: Optional[Dict[str, Any]] = None,
-) -> Tuple[Path, int]:
-    """Returns (results_path, n_failed) -- n_failed is the count of runs
-    whose scoring raised and were excluded (see the per-run except below)."""
+    run_config: dict[str, Any] | None = None,
+) -> tuple[Path, int]:
+    """Runs deployment evaluation with resumable per-run progress tracking.
+
+    Each pending run is scored independently. Successful rows are flushed to
+    the long-form CSV before the run is marked complete in the progress
+    file, while failed runs are recorded as completed failures so they are
+    not retried automatically on subsequent resumes.
+
+    Args:
+        controller: Loaded deployment `QModelOnyx` controller.
+        runs: Runs to evaluate.
+        output_dir: Directory for evaluation results and progress state.
+        tiers: Viscosity tier scheme used during scoring.
+        time_col: Preferred raw-data time column.
+        decode_config: Whether to enable configuration decoding.
+        refine_pois: Whether to enable POI refinement.
+        resume: Whether to continue from existing progress and results.
+        log_every: Number of successfully scored runs between progress logs.
+        run_config: Optional configuration fingerprint used to validate
+            resumability.
+
+    Returns:
+        A tuple containing the path to `results_long.csv` and the number of
+        runs that failed during scoring.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
     _check_run_config(output_dir, run_config, resume)
     results_path = output_dir / "results_long.csv"
@@ -702,19 +829,18 @@ def run_eval(
             except Exception as exc:
                 n_failed += 1
                 LOG.warning("predict failed for run {} ({}); skipping", run.run_id, exc)
-                # Marked done (not retried on the next --resume) rather than left
-                # pending forever -- a run that fails once (corrupt/moved CSV) is
-                # assumed to fail every time; --eval-restart reprocesses everything
-                # if the underlying cause gets fixed.
+                # Marked done not retried on the next --resume rather than left
+                # pending forever.
+                # A run that fails once (corrupt/moved CSV) is
+                # assumed to fail every time; --eval-restart reprocesses everything.
                 progress_f.write(run.run_id + "\n")
                 progress_f.flush()
                 continue
 
-            # Results are flushed before progress.txt is updated, so a crash in
-            # between leaves this run's rows on disk but its id NOT marked done --
-            # the next --resume will rescore it and append a second copy of its
-            # rows. summarize() defends against this with drop_duplicates rather
-            # than relying on write ordering to be atomic (it isn't).
+            # Results are flushed before progress.txt is updated in case of a crash in
+            # between leaves this run's rows on disk but its id not marked done.
+            # The next --resume will rescore it and append a second copy of its
+            # rows.
             for r in rows:
                 results_writer.writerow([r[c] for c in RESULTS_COLUMNS])
             results_f.flush()
@@ -750,6 +876,22 @@ def run_eval(
 
 @dataclass
 class _POIMetrics:
+    """Aggregated accuracy metrics for one POI subset.
+
+    Attributes:
+        n_truth: Number of ground-truth POI instances.
+        n_hit: Number of instances for which the deployment produced a
+            prediction.
+        mae_s: Mean absolute timing error in seconds.
+        median_ae_s: Median absolute timing error in seconds.
+        rmse_s: Root-mean-square timing error in seconds.
+        bias_s: Mean signed timing error in seconds.
+        gross_rate: Fraction of hits whose absolute timing error exceeds the
+            configured gross-error threshold.
+        mean_index_err: Mean signed prediction-index error for successful
+            predictions.
+    """
+
     n_truth: int = 0
     n_hit: int = 0
     mae_s: float = float("nan")
@@ -761,10 +903,29 @@ class _POIMetrics:
 
     @property
     def hit_rate(self) -> float:
+        """Returns the fraction of ground-truth POIs that were predicted.
+
+        Returns:
+            Hit rate as a fraction in the range `[0, 1]`, or `NaN` when
+            no ground-truth POIs are present.
+        """
         return self.n_hit / self.n_truth if self.n_truth else float("nan")
 
 
 def _summarize(sub: pd.DataFrame, gross_threshold: float) -> _POIMetrics:
+    """Computes accuracy metrics for a subset of POI evaluation rows.
+
+    Metrics are calculated from successful predictions for timing and index
+    error, while truth and hit counts include all rows in the subset.
+
+    Args:
+        sub: Evaluation rows for one POI and optional viscosity tier.
+        gross_threshold: Absolute timing-error threshold in seconds used to
+            classify gross errors.
+
+    Returns:
+        Aggregated :class:`_POIMetrics` for the supplied subset.
+    """
     m = _POIMetrics(n_truth=len(sub), n_hit=int(sub["hit"].sum()))
     hit_sub = sub[sub["hit"] == 1]
     if len(hit_sub):
@@ -782,10 +943,24 @@ def _summarize(sub: pd.DataFrame, gross_threshold: float) -> _POIMetrics:
 def summarize(
     results_path: Path, output_dir: Path, gross_threshold: float, tiers: TierScheme
 ) -> pd.DataFrame:
+    """Aggregates long-form evaluation results and writes summary metrics.
+
+    Duplicate `(run_id, poi)` rows are removed before aggregation to make
+    the summary robust to a crash between result and progress-file writes.
+    Metrics are produced both across all tiers and separately for each fitted
+    viscosity tier.
+
+    Args:
+        results_path: Path to the long-form evaluation CSV.
+        output_dir: Directory in which `summary.csv` is written.
+        gross_threshold: Absolute timing-error threshold in seconds.
+        tiers: Tier scheme used to regenerate viscosity labels.
+
+    Returns:
+        DataFrame containing overall and per-tier metrics for each POI.
+    """
     df = pd.read_csv(results_path)
-    # Defends against the duplicate rows a crash between a run's results-flush and
-    # its progress.txt write can leave behind (see run_eval's write-order comment)
-    # -- keep the LAST occurrence per (run_id, poi) rather than double-counting.
+    # Defends against the duplicate rows.
     df = df.drop_duplicates(subset=["run_id", "poi"], keep="last")
     df["hit"] = df["hit"].astype(int)
     df = _attach_tier_labels(df, tiers)
@@ -815,6 +990,16 @@ def _print_summary(
     tiers: TierScheme,
     n_failed: int = 0,
 ) -> None:
+    """Prints a human-readable deployment evaluation summary.
+
+    Args:
+        summary: Aggregated evaluation metrics returned by :func:`summarize`.
+        gross_threshold: Timing-error threshold used for the gross-error
+            metric.
+        output_dir: Evaluation output directory displayed in the report.
+        tiers: Tier scheme defining the viscosity-tier ordering.
+        n_failed: Number of runs excluded because scoring failed.
+    """
     HDR = (
         f"{'POI':<6} {'Tier':<16} {'N':>5} {'Hit%':>7}  "
         f"{'MAE_s':>8} {'Med_s':>8} {'RMSE_s':>8} {'Bias_s':>8}  {'Fail%':>7}  {'MeanIdxErr':>10}"
@@ -853,18 +1038,19 @@ def _print_summary(
     print(f"{BAR}\n")
 
 
-GRIDLINE = "#e1e0d9"
-MUTED = "#898781"
-SECONDARY = "#52514e"
-PRIMARY = "#0b0b0b"
+def _tier_colors(tier_labels: list[str]) -> dict[str, str]:
+    """Generates display colors for an ordered set of viscosity tiers.
 
+    Viscosity tiers receive progressively darker blue shades according to
+    their order, while the final `unknown` tier, when present, receives a
+    neutral color.
 
-def _tier_colors(tier_labels: List[str]) -> Dict[str, str]:
-    """Light -> dark blue gradient across the ordered viscosity bins, with a
-    fixed neutral grey for the trailing "unknown" bucket. Generated from
-    however many tiers the fitted TierScheme produced (fit_tiers' n_bins can
-    vary run to run as the corpus grows) rather than a hardcoded 6-tier
-    palette sized for the old fixed edges."""
+    Args:
+        tier_labels: Ordered viscosity-tier labels.
+
+    Returns:
+        Mapping from tier label to hexadecimal display color.
+    """
     import matplotlib.cm as cm
     from matplotlib.colors import rgb2hex
 
@@ -881,6 +1067,7 @@ def _tier_colors(tier_labels: List[str]) -> Dict[str, str]:
 
 
 def _setup_style() -> None:
+    """Configures the Matplotlib style used by evaluation plots."""
     import matplotlib
 
     matplotlib.rcParams.update(
@@ -902,6 +1089,11 @@ def _setup_style() -> None:
 
 
 def _strip_axes(ax) -> None:
+    """Applies the shared minimal axis and grid styling to a Matplotlib axis.
+
+    Args:
+        ax: Matplotlib axis to style.
+    """
     ax.yaxis.grid(True, color=GRIDLINE, linewidth=1, zorder=0)
     ax.set_axisbelow(True)
     for spine in ("top", "right", "left"):
@@ -911,6 +1103,12 @@ def _strip_axes(ax) -> None:
 
 
 def plot_bar_overall(summary: pd.DataFrame, plots_dir: Path) -> None:
+    """Creates the overall per-POI mean-absolute-error bar chart.
+
+    Args:
+        summary: Aggregated evaluation summary containing `ALL` tier rows.
+        plots_dir: Directory in which `bar_overall.png` is written.
+    """
     _setup_style()
     import matplotlib.pyplot as plt
 
@@ -940,8 +1138,19 @@ def plot_bar_overall(summary: pd.DataFrame, plots_dir: Path) -> None:
 
 
 def plot_bar_by_tier(
-    summary: pd.DataFrame, plots_dir: Path, tier_labels: List[str], tier_colors: Dict[str, str]
+    summary: pd.DataFrame,
+    plots_dir: Path,
+    tier_labels: list[str],
+    tier_colors: dict[str, str],
 ) -> None:
+    """Creates a grouped MAE bar chart broken out by viscosity tier.
+
+    Args:
+        summary: Aggregated evaluation summary.
+        plots_dir: Directory in which `bar_by_tier.png` is written.
+        tier_labels: Ordered tier labels to display.
+        tier_colors: Display color mapping for each tier.
+    """
     _setup_style()
     import matplotlib.pyplot as plt
 
@@ -979,8 +1188,21 @@ def plot_bar_by_tier(
 
 
 def plot_violin_per_poi(
-    results: pd.DataFrame, plots_dir: Path, tier_labels: List[str], tier_colors: Dict[str, str]
+    results: pd.DataFrame,
+    plots_dir: Path,
+    tier_labels: list[str],
+    tier_colors: dict[str, str],
 ) -> None:
+    """Creates per-POI violin plots of absolute timing error by tier.
+
+    Only successfully predicted POIs are included in the distributions.
+
+    Args:
+        results: Long-form evaluation results.
+        plots_dir: Directory in which one violin plot is written per POI.
+        tier_labels: Ordered viscosity-tier labels.
+        tier_colors: Display color mapping for each tier.
+    """
     _setup_style()
     import matplotlib.pyplot as plt
 
@@ -1000,7 +1222,7 @@ def plot_violin_per_poi(
         parts = ax.violinplot(
             data, positions=positions, showmedians=False, showextrema=False, widths=0.72
         )
-        for pc, color in zip(parts["bodies"], colors, strict=True):
+        for pc, color in zip(parts["bodies"], colors, strict=True):  # type: ignore
             pc.set_facecolor(color)
             pc.set_edgecolor(color)
             pc.set_alpha(0.45)
@@ -1027,6 +1249,17 @@ def plot_violin_per_poi(
 def make_all_plots(
     results_path: Path, summary: pd.DataFrame, output_dir: Path, tiers: TierScheme
 ) -> None:
+    """Generates the complete deployment evaluation plot set.
+
+    Produces the overall MAE chart, tier-stratified MAE chart, and one
+    timing-error distribution plot for each POI.
+
+    Args:
+        results_path: Path to the long-form evaluation results.
+        summary: Aggregated evaluation summary.
+        output_dir: Root directory for evaluation artifacts.
+        tiers: Tier scheme used to label and order viscosity tiers.
+    """
     plots_dir = output_dir / "plots"
     plots_dir.mkdir(parents=True, exist_ok=True)
     results = _attach_tier_labels(pd.read_csv(results_path), tiers)
@@ -1037,7 +1270,25 @@ def make_all_plots(
     LOG.info("Plots -> {}", plots_dir)
 
 
-def stage_eval(args: argparse.Namespace, workspace: Workspace) -> Optional[Any]:
+def stage_eval(args: argparse.Namespace, workspace: Workspace) -> Any | None:
+    """Runs the post-release deployment evaluation stage.
+
+    Selects the evaluation corpus, loads the released model assets and
+    deployment controller, verifies POI numbering compatibility, runs
+    resumable inference, summarizes the results, and generates diagnostic
+    plots.
+
+    By default, when available, the detector dataset manifest's validation
+    split is used as the evaluation corpus.
+
+    Args:
+        args: Parsed command-line arguments containing evaluation options.
+        workspace: Pipeline workspace providing data, dataset, and tier paths.
+
+    Returns:
+        The summary DataFrame when evaluation completes, or `None` when
+        evaluation is skipped or no runs remain after filtering.
+    """
     if args.skip_eval:
         LOG.info("[7/7] Eval: skipped (--skip-eval).")
         return None
@@ -1067,7 +1318,7 @@ def stage_eval(args: argparse.Namespace, workspace: Workspace) -> Optional[Any]:
     if args.eval_n_runs is not None and len(runs) > args.eval_n_runs:
         rng = np.random.default_rng(args.eval_seed)
         runs = list(runs)
-        rng.shuffle(runs)
+        rng.shuffle(runs)  # type: ignore
         runs = runs[: args.eval_n_runs]
     if not runs:
         LOG.warning("[7/7] Eval: no runs left to evaluate after filtering.")
@@ -1087,10 +1338,6 @@ def stage_eval(args: argparse.Namespace, workspace: Workspace) -> Optional[Any]:
         refine_pois=refine_pois,
         assets_root=str(args.output),
         deployment_dir=str(args.eval_deployment_dir),
-        # Ties a resumed --eval-output to the tier scheme active when its rows
-        # were scored -- if tiers.json gets refit in between (new incoming
-        # data), _check_run_config forces --eval-restart instead of silently
-        # mixing old- and new-scheme tier assignments in one summary.
         tier_edges_cp=tiers.edges_cp,
     )
     results_path, n_failed = run_eval(
@@ -1116,6 +1363,16 @@ def stage_eval(args: argparse.Namespace, workspace: Workspace) -> Optional[Any]:
 
 
 def main() -> None:
+    """Executes the complete QModel Onyx release pipeline.
+
+    Constructs the configured workspace and pipeline, executes fetch,
+    preparation, dataset-build, and training stages, deploys the resulting
+    checkpoints and spacing prior, optionally removes completed training
+    directories, and optionally evaluates the released package.
+
+    Pipeline errors are logged and terminate the process with a non-zero exit
+    status.
+    """
     args = parse_args()
     configure_logging(level=args.log_level.upper())
 
@@ -1149,7 +1406,7 @@ def main() -> None:
     LOG.info("[5/7] Release: deploying trained weights -> {}", args.output)
     assets_map = json.loads(paths.ASSETS_PATHS_JSON.read_text())
     local_assets_root = paths.ASSETS_PATHS_JSON.parent / "assets"
-    deployed_run_dirs: List[Path] = []
+    deployed_run_dirs: list[Path] = []
     for stage, weights_path in train_result.weights.items():
         if not weights_path.exists():
             LOG.warning(

@@ -11,17 +11,9 @@ Dependencies:
 - opencv-python (cv2)
 - pandas, numpy, matplotlib
 - scipy.signal (medfilt)
-
-Author:
-    Paul MacNichol (paul.macnichol@qatchtech.com)
-Date:
-    2026-04-29
-
-Version:
-    6.0.2
 """
 
-from typing import Any, Optional
+from typing import Any
 
 import cv2
 import numpy as np
@@ -55,7 +47,7 @@ except (ImportError, ModuleNotFoundError):
     Log.i(tag="[HEADLESS OPERATION]", msg="Running...")
 
 
-class QModelOnyx_DataProcessor:
+class QModelOnyxDataProcessor:
     """
     A utility class for preprocessing sensor data and generating image inputs for YOLO.
 
@@ -157,9 +149,9 @@ class QModelOnyx_DataProcessor:
 
         df = pd.DataFrame(
             {
-                QModelOnyx_DataProcessor.COL_TIME: t_raw,
-                QModelOnyx_DataProcessor.COL_FREQ: freq_raw,
-                QModelOnyx_DataProcessor.COL_DISS: diss_raw,
+                QModelOnyxDataProcessor.COL_TIME: t_raw,
+                QModelOnyxDataProcessor.COL_FREQ: freq_raw,
+                QModelOnyxDataProcessor.COL_DISS: diss_raw,
             }
         )
 
@@ -167,8 +159,11 @@ class QModelOnyx_DataProcessor:
 
     @classmethod
     def preprocess_dataframe(
-        cls, df: pd.DataFrame, baseline_freq: float = None, baseline_diss: float = None
-    ) -> pd.DataFrame:
+        cls,
+        df: pd.DataFrame,
+        baseline_freq: float | None = None,
+        baseline_diss: float | None = None,
+    ) -> pd.DataFrame | None:
         """
         Cleans, interpolates, and enriches the raw sensor dataframe.
 
@@ -195,7 +190,7 @@ class QModelOnyx_DataProcessor:
         t_max = df[cls.COL_TIME].max()
         new_time_grid = np.arange(t_min, t_max, cls.TIME_STEP)
         df = df.set_index(cls.COL_TIME)
-        combined_index = df.index.union(new_time_grid).sort_values()
+        combined_index = df.index.union(pd.Index(new_time_grid)).sort_values()
         df = df.reindex(combined_index).interpolate(method="index").loc[new_time_grid]
         df = df.reset_index().rename(columns={"index": cls.COL_TIME})
         diff_series = cls._compute_difference_curve(df, baseline_freq, baseline_diss)
@@ -209,9 +204,9 @@ class QModelOnyx_DataProcessor:
     def _compute_difference_curve(
         cls,
         df: pd.DataFrame,
-        avg_res_freq: Optional[float] = None,
-        avg_diss: Optional[float] = None,
-    ) -> pd.Series:
+        avg_res_freq: float | None = None,
+        avg_diss: float | None = None,
+    ) -> pd.Series | None:
         """
         Computes the 'Difference' signal derived from Dissipation and Resonance Frequency.
 
@@ -226,10 +221,10 @@ class QModelOnyx_DataProcessor:
         Args:
             df (pd.DataFrame): The dataframe containing `Dissipation`,
                 `Resonance_Frequency`, and `Relative_time`.
-            avg_res_freq (Optional[float]): Pre-computed baseline mean of
+            avg_res_freq (float | None ): Pre-computed baseline mean of
                 `Resonance_Frequency`.  When provided together with `avg_diss`,
                 the baseline window search is bypassed.
-            avg_diss (Optional[float]): Pre-computed baseline mean of
+            avg_diss (float | None ): Pre-computed baseline mean of
                 `Dissipation`.  When provided together with `avg_res_freq`,
                 the baseline window search is bypassed.
 
@@ -241,7 +236,7 @@ class QModelOnyx_DataProcessor:
         if not all(col in df.columns for col in required):
             return None
 
-        xs = df[cls.COL_TIME].values
+        xs = df[cls.COL_TIME].to_numpy()
         if len(xs) == 0:
             return None
 
@@ -264,8 +259,8 @@ class QModelOnyx_DataProcessor:
             avg_res_freq = df[cls.COL_FREQ].iloc[i:j].mean()
             avg_diss = df[cls.COL_DISS].iloc[i:j].mean()
 
-        ys_diss = (df[cls.COL_DISS].values - avg_diss) * avg_res_freq / 2
-        ys_freq = avg_res_freq - df[cls.COL_FREQ].values
+        ys_diss = (df[cls.COL_DISS].to_numpy() - avg_diss) * avg_res_freq / 2
+        ys_freq = avg_res_freq - df[cls.COL_FREQ].to_numpy()
 
         return pd.Series(ys_freq - cls.DIFF_FACTOR * ys_diss, index=df.index)
 
@@ -317,7 +312,7 @@ class QModelOnyx_DataProcessor:
 
     @classmethod
     def generate_fill_cls(
-        cls, df: pd.DataFrame, img_h: int, img_w: int, scaling_limits: dict = None
+        cls, df: pd.DataFrame, img_h: int, img_w: int, scaling_limits: dict | None = None
     ) -> np.ndarray:
         """
         Generates a stacked visualization of the signals for human validation/classification.
@@ -330,7 +325,7 @@ class QModelOnyx_DataProcessor:
             img_h (int): The height of a *single* strip. The total image height
                 will be 3 * img_h.
             img_w (int): The width of the image.
-            scaling_limits (dict, optional): Fixed scaling limits for signal normalization.
+            scaling_limits (dict | None): Fixed scaling limits for signal normalization.
 
         Returns:
             np.ndarray: A numpy array representing the generated image (Total_H, W, 3).

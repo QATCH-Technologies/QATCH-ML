@@ -1,6 +1,6 @@
 """
 Version-2 detection-image renderer, addressing the two representation
-failures the v7 training run exposed:
+failures the onyx training run exposed:
 
   1. LATE-EVENT FLATTENING. Per-strip global percentile normalization makes
      the early fill step own the entire dynamic range; late POIs in long
@@ -48,7 +48,7 @@ import numpy as np
 import pandas as pd
 
 from ._common import PADDING, _robust_mad, _strip_points
-from .legacy_dataprocessor import QModelOnyx_DataProcessor as DP
+from .dataprocessor import QModelOnyxDataProcessor as DP
 
 COL_TIME = "Relative_time"
 COL_DISS = "Dissipation"
@@ -168,7 +168,7 @@ def generate_channel_det_v2(df: pd.DataFrame, img_w: int, img_h: int) -> np.ndar
     traces = [
         (
             (
-                pd.to_numeric(df.get(COL_DISS), errors="coerce").to_numpy(dtype=float)
+                pd.to_numeric(df[COL_DISS], errors="coerce").to_numpy(dtype=float)
                 if COL_DISS in df.columns
                 else None
             ),
@@ -177,7 +177,7 @@ def generate_channel_det_v2(df: pd.DataFrame, img_w: int, img_h: int) -> np.ndar
         ),  # red channel (BGR idx 2)
         (
             (
-                pd.to_numeric(df.get(COL_FREQ), errors="coerce").to_numpy(dtype=float)
+                pd.to_numeric(df[COL_FREQ], errors="coerce").to_numpy(dtype=float)
                 if COL_FREQ in df.columns
                 else None
             ),

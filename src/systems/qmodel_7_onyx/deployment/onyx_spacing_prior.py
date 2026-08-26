@@ -10,12 +10,6 @@ At decode time the prior scores a candidate configuration by the summed
 log-likelihood of its gaps, plus hard feasibility (monotonic order, learned
 min/max gap bounds). The score combines with detection confidence in the
 `onyx_decoder.py`
-
-Author(s):
-    Paul MacNichol (paul.macnichol@qatchtech.com)
-
-Date:
-    2026-07-09
 """
 
 from __future__ import annotations

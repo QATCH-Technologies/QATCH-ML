@@ -12,7 +12,7 @@ until a downstream `FileNotFoundError`):
     training.train_fill_classifier
 
 `Workspace` is the single source of truth for every path a pipeline stage
-reads or writes (no `"v7"`/`"v7_fill"` literals repeated at the call
+reads or writes (no `"onyx"`/`"onyx_fill"` literals repeated at the call
 site). `Pipeline` wraps the underlying stage functions - none of which are
 renamed or altered in behavior beyond now returning their results instead of
 `None` - behind three methods (`prepare`, `build_datasets`, `train`)
@@ -120,19 +120,19 @@ class Workspace:
 
     @property
     def detector_dataset_dir(self) -> Path:
-        return self.datasets_root / "v7"
+        return self.datasets_root / "onyx"
 
     @property
     def fill_dataset_dir(self) -> Path:
-        return self.datasets_root / "v7_fill"
+        return self.datasets_root / "onyx_fill"
 
     @property
     def detector_runs_dir(self) -> Path:
-        return self.runs_root / "v7"
+        return self.runs_root / "onyx"
 
     @property
     def fill_runs_dir(self) -> Path:
-        return self.runs_root / "v7_fill"
+        return self.runs_root / "onyx_fill"
 
 
 @dataclass

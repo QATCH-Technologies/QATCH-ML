@@ -47,12 +47,6 @@ The decoder only operates on POIs already identified as present by upstream
 classification logic. It does not introduce additional POIs, allowing partial
 fills to be handled naturally by decoding smaller subsets of the global POI
 sequence.
-
-Author(s):
-    Paul MacNichol (paul.macnichol@qatchtech.com)
-
-Date:
-    2026-07-09
 """
 
 from __future__ import annotations

@@ -1,23 +1,23 @@
 """Trains the onyx fill-type classifier on datasets built by build_fill_dataset.py.
 
-Uses YOLO26-cls at a selectable size. Ultralytics' classify defaults are 
-LABEL-CORRUPTING on this task. The detector work established that pixel-space 
-geometric augmentation is wrong when x IS time. For the classifier, the stock 
-classify augmentations are worse than wrong - several of them silently CHANGE 
-THE TRUE CLASS while keeping the label (e.g., RandomResizedCrop, erasing, 
+Uses YOLO26-cls at a selectable size. Ultralytics' classify defaults are
+LABEL-CORRUPTING on this task. The detector work established that pixel-space
+geometric augmentation is wrong when x IS time. For the classifier, the stock
+classify augmentations are worse than wrong - several of them silently CHANGE
+THE TRUE CLASS while keeping the label (e.g., RandomResizedCrop, erasing,
 fliplr, and HSV augmentations).
 
-Because of this, all pixel-space augmentation is turned off. Augmentation 
-happens in the signal domain (`v7_augment`, inside `build_fill_dataset.py`) where 
-every transform warps the POI times and state labels exactly. 
+Because of this, all pixel-space augmentation is turned off. Augmentation
+happens in the signal domain (`augment_run`, inside `build_fill_dataset.py`) where
+every transform warps the POI times and state labels exactly.
 
-Schedule rationale: The dataset has heavy per-tier upsampling duplication, 
-so explicit SGD, gentle lr0, and a cosine schedule are used. Images are 
+Schedule rationale: The dataset has heavy per-tier upsampling duplication,
+so explicit SGD, gentle lr0, and a cosine schedule are used. Images are
 224x224 as saved (no resize).
 
 Example:
-    python train_fill_classifier.py --data-root datasets/v7_fill \\
-        --size s --epochs 120 --batch 128 --project runs/v7_fill
+    python train_fill_classifier.py --data-root datasets/onyx_fill \\
+        --size s --epochs 120 --batch 128 --project runs/onyx_fill
 
 Attributes:
     DEFAULT_EPOCHS (int): Default maximum number of training epochs.
@@ -159,12 +159,12 @@ def main() -> None:
     batch size, device, output project directory, random seed, and resume behavior.
     """
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--data-root", type=Path, default=paths.DATASETS_ROOT / "v7_fill")
+    ap.add_argument("--data-root", type=Path, default=paths.DATASETS_ROOT / "onyx_fill")
     ap.add_argument("--size", choices=["n", "s", "m", "l", "xl"], default="s")
     ap.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS)
     ap.add_argument("--batch", type=int, default=128)
     ap.add_argument("--device", default="0")
-    ap.add_argument("--project", type=Path, default=paths.RUNS_ROOT / "v7_fill")
+    ap.add_argument("--project", type=Path, default=paths.RUNS_ROOT / "onyx_fill")
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--resume", action="store_true")
     args = ap.parse_args()

@@ -1,4 +1,4 @@
-"""Image-rendering utilities for the QModel v7 (Onyx) pipeline.
+"""Image-rendering utilities for the QModel Onyx pipeline.
 
 Turns preprocessed sensor dataframes into the RGB images consumed by the
 point-of-interest detector and fill-type classifier. The legacy v1 render

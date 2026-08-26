@@ -1,26 +1,26 @@
-"""Trains the v7 cascade detectors (init / ch1 / ch2 / ch3).
+"""Trains the onyx cascade detectors (init / ch1 / ch2 / ch3).
 
-Trains the detectors on datasets built by build_dataset.py, using YOLO26 at a 
-selectable size (n/s/m/l/xl). Defaults are sized to train on a single 24 GB GPU 
-(e.g., an RTX 4090) in hours rather than days.
+Trains the detectors on datasets built by build_dataset.py, using YOLO26 at a
+selectable size (n/s/m/l/xl). Defaults are sized to train on a single 24 GB GPU
+(e.g., an RTX 4090).
 
-Ultralytics' DetectionTrainer hard-codes `rect=mode == "val"` inside `build_dataset`, 
-so the `rect=True` train argument passed to `model.train(...)` is silently ignored 
-for the TRAINING loader. A wide, short render therefore gets letterboxed into a 
-square the size of its long edge, which is mostly black padding. This inflates 
-memory usage and slows down training due to PCIe/host-memory thrashing. 
-`RectDetectionTrainer` overrides this to ensure train batches are genuinely 
+Ultralytics' DetectionTrainer hard-codes `rect=mode == "val"` inside `build_dataset`,
+so the `rect=True` train argument passed to `model.train(...)` is silently ignored
+for the TRAINING loader. A wide, short render therefore gets letterboxed into a
+square the size of its long edge, which is mostly black padding. This inflates
+memory usage and slows down training due to PCIe/host-memory thrashing.
+`RectDetectionTrainer` overrides this to ensure train batches are genuinely
 rectangular at the render's native aspect ratio.
 
-Augmentation rationale: ALL pixel-space geometric/photometric augmentation is OFF 
-(mosaic, mixup, copy_paste, flips, degrees, translate, scale, shear, perspective, 
-hsv, erasing). On these renders x IS time: fliplr teaches time-reversal invariance, 
-mosaic destroys global fill context, and translate/scale break the time<->pixel map. 
+Augmentation rationale: ALL pixel-space geometric/photometric augmentation is OFF
+(mosaic, mixup, copy_paste, flips, degrees, translate, scale, shear, perspective,
+hsv, erasing). On these renders x IS time: fliplr teaches time-reversal invariance,
+mosaic destroys global fill context, and translate/scale break the time<->pixel map.
 
 Example:
-    python train_detectors.py --data-root datasets/v7 --size s \
+    python train_detectors.py --data-root datasets/onyx --size s \
         --stages init ch1 ch2 ch3 --imgsz 1536 --batch 16 \
-        --epochs 150 --project runs/v7
+        --epochs 150 --project runs/onyx
 
 Attributes:
     STAGE_CHOICES (list[str]): Available stages for training.
@@ -70,18 +70,14 @@ STAGE_EPOCHS = {
     "ch3_zoom": 120,
 }
 
-# Zoom stages need a gentler schedule than the cascade stages: locally
-# normalized windows with no run-head anchor and wide variable boxes make
-# the loss landscape noisier, so the cascade learning rate tends to peak
-# very early and then collapse. Lower lr + shorter patience (the peak comes
-# early, so a long patience just burns epochs walking downhill).
+# Zoom stages need a gentler schedule than the cascade stages
 STAGE_LR0 = {"ch1_zoom": 0.0015, "ch2_zoom": 0.0015, "ch3_zoom": 0.0015}
 STAGE_PATIENCE = {"ch1_zoom": 15, "ch2_zoom": 15, "ch3_zoom": 15}
 DEFAULT_LR0 = 0.003
 DEFAULT_PATIENCE = 30
 
 
-def _make_rect_trainer():
+def _make_trainer():
     """Builds a DetectionTrainer subclass that forces genuinely rectangular train batches.
 
     Defined lazily so this module can be imported without ultralytics installed.
@@ -126,27 +122,21 @@ def _make_rect_trainer():
             try:  # stride accessor name varies across ultralytics versions
                 from ultralytics.utils.torch_utils import unwrap_model
 
-                gs = max(int(unwrap_model(self.model).stride.max()), 32)
+                gs = max(int(unwrap_model(self.model).stride.max()), 32)  # type: ignore
             except (ImportError, AttributeError):
                 try:
-                    from ultralytics.utils.torch_utils import de_parallel
+                    from ultralytics.utils.torch_utils import de_parallel  # type: ignore
 
                     gs = max(int(de_parallel(self.model).stride.max()), 32)
                 except Exception:
                     gs = 32
             ds = build_yolo_dataset(
-                self.args, img_path, batch, self.data, mode=mode, rect=True, stride=gs
+                self.args, img_path, batch, self.data, mode=mode, rect=True, stride=gs  # type: ignore
             )
             if mode == "train" and getattr(ds, "augment", False):
-                # The augment branch of build_transforms (v8_transforms)
-                # letterboxes to a SQUARE (imgsz, imgsz) unconditionally,
-                # ignoring rect batch shapes - that square padding is the
-                # whole memory blow-up. All pixel-space augmentations are
-                # zeroed for this task anyway (augmentation lives in the
-                # signal domain), so route the train dataset through the
-                # non-augment transform path, which honours rect_shape.
-                ds.augment = False
-                ds.transforms = ds.build_transforms(hyp=self.args)
+                # The augment branch of build_transforms
+                ds.augment = False  # type: ignore
+                ds.transforms = ds.build_transforms(hyp=self.args)  # type: ignore
             return ds
 
     return RectDetectionTrainer
@@ -208,7 +198,7 @@ def train_stage(
 
     model = YOLO(f"yolo26{size}.pt")
     train_return = model.train(
-        trainer=_make_rect_trainer(),  # <- the 24 GB fix; see module docstring
+        trainer=_make_trainer(),
         data=str(data_yaml),
         epochs=epochs,
         imgsz=imgsz,
@@ -231,7 +221,8 @@ def train_stage(
         lr0=STAGE_LR0.get(stage, DEFAULT_LR0),
         momentum=0.937,
         warmup_epochs=5.0,
-        # ---- pixel-space augmentation OFF (see module docstring) ----
+        # -------------------------------------------------------------
+        # pixel-space augmentation OFF
         mosaic=0.0,
         mixup=0.0,
         copy_paste=0.0,
@@ -268,14 +259,14 @@ def main() -> None:
     random seed, resume behavior, and epoch counts.
     """
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--data-root", type=Path, default=paths.DATASETS_ROOT / "v7")
+    ap.add_argument("--data-root", type=Path, default=paths.DATASETS_ROOT / "onyx")
     ap.add_argument("--size", choices=["n", "s", "m", "l", "xl"], default="s")
     ap.add_argument("--stages", nargs="+", choices=STAGE_CHOICES, default=STAGE_CHOICES)
     ap.add_argument("--epochs", type=int, default=None, help="override per-stage defaults")
     ap.add_argument("--batch", type=int, default=16, help="use 8 at --imgsz 2560")
     ap.add_argument("--imgsz", type=int, default=1536, help="2560 = full render resolution")
     ap.add_argument("--device", default="0")
-    ap.add_argument("--project", type=Path, default=paths.RUNS_ROOT / "v7")
+    ap.add_argument("--project", type=Path, default=paths.RUNS_ROOT / "onyx")
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--resume", action="store_true")
     args = ap.parse_args()

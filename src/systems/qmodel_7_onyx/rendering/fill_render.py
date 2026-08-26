@@ -44,8 +44,8 @@ import numpy as np
 import pandas as pd
 
 from ._common import PADDING, _robust_mad, _strip_points
+from .dataprocessor import QModelOnyxDataProcessor as DP
 from .detector_render import DERIV_UPPER_PCT, derivative_energy
-from .legacy_dataprocessor import QModelOnyx_DataProcessor as DP
 
 COL_TIME = "Relative_time"
 COL_DISS = "Dissipation"
@@ -95,12 +95,12 @@ def generate_fill_cls_v2(
 
     series = {
         "diss": (
-            pd.to_numeric(df.get(COL_DISS), errors="coerce").to_numpy(dtype=float)
+            pd.to_numeric(df[COL_DISS], errors="coerce").to_numpy(dtype=float)
             if COL_DISS in df.columns
             else None
         ),
         "freq": (
-            pd.to_numeric(df.get(COL_FREQ), errors="coerce").to_numpy(dtype=float)
+            pd.to_numeric(df[COL_FREQ], errors="coerce").to_numpy(dtype=float)
             if COL_FREQ in df.columns
             else None
         ),
@@ -279,12 +279,12 @@ def generate_fill_cls_v3(
     strip_h = img_h // 3
     series = {
         "diss": (
-            pd.to_numeric(df.get(COL_DISS), errors="coerce").to_numpy(dtype=float)
+            pd.to_numeric(df[COL_DISS], errors="coerce").to_numpy(dtype=float)
             if COL_DISS in df.columns
             else None
         ),
         "freq": (
-            pd.to_numeric(df.get(COL_FREQ), errors="coerce").to_numpy(dtype=float)
+            pd.to_numeric(df[COL_FREQ], errors="coerce").to_numpy(dtype=float)
             if COL_FREQ in df.columns
             else None
         ),

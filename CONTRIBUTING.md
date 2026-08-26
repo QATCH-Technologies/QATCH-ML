@@ -16,8 +16,8 @@ pytest -k dp_decode        # by name
 
 The suite covers every pure-logic module (corpus discovery, spacing prior,
 DP decode, tier fitting, augmentation, rendering salience math, dataset
-splitting, the crosscheck rescue/veto, the ordinal-evidence live state
-machine) without requiring model weights or `ultralytics` - YOLO-dependent
+splitting, the crosscheck rescue/veto) without requiring model weights or
+`ultralytics` - YOLO-dependent
 code is tested via duck-typed stand-ins (see `tests/inference/test_crosscheck.py`
 for the pattern) or exercised end-to-end with a synthetic corpus via
 `qa/benchmark.py --selftest`. Thin CLI wrappers around Ultralytics training
@@ -70,7 +70,7 @@ themselves.
 ## Adding to an existing pipeline stage
 
 Add the new module inside the relevant subpackage (`rendering/`, `decode/`,
-`dataset/`, `training/`, `inference/`, `live/`, or `qa/`) and:
+`dataset/`, `training/`, `inference/`, or `qa/`) and:
 
 - Import path defaults from `paths.py` rather than hardcoding a relative
   `Path(...)` - every CLI must work regardless of the launch directory.
@@ -80,10 +80,11 @@ Add the new module inside the relevant subpackage (`rendering/`, `decode/`,
   (`python some_script.py` from inside the flat directory) is gone - this is
   a package now.
 - Preserve the try/except pattern only for genuinely optional external
-  dependencies (the QATCH application, `ultralytics`, `scikit-learn`) - see
-  `live/base_live.py` for the shape: import failure sets an availability
-  sentinel, module import never raises, only construction of the
-  app-dependent class raises a clear error.
+  dependencies (`ultralytics`, `scikit-learn`, the QATCH application) - see
+  `deployment/onyx.py`'s `_DECODE_AVAILABLE`/`_RENDER_V2_AVAILABLE`/
+  `_FILL_RENDER_AVAILABLE` sentinels for the shape: import failure never
+  raises at module load, it just degrades to a documented fallback (the v1
+  renderer, decode disabled) instead of failing hard.
 - Add a corresponding test module under `tests/<subpackage>/`.
 
 ## Adding a new pipeline stage

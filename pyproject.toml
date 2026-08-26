@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "qatch-ml"
 version = "0.1.0"
-description = "QATCH sensor-run POI detection pipeline: dataset building, training, DP-based decode, live inference, and QA (the qmodel_7_onyx system)."
+description = "QATCH sensor-run POI detection pipeline: dataset building, training, DP-based decode, and QA (the qmodel_7_onyx system)."
 requires-python = ">=3.10"
 dependencies = [
     "numpy",
@@ -28,7 +28,6 @@ qmodel-build-fill-dataset = "src.systems.qmodel_7_onyx.dataset.build_fill_classi
 qmodel-train-detectors = "src.systems.qmodel_7_onyx.training.train_detectors:main"
 qmodel-train-fill-classifier = "src.systems.qmodel_7_onyx.training.train_fill_classifier:main"
 qmodel-benchmark = "src.systems.qmodel_7_onyx.qa.benchmark:main"
-qmodel-replay = "src.systems.qmodel_7_onyx.live.replay:main"
 
 [tool.setuptools.packages.find]
 include = ["src*"]

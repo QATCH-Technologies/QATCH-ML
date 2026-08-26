@@ -6,10 +6,12 @@
 
 QATCH sensor-run point-of-interest (POI) detection: a pipeline that turns raw
 QATCH dissipation/resonance-frequency runs into a signal-domain image
-render, feeds a cascade of YOLO detectors + classifiers, joint-decodes the
-result against a learned spacing prior, and serves the whole thing live
-during data capture. The active implementation is the **`qmodel_7_onyx`**
-system under `src/systems/`.
+render, feeds a cascade of YOLO detectors + classifiers, and joint-decodes
+the result against a learned spacing prior. This repository builds,
+trains, and evaluates those models offline; the trained weights are served
+live during data capture by the QATCH nanovis app, which owns the
+streaming/live-inference code path (not duplicated here). The active
+implementation is the **`qmodel_7_onyx`** system under `src/systems/`.
 
 ## Install
 
@@ -137,8 +139,7 @@ src/systems/qmodel_7_onyx/
                           under the QATCH.QModel.models.qmodel_onyx.* dotted-import contract - a separate
                           copy from inference/, since this one is loaded exactly as a downstream consumer
                           loads it (see scripts/build_and_release_qmodel_onyx.py's Eval stage)
-  live/                   streaming inference (base live class, v7 fill-live upgrade, replay benchmark)
-  qa/                     offline QA: A/B decode benchmark, val-set audit, offender triage, label review, replay analysis
+  qa/                     offline QA: A/B decode benchmark, val-set audit, offender triage, label review
 
 src/utils/dataset_fetcher.py   Dropbox -> data/raw ingestion CLI (unrelated to qmodel_7_onyx internals)
 scripts/
@@ -181,13 +182,7 @@ responsibilities, and path/config conventions in more depth, and
    cascade, optionally cross-checks the fill-count verdict against the zoom
    detectors (`inference/crosscheck.py`), optionally joint-decodes against
    the spacing prior, optionally refines placements with the zoom detectors.
-7. **Live** (`live/`) - streaming variants of the classifier for use during
-   data capture: bounded-cost preprocessing, full probability output, and
-   an ordinal monotone evidence state machine in place of a simple debounce
-   counter. `live/replay.py` replays held-out runs through the exact live
-   decision stack for a shipping-quality latency/stability benchmark.
-8. **QA** (`qa/`) - the paired A/B benchmark comparing the decode layer to
+7. **QA** (`qa/`) - the paired A/B benchmark comparing the decode layer to
    the production cascade, post-training confusion/temperature audits,
    second-stage offender triage (faint-ridge vs suspect-label vs
-   model-blind), human label-review packet generation, and live-replay
-   decomposition (model-loss vs machinery-loss).
+   model-blind), and human label-review packet generation.

@@ -1,13 +1,12 @@
-"""
-_qmodel_onyx_layout.py
-=======================
+"""Defines the shared deployment-file layout for the QModel Onyx package.
 
-Shared helper for where a deployed qmodel_onyx package's files live, used by
-both roles `build_and_release_qmodel_onyx.py` plays: writing the layout
-(its Release stage) and reading it back to build a `QModelOnyx`
-`model_assets` dict (its Eval stage). Derives the layout from
-`assets_paths.json` rather than hard-coding it twice, so it can never
-drift out of sync with what the production controller expects.
+Derives deployed asset paths from `assets_paths.json` so release and
+evaluation code use the same layout as the production controller without
+duplicating path conventions.
+
+The helpers in this module support two complementary operations: resolving
+the deployment-relative path for an individual model stage and constructing
+the complete `model_assets` mapping expected by `QModelOnyx`.
 """
 
 from __future__ import annotations
@@ -18,12 +17,26 @@ from typing import Any, Dict
 
 
 def deploy_subpath(assets_map: Dict[str, Any], stage: str) -> Path:
-    """The path of one stage's weights file relative to an assets root, e.g.
-    `detectors/ch1_zoom_detector/ch1_zoom.pt` or
-    `classifiers/fill_classifier/type_cls.pt`. Derived from
-    `assets_paths.json`'s own paths (everything after their `assets/`
-    segment) so it's always exactly what `build_model_assets` below, and
-    the production controller, agree on."""
+    """Resolves a model stage's path relative to the deployment asset root.
+
+    The path is derived from the corresponding entry in the shared asset
+    configuration rather than from a hard-coded deployment layout.
+
+    Args:
+        assets_map: Parsed `assets_paths.json` mapping containing classifier
+            and detector asset paths.
+        stage: Model stage name. `"fill_classifier"` selects the fill
+            classifier; all other values are resolved from the detector
+            mapping.
+
+    Returns:
+        Path to the stage's weights file relative to the `assets` directory.
+
+    Raises:
+        KeyError: If `stage` is not present in the configured asset mapping.
+        ValueError: If the configured asset path does not contain an
+            `assets` path component.
+    """
     raw = (
         assets_map["fill_classifier"]
         if stage == "fill_classifier"
@@ -34,11 +47,23 @@ def deploy_subpath(assets_map: Dict[str, Any], stage: str) -> Path:
 
 
 def build_model_assets(assets_map: Dict[str, Any], root: Path) -> Dict[str, Any]:
-    """Builds a `QModelOnyx.__init__`-ready `model_assets` dict pointing
-    every stage at `root / deploy_subpath(...)`. Does not check existence -
-    callers loading a partially-deployed package (e.g. detectors only) get a
-    dict with those paths regardless; `QModelOnyx` lazy-loads each asset
-    and only fails when a requested stage is actually used."""
+    """Builds the deployment asset mapping expected by `QModelOnyx`.
+
+    Paths are constructed relative to the supplied deployment root using the
+    shared asset configuration. File existence is intentionally not checked,
+    allowing callers to construct partially deployed configurations and
+    letting the controller handle missing assets according to its own
+    loading behavior.
+
+    Args:
+        assets_map: Parsed `assets_paths.json` mapping containing classifier
+            and detector asset paths.
+        root: Root directory of the deployed `qmodel_onyx` package.
+
+    Returns:
+        A `model_assets` dictionary containing the fill-classifier path,
+        detector-stage paths, and spacing-prior path.
+    """
     return {
         "fill_classifier": str(root / deploy_subpath(assets_map, "fill_classifier")),
         "detectors": {

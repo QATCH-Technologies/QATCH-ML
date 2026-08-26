@@ -28,18 +28,11 @@ energy trace, plus its ratio to the trace median - and writes an annotated
 full-run v2 render (POI ground truth overlaid on the strips) so the
 (a)/(b)/(c) call takes seconds per run.
 
-It also settles a cheap question with the audit's saved probabilities:
-whether the ordinal-tail decision rule (what QModelOnyxFillClassifier.predict
-uses at analysis time) beats raw argmax on the val split at the fitted
-temperature - i.e., how many of the low-confidence full-run misses the
-decision rule already softens without any retraining.
-
 Usage
 -----
     python -m src.systems.qmodel_7_onyx.qa.triage_offenders --raw-root data/raw \
         --misses artifacts/audit_fill/misses.csv \
-        [--probs artifacts/audit_fill/val_probs.npz] [--tiers configs/tiers.json] \
-        [--temperature 1.45] [--min-misses 3] [--out artifacts/triage_fill]
+        [--tiers configs/tiers.json] [--min-misses 3] [--out artifacts/triage_fill]
 """
 
 from __future__ import annotations
@@ -59,6 +52,7 @@ from src.utils.logger import get_logger
 from .. import paths
 from ..augmentation import dynamic_box_width_sec
 from ..corpus import dedupe_runs, discover_runs
+from ..rendering.dataprocessor import QModelOnyxDataProcessor as DP
 from ..rendering.detector_render import derivative_energy
 from ..rendering.fill_render import (
     FILL_GEN_H,
@@ -66,7 +60,6 @@ from ..rendering.fill_render import (
     generate_fill_cls_v2,
     step_coincidence_energy,
 )
-from ..rendering.legacy_dataprocessor import QModelOnyx_DataProcessor as DP
 
 LOG = get_logger("qmodel_7_onyx.qa.triage_offenders")
 
@@ -141,47 +134,13 @@ def annotate_render(df_p: pd.DataFrame, poi: Dict[str, float], path: Path) -> No
     cv2.imwrite(str(path), img)
 
 
-def decision_rule_check(npz_path: Path, temperature: float) -> None:
-    """argmax vs ordinal-tail rule on the audit's saved val probabilities
-    at the fitted temperature - quantifies the no-retrain rescue rate."""
-    from ..live.fill_live import OrdinalEvidence
-
-    data = np.load(npz_path)
-    p, true = data["probs"].astype(float), data["true"].astype(int)
-    p = np.clip(p, 1e-12, 1.0)
-    if temperature != 1.0:
-        p = np.power(p, 1.0 / temperature)
-        p /= p.sum(axis=1, keepdims=True)
-    argmax = p.argmax(axis=1)
-    tail = np.array([OrdinalEvidence.decide(row, OrdinalEvidence.CONF_FORWARD) for row in p])
-    print(f"\ndecision-rule check on val probs (T={temperature}):")
-    print(f"  argmax        top-1 {np.mean(argmax == true):.4%}")
-    print(f"  ordinal tail  top-1 {np.mean(tail == true):.4%}")
-    changed = tail != argmax
-    fixed = int(np.sum(changed & (tail == true) & (argmax != true)))
-    broke = int(np.sum(changed & (argmax == true) & (tail != true)))
-    print(f"  rule changed {int(changed.sum())} frames: fixed {fixed}, broke {broke}")
-    # ordinal distance: an off-by-1 verdict costs the cascade less than off-by-2
-    print(
-        f"  mean |ordinal error|: argmax {np.mean(np.abs(argmax - true)):.4f}  "
-        f"tail {np.mean(np.abs(tail - true)):.4f}"
-    )
-
-
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--raw-root", type=Path, default=paths.DATA_ROOT)
     ap.add_argument(
         "--misses", type=Path, default=paths.ARTIFACTS_ROOT / "audit_fill" / "misses.csv"
     )
-    ap.add_argument(
-        "--probs",
-        type=Path,
-        default=paths.ARTIFACTS_ROOT / "audit_fill" / "val_probs.npz",
-        help="val_probs.npz from the audit",
-    )
     ap.add_argument("--tiers", type=Path, default=paths.TIERS_JSON)
-    ap.add_argument("--temperature", type=float, default=1.45)
     ap.add_argument("--min-misses", type=int, default=3)
     ap.add_argument("--out", type=Path, default=paths.ARTIFACTS_ROOT / "triage_fill")
     args = ap.parse_args()
@@ -278,9 +237,6 @@ def main() -> None:
 
     pd.DataFrame(rows).to_csv(args.out / "salience.csv", index=False)
     LOG.info("annotated renders + salience.csv -> {}", args.out)
-
-    if args.probs is not None and args.probs.exists():
-        decision_rule_check(args.probs, args.temperature)
 
     print(
         "\nreading the verdicts: the v2->v3 delta on this offender list is the pre-retrain "

@@ -29,10 +29,10 @@ def test_workspace_derived_paths():
     ws = pl.Workspace(datasets_root="datasets", runs_root="runs", configs_root="configs")
     assert ws.tiers_path == Path("configs/tiers.json")
     assert ws.spacing_prior_path == Path("configs/spacing_prior.json")
-    assert ws.detector_dataset_dir == Path("datasets/v7")
-    assert ws.fill_dataset_dir == Path("datasets/v7_fill")
-    assert ws.detector_runs_dir == Path("runs/v7")
-    assert ws.fill_runs_dir == Path("runs/v7_fill")
+    assert ws.detector_dataset_dir == Path("datasets/onyx")
+    assert ws.fill_dataset_dir == Path("datasets/onyx_fill")
+    assert ws.detector_runs_dir == Path("runs/onyx")
+    assert ws.fill_runs_dir == Path("runs/onyx_fill")
 
 
 def test_workspace_normalizes_str_to_path():

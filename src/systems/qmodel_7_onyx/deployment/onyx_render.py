@@ -22,12 +22,6 @@ The generated images consist of vertically stacked signal strips:
 * Green channel: Resonance frequency signal.
 * Blue channel (v2): Multi-scale derivative-energy salience.
 * White polylines: Signal outlines drawn for improved edge definition.
-
-Author(s):
-    Paul MacNichol (paul.macnichol@qatchtech.com)
-
-Date:
-    2026-07-09
 """
 
 from __future__ import annotations

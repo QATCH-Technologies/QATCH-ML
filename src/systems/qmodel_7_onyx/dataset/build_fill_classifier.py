@@ -18,7 +18,7 @@ aligned.
 
 Usage:
     python -m src.systems.qmodel_7_onyx.dataset.build_fill_classifier \
-        --raw-root data/raw --tiers tiers.json --out datasets/v7_fill \
+        --raw-root data/raw --tiers tiers.json --out datasets/onyx_fill \
         [--base-variants 2] [--cuts-per-class 2] [--hard-cuts 1] \
         [--val-frac 0.15] [--repeat-cap 8] [--seed 7]
 """
@@ -42,8 +42,8 @@ from src.utils.logger import get_logger
 from .. import paths
 from ..augmentation import COL_TIME, augment_run, dynamic_box_width_sec
 from ..corpus import dedupe_runs, discover_runs
+from ..rendering.dataprocessor import QModelOnyxDataProcessor as DP
 from ..rendering.fill_render import prepare_cls_input
-from ..rendering.legacy_dataprocessor import QModelOnyx_DataProcessor as DP
 from ..tiers import TierScheme
 from .splitting import repeat_factor, stratified_group_split
 
@@ -54,9 +54,7 @@ FILL_RENDER_VERSION = 3  # must match the predictor's fill render version
 # Ordinal class order - index == channels + 1
 CLASS_NAMES = ["no_fill", "initial_fill", "1ch", "2ch", "3ch"]
 
-# State boundaries in POI space: state k begins at BOUNDARY_POI[k].
-# (POI2 - end of initial fill - is not a state boundary: initial_fill spans
-# POI1..POI3.)
+# State boundaries in POI space
 BOUNDARY_POI = {1: "POI1", 2: "POI3", 3: "POI4", 4: "POI5"}
 
 MIN_PREFIX_S = 3.0  # matches MIN_SLICE_S: shortest usable prefix
@@ -361,7 +359,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--raw-root", type=Path, default=paths.DATA_ROOT)
     ap.add_argument("--tiers", type=Path, default=paths.TIERS_JSON)
-    ap.add_argument("--out", type=Path, default=paths.DATASETS_ROOT / "v7_fill")
+    ap.add_argument("--out", type=Path, default=paths.DATASETS_ROOT / "onyx_fill")
     ap.add_argument("--base-variants", type=int, default=2)
     ap.add_argument("--cuts-per-class", type=int, default=2)
     ap.add_argument("--hard-cuts", type=int, default=1)
