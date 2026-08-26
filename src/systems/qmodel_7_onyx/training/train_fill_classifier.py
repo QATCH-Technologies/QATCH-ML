@@ -145,8 +145,7 @@ def train(
     )
     best = Path(project) / f"fill_yolo26{size}" / "weights" / "best.pt"
     LOG.info("[fill] best weights -> {}", best)
-    LOG.info("Ship as classifiers/fill_classifier/type_cls.pt WITH FILL_RENDER_VERSION=2:")
-    LOG.info("weights and render version travel together, exactly as on the detector side.")
+    LOG.info("Ship as classifiers/fill_classifier/type_cls.pt.")
     return StageResult(
         stage="fill_classifier", weights_path=best, metrics=extract_metrics(train_return, model)
     )

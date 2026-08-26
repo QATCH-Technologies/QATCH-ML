@@ -81,10 +81,11 @@ Add the new module inside the relevant subpackage (`rendering/`, `decode/`,
   a package now.
 - Preserve the try/except pattern only for genuinely optional external
   dependencies (`ultralytics`, `scikit-learn`, the QATCH application) - see
-  `deployment/onyx.py`'s `_DECODE_AVAILABLE`/`_RENDER_V2_AVAILABLE`/
-  `_FILL_RENDER_AVAILABLE` sentinels for the shape: import failure never
-  raises at module load, it just degrades to a documented fallback (the v1
-  renderer, decode disabled) instead of failing hard.
+  `deployment/onyx.py`'s `_DECODE_AVAILABLE` sentinel for the shape: import
+  failure never raises at module load, it just degrades to a documented
+  fallback (configuration-prior decode disabled) instead of failing hard.
+  Modules with no such fallback (e.g. the renderers, which the controller
+  cannot function without) are imported unconditionally instead.
 - Add a corresponding test module under `tests/<subpackage>/`.
 
 ## Adding a new pipeline stage

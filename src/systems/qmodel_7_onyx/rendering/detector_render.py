@@ -1,31 +1,25 @@
 """
-Version-2 detection-image renderer, addressing the two representation
-failures the onyx training run exposed:
+Detection-image renderer, built around a DERIVATIVE-ENERGY salience strip
+that fixes a representation failure the onyx training run exposed:
 
-  1. LATE-EVENT FLATTENING. Per-strip global percentile normalization makes
-     the early fill step own the entire dynamic range; late POIs in long
-     viscous runs become featureless flat plateaus - the regions where ch2
-     trained to recall 0.63 and ch3 collapsed. The fix is not a cleverer
-     amplitude normalization (any global value scaling keeps the step
-     dominant): it is to render what the detector is actually supposed to
-     find. POIs are TRANSITIONS, so the third strip is replaced with a
-     DERIVATIVE-ENERGY trace: the combined, robustly-scaled, log-compressed
-     |d/dt| of dissipation and resonance frequency. Events appear as bright
-     vertical ridges with near-uniform salience regardless of where in the
-     run they occur or how large the absolute amplitude change is. The
-     Difference curve it replaces is a linear combination of the two value
-     strips and carried little independent information.
+LATE-EVENT FLATTENING. Per-strip global percentile normalization makes the
+early fill step own the entire dynamic range; late POIs in long viscous runs
+become featureless flat plateaus - the regions where ch2 trained to recall
+0.63 and ch3 collapsed. The fix is not a cleverer amplitude normalization
+(any global value scaling keeps the step dominant): it is to render what the
+detector is actually supposed to find. POIs are TRANSITIONS, so the third
+strip is a DERIVATIVE-ENERGY trace: the combined, robustly-scaled,
+log-compressed |d/dt| of dissipation and resonance frequency. Events appear
+as bright vertical ridges with near-uniform salience regardless of where in
+the run they occur or how large the absolute amplitude change is.
 
-  2. The dissipation (R) and resonance (G) value strips are kept exactly as
-     v1 renders them (same percentile normalization, fill + white outline),
-     so global fill-context cues the detectors already exploit are
-     preserved.
+The dissipation (R) and resonance (G) value strips use plain percentile
+normalization (fill + white outline), preserving global fill-context cues
+the detectors exploit.
 
 Train/inference contract: this module is used by BOTH build_dataset.py and
-the production predictor (QModelOnyxConfig.RENDER_VERSION). The render the
-weights were trained on MUST be the render they see at inference; the
-version flag exists precisely so old (v1-trained) weights keep working
-while v2-trained weights roll out.
+the production predictor, so the render weights are trained on is always the
+render they see at inference.
 
 Attributes:
     COL_TIME (str): DataFrame column name for relative time.
@@ -48,7 +42,6 @@ import numpy as np
 import pandas as pd
 
 from ._common import PADDING, _robust_mad, _strip_points
-from .dataprocessor import QModelOnyxDataProcessor as DP
 
 COL_TIME = "Relative_time"
 COL_DISS = "Dissipation"
@@ -139,8 +132,8 @@ def derivative_energy(df: pd.DataFrame) -> np.ndarray:
     return e
 
 
-def generate_channel_det_v2(df: pd.DataFrame, img_w: int, img_h: int) -> np.ndarray:
-    """Generates a version-2 detection render from signal data.
+def generate_channel_det(df: pd.DataFrame, img_w: int, img_h: int) -> np.ndarray:
+    """Generates a detection render from signal data.
 
     Produces an RGB (BGR in OpenCV format) image where the channels correspond to:
     - Red (Channel 2 in BGR): Dissipation.
@@ -207,27 +200,3 @@ def generate_channel_det_v2(df: pd.DataFrame, img_w: int, img_h: int) -> np.ndar
             lineType=cv2.LINE_AA,
         )
     return img
-
-
-def generate_det_image(df: pd.DataFrame, img_w: int, img_h: int, version: int = 2) -> np.ndarray:
-    """Dispatches detection image generation to the specified render version.
-
-    Used by both the training dataset builder (`build_dataset.py`) and the
-    production inference predictor (`v6_yolo` via `QModelOnyxConfig.RENDER_VERSION`).
-    Ensures that the render representation seen during inference matches
-    the one used during training.
-
-    Args:
-        df (pd.DataFrame): Time series data to render.
-        img_w (int): Target width of the generated image in pixels.
-        img_h (int): Target height of the generated image in pixels.
-        version (int, optional): Render version to use. Version 1 dispatches
-            to the legacy `DP.generate_channel_det`, while Version 2 (default)
-            dispatches to `generate_channel_det_v2`.
-
-    Returns:
-        np.ndarray: A 3D numpy array containing the generated BGR image.
-    """
-    if version == 1:
-        return DP.generate_channel_det(df, img_w=img_w, img_h=img_h)
-    return generate_channel_det_v2(df, img_w=img_w, img_h=img_h)

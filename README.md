@@ -163,8 +163,9 @@ responsibilities, and path/config conventions in more depth, and
    (directory-name duplicates would otherwise leak across train/val splits).
 2. **Rendering** (`rendering/`) - turns a preprocessed run DataFrame into
    the RGB strip images the detector cascade and fill classifier consume.
-   Two salience families: v2 (curvature-based `derivative_energy`) and v3
-   (step-coincidence), plus the legacy v1 preprocessing/rendering path.
+   Preprocessing lives in `dataprocessor.py`; the detector cascade renders a
+   curvature-based `derivative_energy` salience strip, and the fill
+   classifier renders a step-coincidence energy salience strip.
 3. **Dataset building** (`dataset/`) - renders labeled YOLO datasets (4
    cascade + 3 zoom-refinement detector sets, and the 5-class ordinal fill
    classifier set), with leakage-proof run-level stratified splitting and

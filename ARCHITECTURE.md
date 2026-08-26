@@ -9,7 +9,7 @@ flowchart TB
     tiers["tiers.py\nTierScheme (log_uniform default; GMM/quantile opt-in)"]
     prior["decode/spacing_prior.py + decode/fit_prior.py\nSpacingPrior"]
     aug["augmentation.py\ntime_warp / inject_noise / dynamic_box_width_sec"]
-    render["rendering/\ndetector_render.py, fill_render.py, legacy_dataprocessor.py"]
+    render["rendering/\ndetector_render.py, fill_render.py, dataprocessor.py"]
     dsbuild["dataset/\nbuild_detectors.py, build_fill_classifier.py, splitting.py"]
     train["training/\ntrain_detectors.py, train_fill_classifier.py"]
     weights["*.pt weights\n(gitignored, assets_paths.json)"]
@@ -49,10 +49,10 @@ flowchart TB
 | `corpus.py` | Run discovery, POI truth parsing, dedup, fixed viscosity tiers | `decode.spacing_prior` (POI_ORDER) |
 | `tiers.py` | Data-driven `TierScheme` (`log_uniform` default; `gmm`/`quantile` opt-in via `--method`) | `corpus` |
 | `augmentation.py` | Signal-domain augmentation, dynamic box sizing | - |
-| `rendering/_common.py` | Shared strip-plotting/robust-MAD helpers | `rendering.legacy_dataprocessor` |
-| `rendering/legacy_dataprocessor.py` | v1 preprocessing (`preprocess_dataframe`) + legacy render | - |
-| `rendering/detector_render.py` | v2 detector-cascade image render, `derivative_energy` salience | `rendering._common`, `rendering.legacy_dataprocessor` |
-| `rendering/fill_render.py` | Fill-classifier image render (v2/v3), `step_coincidence_energy` | `rendering._common`, `rendering.legacy_dataprocessor` |
+| `rendering/_common.py` | Shared strip-plotting/robust-MAD helpers | - |
+| `rendering/dataprocessor.py` | Preprocessing (`preprocess_dataframe`): interpolation + median filter | - |
+| `rendering/detector_render.py` | Detector-cascade image render, `derivative_energy` salience | `rendering._common` |
+| `rendering/fill_render.py` | Fill-classifier image render, `step_coincidence_energy` salience | `rendering._common`, `rendering.detector_render` (`DERIV_UPPER_PCT`) |
 | `decode/spacing_prior.py` | Learned log-normal gap model | - |
 | `decode/dp_decode.py` | Exact DP joint decode over YOLO candidates | `decode.spacing_prior` |
 | `decode/fit_prior.py` | CLI: fit `SpacingPrior` from complete fills | `corpus`, `decode.spacing_prior` |
@@ -66,12 +66,12 @@ flowchart TB
 | `inference/config.py` | `QModelOnyxConfig` tunables | - |
 | `inference/crosscheck.py` | Zoom-detector fill-count rescue/veto | - |
 | `inference/controller.py` | `QModelOnyx` production controller | `inference.config`, `inference.crosscheck`, `decode.*`, `rendering.*` |
-| `deployment/onyx_dataprocessor.py` | Raw CSV -> interpolated time series + derived features + rendered signal images | - |
+| `deployment/onyx_dataprocessor.py` | Raw CSV -> interpolated, median-filtered time series; mirror of `rendering/dataprocessor.py` | - |
 | `deployment/onyx_spacing_prior.py` | Standalone flat, pairwise POI-gap prior loaded from the fitted `spacing_prior.json`; mirror of `decode/spacing_prior.py` | - |
 | `deployment/onyx_decode.py` | Joint DP decode over POI candidate detections; mirror of `decode/dp_decode.py` | `deployment.onyx_spacing_prior` |
-| `deployment/onyx_render.py` | v2 detector image render (derivative-energy salience); mirror of `rendering/detector_render.py` | - |
-| `deployment/onyx_fill_render.py` | v2 fill-classifier image render; mirror of `rendering/fill_render.py` | `deployment.onyx_dataprocessor`, `deployment.onyx_render` |
-| `deployment/onyx.py` | `QModelOnyx` - the standalone reverse-cascade controller shipped under the `QATCH.QModel.models.qmodel_onyx.*` dotted-import contract; a separate, self-contained copy from `inference/controller.py`, loaded exactly as a downstream consumer loads it (see `scripts/build_and_release_qmodel_onyx.py`'s Eval stage) | `deployment.onyx_dataprocessor` (required); `deployment.onyx_spacing_prior`, `deployment.onyx_decode`, `deployment.onyx_render`, `deployment.onyx_fill_render` (optional) |
+| `deployment/onyx_render.py` | Detector image render (derivative-energy salience); mirror of `rendering/detector_render.py` | - |
+| `deployment/onyx_fill_render.py` | Fill-classifier image render (step-coincidence salience); mirror of `rendering/fill_render.py` | `deployment.onyx_render` (`DERIV_UPPER_PCT`, `_robust_mad`) |
+| `deployment/onyx.py` | `QModelOnyx` - the standalone reverse-cascade controller shipped under the `QATCH.QModel.models.qmodel_onyx.*` dotted-import contract; a separate, self-contained copy from `inference/controller.py`, loaded exactly as a downstream consumer loads it (see `scripts/build_and_release_qmodel_onyx.py`'s Eval stage) | `deployment.onyx_dataprocessor`, `deployment.onyx_render`, `deployment.onyx_fill_render` (required); `deployment.onyx_spacing_prior`, `deployment.onyx_decode` (optional) |
 | `qa/benchmark.py` | CLI: paired A/B decode benchmark + selftest | `corpus`, `decode.*`, `inference.controller` |
 | `qa/audit_fill_val.py` | CLI: post-training confusion/temperature audit | - (ultralytics only) |
 | `qa/triage_offenders.py` | CLI: second-stage offender triage | `corpus`, `augmentation`, `rendering`, `tiers` |

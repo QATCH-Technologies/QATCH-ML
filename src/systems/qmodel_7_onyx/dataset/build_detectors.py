@@ -46,7 +46,6 @@ from .splitting import repeat_factor, stratified_group_split
 LOG = get_logger("qmodel_7_onyx.dataset.build_detectors")
 
 IMG_W, IMG_H = 2560, 384
-RENDER_VERSION = 3  # must match QModelOnyxConfig.RENDER_VERSION at inference
 
 # Per-stage box geometry. Boxes are FULL HEIGHT (h=1.0): on these renders
 # the vertical dimension carries no localization information (this is a 1D
@@ -208,9 +207,9 @@ def _render_and_label(
     span = t1 - t0
     if span < MIN_SLICE_S:
         return None
-    from ..rendering.detector_render import generate_det_image
+    from ..rendering.detector_render import generate_channel_det
 
-    img = generate_det_image(sl, IMG_W, IMG_H, version=RENDER_VERSION)
+    img = generate_channel_det(sl, IMG_W, IMG_H)
 
     lines: List[str] = []
     if not is_negative:
@@ -427,7 +426,6 @@ def build(
             f"train: images/train\nval: images/val\nnc: {spec['nc']}\nnames:\n{names}\n"
         )
     manifest = dict(
-        render_version=RENDER_VERSION,
         seed=seed,
         val_frac=val_frac,
         base_variants=base_variants,

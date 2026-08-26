@@ -57,7 +57,7 @@ from ..rendering.detector_render import derivative_energy
 from ..rendering.fill_render import (
     FILL_GEN_H,
     FILL_GEN_W,
-    generate_fill_cls_v2,
+    generate_fill_cls,
     step_coincidence_energy,
 )
 
@@ -74,17 +74,18 @@ FULLRUN_K = {"no_fill": 2, "initial_fill": 5, "1ch": 8, "2ch": 11, "3ch": 14}
 
 def salience_report(df_p: pd.DataFrame, poi: Dict[str, float]) -> Dict[str, dict]:
     """Peak salience around each labeled POI under BOTH energies - v2
-    (curvature derivative-energy, what the current weights were trained
-    on) and v3 (step-coincidence, the candidate fix) - as percentile
-    within the run's whole trace + ratio to the trace median.
+    (curvature derivative-energy, what the detector cascade uses) and v3
+    (step-coincidence, what the fill classifier's weights were trained
+    on) - as percentile within the run's whole trace + ratio to the trace
+    median.
 
     Verdict calibration note: the first triage pass used v2-only salience
     with an 'ABSENT => suspect label' rule, which over-fired on ~20/25
     offenders - too many to be label errors; it was indicting the render.
     The recalibrated rule: a POI is a LABEL SUSPECT only if it stays
-    absent under v3 as well. A POI absent under v2 but clear under v3 is
-    the render defect the v3 rebuild fixes; the v2->v3 delta on the
-    offender list IS the pre-retrain validation of the render change."""
+    absent under v3 as well. A POI absent under v2 but clear under v3 was
+    the render defect the v3 rebuild fixed; the v2->v3 delta on the
+    offender list was the pre-retrain validation of that render change."""
     t = pd.to_numeric(df_p[COL_TIME], errors="coerce").to_numpy(dtype=float)
     energies = {"v2": derivative_energy(df_p), "v3": step_coincidence_energy(df_p)}
     meds = {k: (float(np.median(e)) or 1e-9) for k, e in energies.items()}
@@ -109,9 +110,9 @@ def salience_report(df_p: pd.DataFrame, poi: Dict[str, float]) -> Dict[str, dict
 
 
 def annotate_render(df_p: pd.DataFrame, poi: Dict[str, float], path: Path) -> None:
-    """Full-run v2 render with ground-truth POI verticals + labels - the
-    exact pixels the classifier judged, with the answer key drawn on."""
-    img = generate_fill_cls_v2(df_p, FILL_GEN_W, FILL_GEN_H)
+    """Full-run render with ground-truth POI verticals + labels - the exact
+    pixels the classifier judged, with the answer key drawn on."""
+    img = generate_fill_cls(df_p, FILL_GEN_W, FILL_GEN_H)
     t = pd.to_numeric(df_p[COL_TIME], errors="coerce").to_numpy(dtype=float)
     t0, t1 = float(t[0]), float(t[-1])
     span = max(t1 - t0, 1e-9)

@@ -6,7 +6,7 @@ identify points of interest (POIs). The pipeline handles data preprocessing, fil
 and sequential slicing of the dataset to isolate specific channel events (Init, Ch1, Ch2, Ch3).
 
 Onyx adds, on top of the Volta cascade + configuration-prior decode:
-- a v2 detection renderer (derivative-energy salience strip) via `onyx_render`, and
+- a detection renderer (derivative-energy salience strip) via `onyx_render`, and
 - a post-decode zoom-refinement stage (`_refine_with_zoom`) that re-detects
   each placed channel POI in a narrow window with a zoom-trained detector.
 
@@ -21,7 +21,6 @@ import os
 import traceback
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -88,38 +87,18 @@ except (ImportError, ModuleNotFoundError):
     )
 
 
-# Version-2 detection renderer (optional). Falls back to the v1 renderer
-# when unavailable so older deployments are unaffected.
-try:
-    from QATCH.QModel.models.qmodel_onyx.onyx_render import (
-        generate_det_image as _gen_det_image,
-    )
+# Detection renderer (derivative-energy salience strip). Required sibling,
+# same rationale as onyx_dataprocessor above.
+from QATCH.QModel.models.qmodel_onyx.onyx_render import (
+    generate_channel_det as _gen_det_image,
+)
 
-    _RENDER_V2_AVAILABLE = True
-except (ImportError, ModuleNotFoundError):
-    _RENDER_V2_AVAILABLE = False
-    Log.w(
-        tag="[QModelOnyx]",
-        msg="onyx_render not found. RENDER_VERSION=2 will fall back to the v1 detection renderer.",
-    )
-
-
-# Versioned fill-classification renderer (optional). Provides the shared
-# train/deploy input contract (prepare_cls_input) and the v2/v3 energy
-# strips. Falls back to the v1 dataprocessor render when unavailable so
-# older type_cls weights keep working.
-try:
-    from QATCH.QModel.models.qmodel_onyx.onyx_fill_render import (
-        prepare_cls_input as _prepare_cls_input,
-    )
-
-    _FILL_RENDER_AVAILABLE = True
-except (ImportError, ModuleNotFoundError):
-    _FILL_RENDER_AVAILABLE = False
-    Log.w(
-        tag="[QModelOnyx]",
-        msg="onyx_fill_render not found. FILL_RENDER_VERSION>=2 will fall back to the v1 fill renderer.",
-    )
+# Fill-classification renderer (step-coincidence energy strip). Provides the
+# shared train/deploy input contract (prepare_cls_input). Required sibling,
+# same rationale as onyx_dataprocessor above.
+from QATCH.QModel.models.qmodel_onyx.onyx_fill_render import (
+    prepare_cls_input as _prepare_cls_input,
+)
 
 
 # --- Configuration Constants ---
@@ -137,14 +116,6 @@ class QModelOnyxConfig:
     FILL_INFERENCE_H: int = 224
     FILL_GEN_W: int = 640
     FILL_GEN_H: int = 640
-
-    # Fill-classification renderer version. MUST match the render the deployed
-    # type_cls weights were trained on (weights and render version ship
-    # together, exactly like RENDER_VERSION on the detector side):
-    #   1 = legacy (diss/freq/Difference strips),
-    #   2 = derivative-energy salience strip (onyx_fill_render),
-    #   3 = step-coincidence energy strip (onyx_fill_render).
-    FILL_RENDER_VERSION: int = 3
 
     # Probability temperature applied in QModelOnyxFillClassifier.predict_probs:
     # p_i = p_i^(1/T). The trained classifier is SATURATED (val predictions are
@@ -200,12 +171,6 @@ class QModelOnyxConfig:
     # larger than this indicate the refiner latched onto a different event.
     REFINE_MAX_SHIFT_FRAC: float = 0.45
 
-    # Detection-image renderer version. MUST match the render the deployed
-    # detector weights were trained on: 1 = legacy (diss/freq/difference
-    # strips), 2 = onyx (diss/freq/derivative-energy salience strips, from
-    # onyx_render). Weights and render version ship together.
-    RENDER_VERSION: int = 2
-
     # Hysteresis ("the decode must earn the move"): the decoded configuration
     # is only accepted if its score beats the cascade configuration's score -
     # under the SAME objective - by at least this margin. 0.0 disables the
@@ -259,27 +224,12 @@ class QModelOnyxFillClassifier:
 
     def _render_input(self, df: pd.DataFrame) -> Optional[np.ndarray]:
         """Renders the preprocessed dataframe to the 224x224 BGR inference
-        image, dispatching on `QModelOnyxConfig.FILL_RENDER_VERSION`.
-
-        The shared `onyx_fill_render.prepare_cls_input` contract is used for
-        v2/v3 (the render the deployed weights were trained on); it falls back
-        to the legacy dataprocessor render at the same geometry when the render
-        module is unavailable, so old type_cls weights keep working. The result
-        is cached on `self._last_image` for the live visualization feed.
+        image via the shared `onyx_fill_render.prepare_cls_input` contract
+        (the render the deployed weights were trained on). The result is
+        cached on `self._last_image` for the visualization feed.
         """
         try:
-            if _FILL_RENDER_AVAILABLE and QModelOnyxConfig.FILL_RENDER_VERSION >= 2:
-                img_input = _prepare_cls_input(df, version=QModelOnyxConfig.FILL_RENDER_VERSION)
-            else:
-                strip_height = QModelOnyxConfig.FILL_GEN_H // 3
-                img_high_res = QModelOnyxDataProcessor.generate_fill_cls(
-                    df, img_h=strip_height, img_w=QModelOnyxConfig.FILL_GEN_W
-                )
-                img_input = cv2.resize(
-                    img_high_res,
-                    (QModelOnyxConfig.FILL_INFERENCE_W, QModelOnyxConfig.FILL_INFERENCE_H),
-                    interpolation=cv2.INTER_AREA,
-                )
+            img_input = _prepare_cls_input(df)
         except Exception as e:
             Log.e(self.TAG, f"Error generating fill render: {e}")
             return None
@@ -289,8 +239,8 @@ class QModelOnyxFillClassifier:
     def predict(self, df: pd.DataFrame) -> int:
         """Classifies the run's fill state to an integer channel count.
 
-        Renders the dataframe via `_render_input` (versioned fill render),
-        runs YOLO classification, and maps the top-1 label to a channel count.
+        Renders the dataframe via `_render_input` (fill render), runs YOLO
+        classification, and maps the top-1 label to a channel count.
 
         Args:
             df (pd.DataFrame): The preprocessed sensor data to classify.
@@ -328,9 +278,6 @@ class QModelOnyxFillClassifier:
         then temperature-softened by `QModelOnyxConfig.PROB_TEMPERATURE` to
         restore informative confidences from the saturated classifier. Returns
         `None` on render or inference failure.
-
-        This is the evidence source for the ordinal live accumulator; the
-        integer `predict` path is unchanged for analysis-time callers.
         """
         if df is None or df.empty:
             return None
@@ -440,17 +387,7 @@ class QModelOnyxDetector:
         """
         if df is None or len(df) < QModelOnyxConfig.MIN_SLICE_LENGTH:
             return {}
-        if QModelOnyxConfig.RENDER_VERSION >= 2 and _RENDER_V2_AVAILABLE:
-            img_base = _gen_det_image(
-                df,
-                QModelOnyxConfig.IMG_WIDTH,
-                QModelOnyxConfig.IMG_HEIGHT,
-                version=QModelOnyxConfig.RENDER_VERSION,
-            )
-        else:
-            img_base = QModelOnyxDataProcessor.generate_channel_det(
-                df, img_w=QModelOnyxConfig.IMG_WIDTH, img_h=QModelOnyxConfig.IMG_HEIGHT
-            )
+        img_base = _gen_det_image(df, QModelOnyxConfig.IMG_WIDTH, QModelOnyxConfig.IMG_HEIGHT)
         results = self.model(img_base, verbose=False, conf=QModelOnyxConfig.CONF_THRESHOLD)
         col_time = "Relative_time"
         if col_time not in df.columns:
@@ -516,17 +453,7 @@ class QModelOnyxDetector:
         """
         if df is None or len(df) < QModelOnyxConfig.MIN_SLICE_LENGTH:
             return {}
-        if QModelOnyxConfig.RENDER_VERSION >= 2 and _RENDER_V2_AVAILABLE:
-            img_base = _gen_det_image(
-                df,
-                QModelOnyxConfig.IMG_WIDTH,
-                QModelOnyxConfig.IMG_HEIGHT,
-                version=QModelOnyxConfig.RENDER_VERSION,
-            )
-        else:
-            img_base = QModelOnyxDataProcessor.generate_channel_det(
-                df, img_w=QModelOnyxConfig.IMG_WIDTH, img_h=QModelOnyxConfig.IMG_HEIGHT
-            )
+        img_base = _gen_det_image(df, QModelOnyxConfig.IMG_WIDTH, QModelOnyxConfig.IMG_HEIGHT)
         results = self.model(img_base, verbose=False, conf=QModelOnyxConfig.CONF_THRESHOLD)
         col_time = "Relative_time"
         if col_time not in df.columns:

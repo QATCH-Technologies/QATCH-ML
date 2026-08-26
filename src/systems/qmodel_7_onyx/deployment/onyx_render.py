@@ -1,18 +1,14 @@
 ﻿"""
 QATCH.QModel.models.qmodel_onyx.onyx_render.py
 
-Generates image-based representations viscosity data for model
+Generates image-based representations of viscosity data for model training
 and inference.
 
-This module converts time-series sensor signals into multi-channel images used by
-the Onyx detection model. It supports multiple rendering implementations through
-a versioned dispatch interface, allowing training and inference code to use the
-same rendering pipeline while maintaining backward compatibility.
-
-Version 2 extends the original renderer by replacing the third channel with a
-multi-scale derivative-energy representation that emphasizes rapid transitions
-and gradual inflection points. This salience trace is computed from windowed
-second differences across multiple temporal scales, normalized by a robust noise
+This module converts time-series sensor signals into multi-channel images used
+by the Onyx detection model, replacing the third channel with a multi-scale
+derivative-energy representation that emphasizes rapid transitions and gradual
+inflection points. This salience trace is computed from windowed second
+differences across multiple temporal scales, normalized by a robust noise
 estimate, and rendered as a dedicated image channel to improve point-of-interest
 (POI) detection.
 
@@ -20,7 +16,7 @@ The generated images consist of vertically stacked signal strips:
 
 * Red channel: Dissipation signal.
 * Green channel: Resonance frequency signal.
-* Blue channel (v2): Multi-scale derivative-energy salience.
+* Blue channel: Multi-scale derivative-energy salience.
 * White polylines: Signal outlines drawn for improved edge definition.
 """
 
@@ -30,20 +26,12 @@ import cv2
 import numpy as np
 import pandas as pd
 
-try:
-    from QATCH.QModel.models.qmodel_onyx.onyx_dataprocessor import (
-        QModelOnyxDataProcessor as DP,
-    )
-except (ImportError, ModuleNotFoundError):
-    from QATCH.QModel.models.qmodel_onyx.onyx_dataprocessor import (
-        QModelOnyxDataProcessor as DP,
-    )
-
 COL_TIME = "Relative_time"
 COL_DISS = "Dissipation"
 COL_FREQ = "Resonance_Frequency"
 
-PADDING = DP.PADDING
+TIME_STEP = 0.005
+PADDING = 5
 IMG_CHANNELS = 3
 COLOR_WHITE = (255, 255, 255)
 
@@ -138,7 +126,7 @@ def derivative_energy(df: pd.DataFrame) -> np.ndarray:
     t = pd.to_numeric(df[COL_TIME], errors="coerce").to_numpy(dtype=float)
     diffs = np.diff(t)
     diffs = diffs[np.isfinite(diffs) & (diffs > 0)]
-    dt = float(np.median(diffs)) if len(diffs) else DP.TIME_STEP
+    dt = float(np.median(diffs)) if len(diffs) else TIME_STEP
     sal = np.zeros(n)
     for col in (COL_DISS, COL_FREQ):
         if col not in df.columns:
@@ -210,8 +198,8 @@ def _strip_points(
     return np.stack((x, y), axis=1)
 
 
-def generate_channel_det_v2(df: pd.DataFrame, img_w: int, img_h: int) -> np.ndarray:
-    """Generates a version 2 detection image from Onyx sensor data.
+def generate_channel_det(df: pd.DataFrame, img_w: int, img_h: int) -> np.ndarray:
+    """Generates a detection image from Onyx sensor data.
 
     The output image is composed of three vertically stacked signal strips,
     each rendered into a separate color channel:
@@ -283,40 +271,3 @@ def generate_channel_det_v2(df: pd.DataFrame, img_w: int, img_h: int) -> np.ndar
             lineType=cv2.LINE_AA,
         )
     return img
-
-
-def generate_det_image(
-    df: pd.DataFrame,
-    img_w: int,
-    img_h: int,
-    version: int = 2,
-) -> np.ndarray:
-    """Generates a detection image using the requested rendering version.
-
-    This function provides a common entry point for both model training and
-    inference, dispatching to the appropriate rendering implementation based on
-    the specified version number. Version 1 uses the legacy renderer provided
-    by the data processor, while version 2 uses the enhanced derivative-energy
-    renderer implemented in this module.
-
-    Args:
-        df: DataFrame containing the input sensor data.
-        img_w: Width of the output image in pixels.
-        img_h: Height of the output image in pixels.
-        version: Rendering implementation to use. Supported values are `1`
-            (legacy renderer) and `2` (derivative-energy renderer).
-
-    Returns:
-        A three-channel `uint8` image suitable for model training or
-        inference.
-
-    Raises:
-        ValueError: If `version` is not a supported rendering version.
-    """
-    """Version dispatch used by both training (build_dataset.py) and
-    inference (qmodel_onyx, via QModelOnyxConfig.RENDER_VERSION)."""
-    if version == 1:
-        return DP.generate_channel_det(df, img_w=img_w, img_h=img_h)
-    if version == 2:
-        return generate_channel_det_v2(df, img_w=img_w, img_h=img_h)
-    raise ValueError(f"Unsupported render version: {version!r}")

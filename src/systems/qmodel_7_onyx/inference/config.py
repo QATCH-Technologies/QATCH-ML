@@ -12,7 +12,7 @@ from typing import Dict, Optional
 
 
 class QModelOnyxConfig:
-    """Configuration constants for the QModel V6 YOLO pipeline.
+    """Configuration constants for the QModel Onyx YOLO pipeline.
 
     A plain namespace of class-level constants grouped by pipeline stage
     (detector, fill classifier, configuration-prior decode, zoom
@@ -54,8 +54,6 @@ class QModelOnyxConfig:
         REFINE_MAX_SHIFT_FRAC (float): Maximum move the refiner may apply,
             as a fraction of the window; larger moves indicate the refiner
             latched onto a different event.
-        RENDER_VERSION (int): Detection-image renderer version; must match
-            the render the deployed detector weights were trained on.
         DECODE_MIN_MARGIN (float): Minimum score margin, under the decode
             objective, that a decoded configuration must beat the cascade
             configuration by before it replaces the cascade's result.
@@ -117,9 +115,6 @@ class QModelOnyxConfig:
 
     # Maximum move the refiner may apply, as a fraction of the window
     REFINE_MAX_SHIFT_FRAC: float = 0.45
-
-    # Detection-image renderer version.
-    RENDER_VERSION: int = 2
 
     # Hysteresis ("the decode must earn the move")
     DECODE_MIN_MARGIN: float = 0.25

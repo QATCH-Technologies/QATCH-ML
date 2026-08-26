@@ -3,7 +3,7 @@ import pandas as pd
 
 from src.systems.qmodel_7_onyx.rendering.detector_render import (
     derivative_energy,
-    generate_det_image,
+    generate_channel_det,
 )
 
 
@@ -34,9 +34,9 @@ def test_derivative_energy_short_series_returns_zeros():
     assert np.all(e == 0)
 
 
-def test_generate_det_image_shape_and_dtype():
+def test_generate_channel_det_shape_and_dtype():
     t, x = _step_signal(n=500)
     df = pd.DataFrame({"Relative_time": t, "Dissipation": x, "Resonance_Frequency": 1.0 - x})
-    img = generate_det_image(df, img_w=320, img_h=240, version=2)
+    img = generate_channel_det(df, img_w=320, img_h=240)
     assert img.shape == (240, 320, 3)
     assert img.dtype == np.uint8

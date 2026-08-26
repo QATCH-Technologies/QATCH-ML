@@ -236,7 +236,7 @@ def _print_global(
     BAR = "=" * (len(HDR) + 4)
 
     print(f"\n{BAR}")
-    print("  v6 Configuration-Decode A/B Benchmark   (greedy cascade vs dp_decode)")
+    print("  Configuration-Decode A/B Benchmark   (greedy cascade vs dp_decode)")
     print(f"  {n_runs} runs  |  gross > {gross_threshold} s  |  paired, single YOLO pass")
     print(f"  Output -> {output_dir}")
     print(f"  {SEP}")

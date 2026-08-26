@@ -3,45 +3,37 @@ QATCH.QModel.models.qmodel_onyx.onyx_fill_render
 
 
 Fill-CLASSIFICATION renderer for the Onyx pipeline, sharing the one train/
-deploy input contract with the fill classifier and the streaming path.
+deploy input contract with the fill classifier.
 
-Why the classifier needs the derivative-energy strip more than the detectors
-----------------------------------------------------------------------------
+Why the classifier needs a salience strip more than the detectors
+-------------------------------------------------------------------
 The fill classifier's job is literally COUNTING transitions: the class IS the
-number of fill events visible so far. The legacy third strip is the Difference
-curve - a linear combination of the two value strips that carries almost no
-independent information - and all three strips share the v1 percentile-value
-normalization whose failure mode the onyx detector work exposed: in a long
-viscous run the early fill step owns the entire dynamic range, so the late
-transitions that distinguish 2ch from 3ch flatten into featureless plateaus.
-That is exactly the confusion boundary a channel counter cannot afford to lose.
+number of fill events visible so far. A linear combination of the two value
+strips carries almost no independent information for that job, and plain
+percentile-value normalization has a failure mode the onyx detector work
+exposed: in a long viscous run the early fill step owns the entire dynamic
+range, so the late transitions that distinguish 2ch from 3ch flatten into
+featureless plateaus. That is exactly the confusion boundary a channel
+counter cannot afford to lose.
 
-The v2 classification render mirrors the onyx detector render (`onyx_render`):
+This classification render mirrors the onyx detector render (`onyx_render`):
 
-  * Strips 0/1 (dissipation red, resonance green) are kept EXACTLY as the v1
-    classifier render draws them - same percentile normalization, color fill,
-    +50 edge highlight - preserving the global fill-context cues (step
-    position, plateau levels, fill fraction of frame) the current model
-    already exploits. Those cues are what separate no_fill / initial_fill,
+  * Strips 0/1 (dissipation red, resonance green) use plain percentile
+    normalization, color fill, +50 edge highlight - preserving the global
+    fill-context cues (step position, plateau levels, fill fraction of frame)
+    the model exploits. Those cues are what separate no_fill / initial_fill,
     where value shape matters more than transition count.
-  * Strip 2 replaces the Difference curve with the DERIVATIVE-ENERGY trace
-    from `onyx_render`: multi-scale, per-scale-MAD-normalized, log-compressed
-    curvature salience. Every transition appears as a ridge of comparable
-    height regardless of where in the run it occurs.
-
-Version 3 (step-coincidence energy) additionally replaces that curvature
-strip with a matched STEP filter combined across signals by geometric mean;
-see the block comment on `step_coincidence_energy`.
+  * Strip 2 is a STEP-COINCIDENCE ENERGY trace: a matched step filter
+    combined across signals by geometric mean, which stays sensitive to
+    extremely slow, late transitions that a simple derivative would wash
+    out; see the block comment on `step_coincidence_energy`.
 
 Train/deploy contract
 ---------------------
 `prepare_cls_input` is the ONE function that turns a preprocessed dataframe
 into the 224x224 tensor-ready image; the dataset builder saves its exact
 output and the predictor feeds its exact output, so training and inference
-images are bit-identical by construction. `FILL_RENDER_VERSION` (in `onyx`)
-dispatches v1 (legacy weights) vs v2 vs v3 - weights and render version
-travel together, the same roll-out mechanism as
-`QModelOnyxConfig.RENDER_VERSION` on the detector side.
+images are bit-identical by construction.
 """
 
 from __future__ import annotations
@@ -50,20 +42,17 @@ import cv2
 import numpy as np
 import pandas as pd
 
-from QATCH.QModel.models.qmodel_onyx.onyx_dataprocessor import (
-    QModelOnyxDataProcessor as DP,
-)
 from QATCH.QModel.models.qmodel_onyx.onyx_render import (
     DERIV_UPPER_PCT,
     _robust_mad,
-    derivative_energy,
 )
 
-COL_TIME = DP.COL_TIME
-COL_DISS = DP.COL_DISS
-COL_FREQ = DP.COL_FREQ
+COL_TIME = "Relative_time"
+COL_DISS = "Dissipation"
+COL_FREQ = "Resonance_Frequency"
 
-PADDING = DP.PADDING
+TIME_STEP = 0.005
+PADDING = 5
 IMG_CHANNELS = 3
 
 # Generation and inference geometry - identical to the classifier path
@@ -74,8 +63,8 @@ FILL_GEN_H = 640
 FILL_INFERENCE_W = 224
 FILL_INFERENCE_H = 224
 
-# Visual language of the classification render (matches v1 generate_fill_cls:
-# colored fills with a +50 edge highlight, NOT the detector's channel masks).
+# Visual language of the classification render: colored fills with a +50
+# edge highlight, NOT the detector's channel masks.
 # (values_key, BGR fill color, upper percentile)
 STRIP_SPEC = (
     ("diss", (0, 0, 255), 99.0),
@@ -83,7 +72,7 @@ STRIP_SPEC = (
     ("energy", (255, 0, 0), DERIV_UPPER_PCT),
 )
 
-# --- Version 3: step-coincidence energy parameters ---
+# Step-coincidence energy parameters.
 # Absolute scales plus SPAN-RELATIVE scales: the fill classifier sees whole
 # runs from 25 s to 750 s; fixed absolute scales cannot serve both ends, and
 # measured transition extents ran ~6-9% of span, which span/12..span/32
@@ -101,8 +90,7 @@ def _strip_points(
     p_lower: float = 1.0,
     p_upper: float = 99.0,
 ):
-    """Percentile clip -> strip pixel band. Same normalization/geometry
-    contract as the dataprocessor's _get_signal_points."""
+    """Percentile clip -> strip pixel band."""
     finite = values[np.isfinite(values)]
     if len(finite) < 2:
         return None
@@ -122,49 +110,6 @@ def _series(df: pd.DataFrame, col: str) -> np.ndarray | None:
     if col not in df.columns:
         return None
     return pd.to_numeric(df[col], errors="coerce").to_numpy(dtype=float)
-
-
-def _draw_strips(df: pd.DataFrame, img_w: int, img_h: int, energy: np.ndarray) -> np.ndarray:
-    """Shared draw path for v2/v3: value strips + an energy strip. The only
-    difference between the two versions is which energy trace is passed in."""
-    img = np.zeros((img_h, img_w, IMG_CHANNELS), dtype=np.uint8)
-    if df is None or df.empty or len(df) < 2:
-        return img
-    strip_h = img_h // 3
-    series = {
-        "diss": _series(df, COL_DISS),
-        "freq": _series(df, COL_FREQ),
-        "energy": energy,
-    }
-    for strip_idx, (key, color, p_hi) in enumerate(STRIP_SPEC):
-        values = series[key]
-        if values is None:
-            continue
-        pts = _strip_points(values, img_w, strip_h, strip_idx, p_upper=p_hi)
-        if pts is None:
-            continue
-        strip_bottom = (strip_idx + 1) * strip_h - PADDING
-        poly = np.concatenate([pts, [[pts[-1][0], strip_bottom]], [[pts[0][0], strip_bottom]]])
-        cv2.fillPoly(img, [poly], color)
-        edge_color = tuple(min(c + 50, 255) for c in color)
-        cv2.polylines(
-            img,
-            [pts.reshape((-1, 1, 2))],
-            isClosed=False,
-            color=edge_color,
-            thickness=1,
-            lineType=cv2.LINE_AA,
-        )
-    return img
-
-
-def generate_fill_cls_v2(
-    df: pd.DataFrame, img_w: int = FILL_GEN_W, img_h: int = FILL_GEN_H
-) -> np.ndarray:
-    """v2 classification render: dissipation (red) + resonance (green) value
-    strips exactly as v1, derivative-energy ridge strip (blue) replacing the
-    Difference curve. Takes TOTAL image dimensions."""
-    return _draw_strips(df, img_w, img_h, derivative_energy(df))
 
 
 def _step_response(x: np.ndarray, w: int) -> np.ndarray:
@@ -191,19 +136,19 @@ def step_coincidence_energy(df: pd.DataFrame) -> np.ndarray:
 
     A STEP filter (difference of adjacent window MEANS) carries the full step
     amplitude as signal while noise shrinks ~sqrt(w/dt), so slow LATE
-    transitions register where the v2 windowed second difference (three
+    transitions register where a simple windowed second difference (three
     sampled points, noise never averaging down) washes them out. Physics says
     a genuine fill transition moves dissipation AND resonance frequency
     together, so per-scale responses are combined by GEOMETRIC MEAN - keeping
     coordinated events and suppressing single-channel drift excursions that
     fuel 2ch->3ch over-counts. Returns a per-sample trace; drawn as the energy
-    strip by the v3 render.
+    strip by the render below.
     """
     n = len(df)
     if n < 16 or COL_TIME not in df.columns:
         return np.zeros(n)
     t = pd.to_numeric(df[COL_TIME], errors="coerce").to_numpy(dtype=float)
-    dt = float(np.nanmedian(np.diff(t))) or DP.TIME_STEP
+    dt = float(np.nanmedian(np.diff(t))) or TIME_STEP
     span = float(t[-1] - t[0])
     scales = sorted(set(list(STEP_ABS_SCALES_S) + [max(0.5, span * r) for r in STEP_REL_SCALES]))
     have = [c for c in (COL_DISS, COL_FREQ) if c in df.columns]
@@ -225,33 +170,47 @@ def step_coincidence_energy(df: pd.DataFrame) -> np.ndarray:
     return e
 
 
-def generate_fill_cls_v3(
+def generate_fill_cls(
     df: pd.DataFrame, img_w: int = FILL_GEN_W, img_h: int = FILL_GEN_H
 ) -> np.ndarray:
-    """v3 render: identical to v2 except the energy strip is the
-    step-coincidence energy instead of the curvature-based derivative
-    energy."""
-    return _draw_strips(df, img_w, img_h, step_coincidence_energy(df))
+    """Classification render: dissipation (red) + resonance (green) value
+    strips with plain percentile normalization, step-coincidence energy
+    ridge strip (blue). Takes TOTAL image dimensions."""
+    img = np.zeros((img_h, img_w, IMG_CHANNELS), dtype=np.uint8)
+    if df is None or df.empty or len(df) < 2:
+        return img
+    strip_h = img_h // 3
+    series = {
+        "diss": _series(df, COL_DISS),
+        "freq": _series(df, COL_FREQ),
+        "energy": step_coincidence_energy(df),
+    }
+    for strip_idx, (key, color, p_hi) in enumerate(STRIP_SPEC):
+        values = series[key]
+        if values is None:
+            continue
+        pts = _strip_points(values, img_w, strip_h, strip_idx, p_upper=p_hi)
+        if pts is None:
+            continue
+        strip_bottom = (strip_idx + 1) * strip_h - PADDING
+        poly = np.concatenate([pts, [[pts[-1][0], strip_bottom]], [[pts[0][0], strip_bottom]]])
+        cv2.fillPoly(img, [poly], color)
+        edge_color = tuple(min(c + 50, 255) for c in color)
+        cv2.polylines(
+            img,
+            [pts.reshape((-1, 1, 2))],
+            isClosed=False,
+            color=edge_color,
+            thickness=1,
+            lineType=cv2.LINE_AA,
+        )
+    return img
 
 
-def generate_fill_image(df: pd.DataFrame, version: int = 2) -> np.ndarray:
-    """Version dispatch. version=1 reproduces the legacy classifier render
-    (diss/freq/Difference at FILL_GEN geometry) so old type_cls weights keep
-    working; version=2 is the derivative-energy render; version>=3 swaps in
-    the step-coincidence energy (retrain required - weights and version
-    travel together)."""
-    if version == 1:
-        # v1 generate_fill_cls takes PER-STRIP height.
-        return DP.generate_fill_cls(df, img_h=FILL_GEN_H // 3, img_w=FILL_GEN_W)
-    if version >= 3:
-        return generate_fill_cls_v3(df, FILL_GEN_W, FILL_GEN_H)
-    return generate_fill_cls_v2(df, FILL_GEN_W, FILL_GEN_H)
-
-
-def prepare_cls_input(df: pd.DataFrame, version: int = 2) -> np.ndarray:
+def prepare_cls_input(df: pd.DataFrame) -> np.ndarray:
     """THE train/deploy contract: preprocessed dataframe -> the exact
     224x224 BGR uint8 image the classifier consumes. The dataset builder
     saves this image; the predictor feeds this image. INTER_AREA matches the
     existing inference path."""
-    img = generate_fill_image(df, version=version)
+    img = generate_fill_cls(df, FILL_GEN_W, FILL_GEN_H)
     return cv2.resize(img, (FILL_INFERENCE_W, FILL_INFERENCE_H), interpolation=cv2.INTER_AREA)

@@ -1,11 +1,11 @@
-"""Build the fill-type classification dataset for a live fill classifier.
+"""Build the fill-type classification dataset for the fill classifier.
 
 Renders prefix-based classification samples for each fill state in a
 classifier-compatible directory structure. Dataset generation preserves
 run-level train/validation separation, matches the temporal distribution seen
-by the live classifier, excludes ambiguous transition regions, oversamples
-latency-critical post-transition frames, and applies signal-domain
-augmentation with corresponding POI timing adjustments.
+during streaming inference, excludes ambiguous transition regions,
+oversamples latency-critical post-transition frames, and applies
+signal-domain augmentation with corresponding POI timing adjustments.
 
 Training samples are balanced across achievable fill states rather than being
 weighted by the amount of time each state occupies. Validation uses only
@@ -48,8 +48,6 @@ from ..tiers import TierScheme
 from .splitting import repeat_factor, stratified_group_split
 
 LOG = get_logger("qmodel_7_onyx.dataset.build_fill_classifier")
-
-FILL_RENDER_VERSION = 3  # must match the predictor's fill render version
 
 # Ordinal class order - index == channels + 1
 CLASS_NAMES = ["no_fill", "initial_fill", "1ch", "2ch", "3ch"]
@@ -316,7 +314,7 @@ def build(
                     continue
                 if float(sl[COL_TIME].iloc[-1]) - t0 < MIN_PREFIX_S:
                     continue
-                img = prepare_cls_input(sl, version=FILL_RENDER_VERSION)
+                img = prepare_cls_input(sl)
                 tag = "h" if is_hard else "u"
                 emit(split_name, state, f"{rid}_v{v}_{tag}{k}", img)
 
@@ -328,7 +326,6 @@ def build(
         process_run(rid, "val")
 
     manifest = dict(
-        fill_render_version=FILL_RENDER_VERSION,
         seed=seed,
         val_frac=val_frac,
         base_variants=base_variants,

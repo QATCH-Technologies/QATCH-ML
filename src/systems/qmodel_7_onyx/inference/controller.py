@@ -27,7 +27,6 @@ import os
 import traceback
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -80,11 +79,12 @@ from ..decode.spacing_prior import SpacingPrior  # noqa: E402
 
 _DECODE_AVAILABLE = True
 
-# Version-2 detection renderer. Sibling subpackage; same rationale as
-# above - always available via plain relative import.
-from ..rendering.detector_render import generate_det_image as _gen_det_image  # noqa: E402
+# Detection renderer. Sibling subpackage; same rationale as above - always
+# available via plain relative import.
+from ..rendering.detector_render import generate_channel_det as _gen_det_image  # noqa: E402
 
-_RENDER_V2_AVAILABLE = True
+# Fill-classifier renderer. Same rationale as above.
+from ..rendering.fill_render import prepare_cls_input  # noqa: E402
 
 # Fill-verdict cross-check (zoom-detector based under-count rescue /
 # over-count advisory veto). See `_crosscheck_fill` below for the
@@ -131,13 +131,16 @@ class QModelOnyxFillClassifier:
 
     def predict(self, df: pd.DataFrame) -> int:
         """
-        Generates a visual representation of the run data and classifies its fill state.
+        Renders the run data to the classifier's salience-strip image and
+        classifies its fill state.
 
         This method:
-        1. Generates a 3-strip stacked image from the dataframe using `DataProcessor`.
-        2. Resizes the image to the model's expected inference resolution.
-        3. Runs YOLO classification.
-        4. Maps the predicted class label to an integer channel count.
+        1. Generates the salience-strip classification image via
+           `rendering.fill_render.prepare_cls_input` (dissipation/resonance
+           value strips plus a step-coincidence energy strip), already
+           resized to the model's inference resolution.
+        2. Runs YOLO classification.
+        3. Maps the predicted class label to an integer channel count.
 
         Args:
             df (pd.DataFrame): The raw sensor data to classify.
@@ -150,38 +153,17 @@ class QModelOnyxFillClassifier:
             Log.w(self.TAG, "Dataframe provided for prediction is empty.")
             return 0
 
-        # Generate Image
-        # We divide the target GEN_H by 3 because the processor stacks 3 strips
-        strip_height = QModelOnyxConfig.FILL_GEN_H // 3
-
         try:
-            img_high_res = QModelOnyxDataProcessor.generate_fill_cls(
-                df, img_h=strip_height, img_w=QModelOnyxConfig.FILL_GEN_W
-            )
+            img_input = prepare_cls_input(df)
         except Exception as e:
             Log.e(self.TAG, f"Error generating signal image: {e}")
             return 0
 
-        if img_high_res is None:
+        if img_input is None:
             Log.w(self.TAG, "Generated image is None.")
             return 0
 
-        # Resize for Inference
-        img_input = cv2.resize(
-            img_high_res,
-            (QModelOnyxConfig.FILL_INFERENCE_W, QModelOnyxConfig.FILL_INFERENCE_H),
-            interpolation=cv2.INTER_AREA,
-        )
         self._last_image = img_input
-        # # --- Debugging for live fill frames and type cls ---
-        # debug_dir = os.path.join(os.getcwd(), "debug_frames")
-        # os.makedirs(debug_dir, exist_ok=True)
-
-        # # Use nanoseconds to ensure unique filenames in a fast loop
-        # timestamp = time.time_ns()
-        # save_path = os.path.join(debug_dir, f"input_{timestamp}.png")
-
-        # cv2.imwrite(save_path, img_input)
         # Inference
         try:
             results = self.model(img_input, verbose=False)
@@ -287,17 +269,7 @@ class QModelOnyxDetector:
         """
         if df is None or len(df) < QModelOnyxConfig.MIN_SLICE_LENGTH:
             return {}
-        if QModelOnyxConfig.RENDER_VERSION >= 2 and _RENDER_V2_AVAILABLE:
-            img_base = _gen_det_image(
-                df,
-                QModelOnyxConfig.IMG_WIDTH,
-                QModelOnyxConfig.IMG_HEIGHT,
-                version=QModelOnyxConfig.RENDER_VERSION,
-            )
-        else:
-            img_base = QModelOnyxDataProcessor.generate_channel_det(
-                df, img_w=QModelOnyxConfig.IMG_WIDTH, img_h=QModelOnyxConfig.IMG_HEIGHT
-            )
+        img_base = _gen_det_image(df, QModelOnyxConfig.IMG_WIDTH, QModelOnyxConfig.IMG_HEIGHT)
         results = self.model(img_base, verbose=False, conf=QModelOnyxConfig.CONF_THRESHOLD)
         col_time = "Relative_time"
         if col_time not in df.columns:
@@ -363,17 +335,7 @@ class QModelOnyxDetector:
         """
         if df is None or len(df) < QModelOnyxConfig.MIN_SLICE_LENGTH:
             return {}
-        if QModelOnyxConfig.RENDER_VERSION >= 2 and _RENDER_V2_AVAILABLE:
-            img_base = _gen_det_image(
-                df,
-                QModelOnyxConfig.IMG_WIDTH,
-                QModelOnyxConfig.IMG_HEIGHT,
-                version=QModelOnyxConfig.RENDER_VERSION,
-            )
-        else:
-            img_base = QModelOnyxDataProcessor.generate_channel_det(
-                df, img_w=QModelOnyxConfig.IMG_WIDTH, img_h=QModelOnyxConfig.IMG_HEIGHT
-            )
+        img_base = _gen_det_image(df, QModelOnyxConfig.IMG_WIDTH, QModelOnyxConfig.IMG_HEIGHT)
         results = self.model(img_base, verbose=False, conf=QModelOnyxConfig.CONF_THRESHOLD)
         col_time = "Relative_time"
         if col_time not in df.columns:
@@ -407,10 +369,10 @@ class QModelOnyxDetector:
 
 class QModelOnyx:
     """
-    Controller class for the QModel V6 YOLO .
+    Controller class for the QModel Onyx .
 
     This class manages the various machine YOLO models used in the
-    V6 pipeline. It handles the lazy loading of the fill classifier and specific channel
+    pipeline. It handles the lazy loading of the fill classifier and specific channel
     detectors (Init, Ch1, Ch2, Ch3) to optimize memory usage, ensuring models are only
     loaded when required by the prediction logic.
     """
@@ -1041,7 +1003,7 @@ class QModelOnyx:
         df: pd.DataFrame,
         results: dict,
         cut_history: list,
-        save_path: str = "v6_debug.png",
+        save_path: str = "onyx_debug.png",
     ) -> None:
         """
         Generates a debug plot illustrating the cascade detection process.
@@ -1060,7 +1022,7 @@ class QModelOnyx:
             cut_history (List[Tuple[str, float]]): A list of tuples recording the slicing
                 actions taken. Each tuple contains (cut_name, cut_time).
             save_path (str, optional): The file path where the plot image will be saved.
-                Defaults to "v6_debug.png".
+                Defaults to "onyx_debug.png".
         """
         if df is None or df.empty:
             return
@@ -1111,7 +1073,7 @@ class QModelOnyx:
         crosscheck: bool = True,
     ) -> Tuple[Dict[str, Dict[str, List]], int]:
         """
-        Executes the QModel V6 YOLO prediction pipeline on the provided data.
+        Executes the QModel Onyx prediction pipeline on the provided data.
 
         This method orchestrates the complete detection workflow. It handles data loading,
         preprocessing, and fill type classification. If a specific channel count is not

@@ -4,17 +4,14 @@ Provides canonical implementations of common signal-processing and spatial mappi
 utilities used by both `detector_render.py` and `fill_render.py`.
 
 Attributes:
-    PADDING (int): Standard pixel padding offset imported from
-        `QModelOnyx_DataProcessor`.
+    PADDING (int): Standard pixel padding offset applied to every rendered strip.
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-from .dataprocessor import QModelOnyxDataProcessor as DP
-
-PADDING = DP.PADDING
+PADDING = 5
 
 
 def _robust_mad(x: np.ndarray) -> float:
