@@ -5,6 +5,7 @@
 /src/systems/*/assets
 /runs_moirai/
 /cache_moirai/
+/.vscode/
 /datasets/
 /qmodel_onyx/
 replay_fill.json
