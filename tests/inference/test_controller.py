@@ -10,10 +10,6 @@ from src.systems.qmodel_7_onyx.inference import controller as ctl
 from src.systems.qmodel_7_onyx.inference.config import QModelOnyxConfig
 from src.systems.qmodel_7_onyx.inference.crosscheck import CrosscheckResult, ZoomEvidence
 
-# ---------------------------------------------------------------------------
-# Shared fixtures / helpers
-# ---------------------------------------------------------------------------
-
 
 def _raw_df(duration_s=400.0, dt=0.02, seed=0):
     """A raw (unpreprocessed) sensor dataframe, long/dense enough to survive
@@ -66,11 +62,6 @@ class _FakeFillClassifier:
 
 def _controller(model_assets=None):
     return ctl.QModelOnyx(model_assets=model_assets or {})
-
-
-# ---------------------------------------------------------------------------
-# QModelOnyxFillClassifier
-# ---------------------------------------------------------------------------
 
 
 class TestQModelOnyxFillClassifierInit:
@@ -256,11 +247,6 @@ class TestQModelOnyxDetectorPredictCandidates:
         assert set(out) == {99}
 
 
-# ---------------------------------------------------------------------------
-# QModelOnyx: loaders
-# ---------------------------------------------------------------------------
-
-
 class TestLoaders:
     def test_load_fill_cls_returns_none_without_a_configured_path(self):
         c = _controller()
@@ -326,11 +312,6 @@ class TestLoaders:
         assert c._load_spacing_prior() is None
 
 
-# ---------------------------------------------------------------------------
-# QModelOnyx: small formatting/utility helpers
-# ---------------------------------------------------------------------------
-
-
 class TestFormatHelpers:
     def test_default_predictions_cover_every_poi_with_placeholders(self):
         c = _controller()
@@ -391,11 +372,6 @@ class TestVisualize:
     def test_empty_dataframe_is_a_noop(self):
         c = _controller()
         c._visualize(pd.DataFrame(), {}, [])  # must not raise
-
-
-# ---------------------------------------------------------------------------
-# QModelOnyx: _decode_with_prior
-# ---------------------------------------------------------------------------
 
 
 def _prior(tmp_path):
@@ -493,11 +469,6 @@ class TestDecodeWithPrior:
         assert "decode error" in meta["reason"]
 
 
-# ---------------------------------------------------------------------------
-# QModelOnyx: _crosscheck_fill
-# ---------------------------------------------------------------------------
-
-
 class TestCrosscheckFill:
     def test_no_zoom_detectors_is_a_noop(self):
         c = _controller()
@@ -576,11 +547,6 @@ class TestCrosscheckFill:
         mock_rescue.assert_not_called()
         mock_veto.assert_not_called()
         assert n == 0
-
-
-# ---------------------------------------------------------------------------
-# QModelOnyx: _refine_with_zoom
-# ---------------------------------------------------------------------------
 
 
 class TestRefineWithZoom:
@@ -667,11 +633,6 @@ class TestRefineWithZoom:
         meta = c._refine_with_zoom(final_results, _raw_df(), pd.DataFrame())
 
         assert meta["used"] is False
-
-
-# ---------------------------------------------------------------------------
-# QModelOnyx: predict() - the full orchestration
-# ---------------------------------------------------------------------------
 
 
 def _cascade_controller(ch3_hit=True, ch2_hit=True, ch1_hit=True, init_hit=True):

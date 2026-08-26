@@ -10,10 +10,6 @@ from src.systems.qmodel_7_onyx.decode.spacing_prior import SpacingPrior
 from src.systems.qmodel_7_onyx.tiers import TierScheme
 from src.systems.qmodel_7_onyx.training.env import StageResult
 
-# ===========================================================================
-#  Workspace
-# ===========================================================================
-
 
 def test_workspace_defaults_match_paths_module():
     from src.systems.qmodel_7_onyx import paths
@@ -41,11 +37,6 @@ def test_workspace_normalizes_str_to_path():
     assert ws.data_root == Path("some/string/path")
 
 
-# ===========================================================================
-#  Pipeline construction
-# ===========================================================================
-
-
 def test_pipeline_accepts_explicit_workspace():
     ws = pl.Workspace(data_root="x")
     p = pl.Pipeline(ws)
@@ -63,11 +54,6 @@ def test_pipeline_rejects_both_workspace_and_overrides():
         pl.Pipeline(ws, data_root="y")
 
 
-# ===========================================================================
-#  _normalize_targets
-# ===========================================================================
-
-
 def test_normalize_targets_accepts_single_string():
     assert pl._normalize_targets("detectors", pl.VALID_DATASET_TARGETS) == {"detectors"}
 
@@ -80,11 +66,6 @@ def test_normalize_targets_rejects_unknown():
 def test_normalize_targets_rejects_empty():
     with pytest.raises(pl.PipelineError):
         pl._normalize_targets([], pl.VALID_DATASET_TARGETS)
-
-
-# ===========================================================================
-#  prepare()
-# ===========================================================================
 
 
 def _fake_runs(n=5):
@@ -134,11 +115,6 @@ def test_prepare_converts_system_exit_to_pipeline_error(tmp_path, monkeypatch):
 
     with pytest.raises(pl.PipelineError, match="too few runs"):
         pl.Pipeline(ws).prepare()
-
-
-# ===========================================================================
-#  build_datasets()
-# ===========================================================================
 
 
 def _write_manifest(dataset_dir: Path, **fields) -> None:
@@ -200,11 +176,6 @@ def test_build_datasets_converts_system_exit(tmp_path, monkeypatch):
 
     with pytest.raises(pl.PipelineError, match="no runs under raw root"):
         pl.Pipeline(ws).build_datasets(targets=["detectors"])
-
-
-# ===========================================================================
-#  train()
-# ===========================================================================
 
 
 def test_train_detectors_uses_per_stage_epoch_defaults(tmp_path, monkeypatch):
@@ -280,11 +251,6 @@ def test_train_converts_system_exit(tmp_path, monkeypatch):
 
     with pytest.raises(pl.PipelineError, match="missing data.yaml"):
         pl.Pipeline(ws).train(targets=["detectors"], detector_stages=["init"])
-
-
-# ===========================================================================
-#  run()
-# ===========================================================================
 
 
 def test_run_chains_all_three_stages_and_forwards_kwargs(tmp_path, monkeypatch):

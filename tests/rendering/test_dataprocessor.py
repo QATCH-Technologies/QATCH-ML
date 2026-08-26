@@ -73,11 +73,11 @@ class TestPreprocessDataframe:
         """Provides a raw DataFrame with extra columns, duplicate times, and gaps."""
         return pd.DataFrame(
             {
-                DP.COL_TIME: [0.0, 0.0, 0.02, 0.04],  # Duplicate 0.0, gap to 0.02[cite: 6]
+                DP.COL_TIME: [0.0, 0.0, 0.02, 0.04],  # Duplicate 0.0, gap to 0.02
                 DP.COL_FREQ: [100.0, 101.0, 102.0, 110.0],
                 DP.COL_DISS: [1.0, 1.5, 2.0, 5.0],
-                "Temperature": [25.0, 25.1, 25.2, 25.3],  # Should be dropped[cite: 6]
-                "Date": ["2026-01-01"] * 4,  # Should be dropped[cite: 6]
+                "Temperature": [25.0, 25.1, 25.2, 25.3],  # Should be dropped
+                "Date": ["2026-01-01"] * 4,  # Should be dropped
             }
         )
 
@@ -85,34 +85,34 @@ class TestPreprocessDataframe:
         """It safely aborts if the required relative time column is absent."""
         df = pd.DataFrame({"Resonance_Frequency": [100.0]})
         result = DP.preprocess_dataframe(df)
-        assert result is None  # [cite: 6]
+        assert result is None  #
 
     def test_drops_unnecessary_columns(self, raw_df):
         """It drops specific metadata columns like Temperature and Date."""
         df = DP.preprocess_dataframe(raw_df)
 
-        assert "Temperature" not in df.columns  # [cite: 6]
-        assert "Date" not in df.columns  # [cite: 6]
+        assert "Temperature" not in df.columns  #
+        assert "Date" not in df.columns  #
         assert DP.COL_FREQ in df.columns
 
     def test_deduplicates_and_reindexes_time_grid(self, raw_df):
         """It drops duplicate times and interpolates to a fixed TIME_STEP grid."""
         df = DP.preprocess_dataframe(raw_df)
 
-        # Max time is 0.04, min is 0.0, step is 0.005[cite: 6]
-        # np.arange(0.0, 0.04, 0.005) yields 8 points[cite: 6]
+        # Max time is 0.04, min is 0.0, step is 0.005
+        # np.arange(0.0, 0.04, 0.005) yields 8 points
         expected_times = np.arange(0.0, 0.04, DP.TIME_STEP)
 
         assert len(df) == len(expected_times)
         assert np.allclose(df[DP.COL_TIME].values, expected_times)
 
         # Original df had a duplicate at 0.0 (values 100.0 and 101.0).
-        # keep="first" ensures 100.0 is retained[cite: 6]
+        # keep="first" ensures 100.0 is retained
         assert df[DP.COL_FREQ].iloc[0] == 100.0
 
     def test_applies_median_filter(self):
         """It verifies that a scipy median filter is applied to numeric columns."""
-        # Using a kernel size of 5[cite: 6]
+        # Using a kernel size of 5
         # Construct a spike that a median filter of size 5 will flatten
         times = np.arange(0.0, 0.05, 0.005)  # 10 points
         freqs = np.array([10.0, 10.0, 10.0, 100.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0])
@@ -121,5 +121,5 @@ class TestPreprocessDataframe:
 
         df = DP.preprocess_dataframe(raw)
 
-        # The spike of 100.0 should be smoothed out to 10.0 by the size-5 median filter[cite: 6]
+        # The spike of 100.0 should be smoothed out to 10.0 by the size-5 median filter
         assert df[DP.COL_FREQ].max() == 10.0
