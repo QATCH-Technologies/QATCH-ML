@@ -78,15 +78,15 @@ class TestEvaluate:
         """Constructs a real SpacingPrior with 10-second optimal gaps."""
         prior = SpacingPrior(
             pairs=["POI1->POI2", "POI2->POI3", "POI3->POI4", "POI4->POI5"],
-            frac_blend=0.0,  # Disable frac blend for predictable absolute seconds math[cite: 5]
+            frac_blend=0.0,  # Disable frac blend for predictable absolute seconds math
         )
         for pair in prior.pairs:
             prior.gap[pair] = GapStat(
-                log_mu_sec=math.log(10.0),  # Ideal gap is exactly 10.0s[cite: 5]
+                log_mu_sec=math.log(10.0),  # Ideal gap is exactly 10.0s
                 log_sd_sec=0.1,
                 log_mu_frac=math.log(0.25),
                 log_sd_frac=0.1,
-                min_gap_sec=1.0,  # Wide feasibility bounds[cite: 5]
+                min_gap_sec=1.0,  # Wide feasibility bounds
                 max_gap_sec=30.0,
                 n=100,
             )
@@ -100,7 +100,7 @@ class TestEvaluate:
             "truth": {"POI1": 10.0, "POI2": 20.0},
             "present": ["POI1", "POI2"],
             "pools": {
-                # 10.0/20.0 creates a perfect 10s gap, maximizing prior score[cite: 3, 5]
+                # 10.0/20.0 creates a perfect 10s gap, maximizing prior score
                 "POI1": [{"time": 9.5, "conf": 0.9}, {"time": 10.0, "conf": 0.95}],
                 "POI2": [{"time": 19.5, "conf": 0.8}, {"time": 20.0, "conf": 0.95}],
             },
@@ -117,7 +117,7 @@ class TestEvaluate:
             rows=[sample_row], prior=real_prior, lam=1.0, margin=0.0, gross_threshold=2.0
         )
 
-        # Decoder selects {POI1: 10.0, POI2: 20.0} due to optimal 10s gap and high conf[cite: 3]
+        # Decoder selects {POI1: 10.0, POI2: 20.0} due to optimal 10s gap and high conf
         # Decoded errors: 0.0, 0.0. Cascade errors: 2.0 (ok), 5.0 (gross).
         assert stats["n"] == 2
         assert stats["mae_decoded_s"] == 0.0
@@ -129,14 +129,14 @@ class TestEvaluate:
 
     def test_evaluate_margin_override(self, sample_row, real_prior):
         """It reverts to the cascade baseline if the margin rule overrides the DP decoder."""
-        # A massive margin ensures the decode score never beats cascade + margin[cite: 2]
+        # A massive margin ensures the decode score never beats cascade + margin
         huge_margin = 1000.0
 
         stats = sweep.evaluate(
             rows=[sample_row], prior=real_prior, lam=1.0, margin=huge_margin, gross_threshold=2.0
         )
 
-        # Forced to fallback to cascade picks (8.0 and 25.0)[cite: 2]
+        # Forced to fallback to cascade picks (8.0 and 25.0)
         # Truth is 10.0 and 20.0, so errors are 2.0 and 5.0
         assert stats["mae_decoded_s"] == 3.5  # (2.0 + 5.0) / 2
         assert stats["gross_decoded"] == 1  # 5.0 > 2.0 threshold

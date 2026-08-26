@@ -83,10 +83,12 @@ class QModelOnyxDataProcessor:
                           `get_d2_buffer(index: int)`.
 
         Returns:
-            pd.DataFrame: A DataFrame with columns 'Relative_time', 'Resonance_Frequency', 'Dissipation'.
+            pd.DataFrame: A DataFrame with columns 'Relative_time', 'Resonance_Frequency',
+            'Dissipation'.
 
         Raises:
-            ValueError: If the worker does not have the required buffer methods or buffers are empty.
+            ValueError: If the worker does not have the required buffer methods or buffers are
+            empty.
         """
         required_methods = ["get_t1_buffer", "get_d1_buffer", "get_d2_buffer"]
         for method in required_methods:

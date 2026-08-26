@@ -194,7 +194,8 @@ def _prep_candidates(
     stages produce the same bounding box.
 
     Args:
-        candidates (Dict[str, List[Candidate]]): Mapping of POI names to lists of candidate detections.
+        candidates (Dict[str, List[Candidate]]): Mapping of POI names to lists of candidate
+        detections.
         present (List[str]): Ordered list of POI names to include in decoding.
         min_conf (float): Minimum confidence threshold used to filter candidates.
         max_candidates (int): Maximum number of candidates retained per POI after
@@ -270,7 +271,7 @@ def _score_config(
     span_hi = g_index[placed[-1]] if placed else 0
     spacing_ll = 0.0
     weighted_spacing_ll = 0.0
-    for a, b in zip(placed[:-1], placed[1:]):
+    for a, b in zip(placed[:-1], placed[1:], strict=True):
         gi, gj = g_index[a], g_index[b]
         ll = prior.gap_loglik_scoped(
             gi, gj, chosen[b].time - chosen[a].time, span, span_lo, span_hi
@@ -489,8 +490,8 @@ def dp_decode(
     to provide meaningful ratio information.
 
     Args:
-        candidates (Dict[str, List[Candidate]]): Mapping of POI names to candidate detections. Candidate
-            lists may be in any order. Only POIs listed in `present_pois` are
+        candidates (Dict[str, List[Candidate]]): Mapping of POI names to candidate detections.
+            Candidate lists may be in any order. Only POIs listed in `present_pois` are
             decoded.
         present_pois (Sequence[str]): Ordered subset of POIs identified as present by upstream
             classification logic.

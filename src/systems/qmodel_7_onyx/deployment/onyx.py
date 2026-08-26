@@ -1,9 +1,10 @@
 ﻿"""
 QATCH.QModel.models.qmodel_onyx.onyx.py
 
-It orchestrates a "Reverse Cascading Detection" strategy, utilizing multiple YOLO object detectors to
-identify points of interest (POIs). The pipeline handles data preprocessing, fill-type classification,
-and sequential slicing of the dataset to isolate specific channel events (Init, Ch1, Ch2, Ch3).
+It orchestrates a "Reverse Cascading Detection" strategy, utilizing multiple YOLO object detectors
+to identify points of interest (POIs). The pipeline handles data preprocessing, fill-type
+classification, and sequential slicing of the dataset to isolate specific channel events
+(Init, Ch1, Ch2, Ch3).
 
 Onyx adds, on top of the Volta cascade + configuration-prior decode:
 - a detection renderer (derivative-energy salience strip) via `onyx_render`, and
@@ -24,6 +25,19 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+
+# Fill-classification renderer (step-coincidence energy strip). Provides the
+# shared train/deploy input contract (prepare_cls_input). Required sibling,
+# same rationale as onyx_dataprocessor above.
+from QATCH.QModel.models.qmodel_onyx.onyx_fill_render import (
+    prepare_cls_input as _prepare_cls_input,
+)
+
+# Detection renderer (derivative-energy salience strip). Required sibling,
+# same rationale as onyx_dataprocessor above.
+from QATCH.QModel.models.qmodel_onyx.onyx_render import (
+    generate_channel_det as _gen_det_image,
+)
 
 try:
     from QATCH.common.logger import (
@@ -85,20 +99,6 @@ except (ImportError, ModuleNotFoundError):
         tag="[QModelOnyx]",
         msg="Decode modules not found. Configuration decode disabled; falling back to cascade-only behavior.",
     )
-
-
-# Detection renderer (derivative-energy salience strip). Required sibling,
-# same rationale as onyx_dataprocessor above.
-from QATCH.QModel.models.qmodel_onyx.onyx_render import (
-    generate_channel_det as _gen_det_image,
-)
-
-# Fill-classification renderer (step-coincidence energy strip). Provides the
-# shared train/deploy input contract (prepare_cls_input). Required sibling,
-# same rationale as onyx_dataprocessor above.
-from QATCH.QModel.models.qmodel_onyx.onyx_fill_render import (
-    prepare_cls_input as _prepare_cls_input,
-)
 
 
 # --- Configuration Constants ---
@@ -220,7 +220,7 @@ class QModelOnyxFillClassifier:
 
         except Exception as e:
             Log.e(self.TAG, f"Failed to load YOLO model: {e}")
-            raise RuntimeError(f"Failed to load YOLO model: {e}")
+            raise RuntimeError(f"Failed to load YOLO model: {e}") from e
 
     def _render_input(self, df: pd.DataFrame) -> Optional[np.ndarray]:
         """Renders the preprocessed dataframe to the 224x224 BGR inference
@@ -929,14 +929,10 @@ class QModelOnyx:
         Raises:
             Exception: If the file cannot be read or parsed by pandas.
         """
-        try:
-            if not isinstance(file_buffer, str):
-                if hasattr(file_buffer, "seekable") and file_buffer.seekable():
-                    file_buffer.seek(0)
-            df = pd.read_csv(file_buffer)
-        except Exception as e:
-            raise e
-        return df
+        if not isinstance(file_buffer, str):
+            if hasattr(file_buffer, "seekable") and file_buffer.seekable():
+                file_buffer.seek(0)
+        return pd.read_csv(file_buffer)
 
     def _get_raw_index(self, raw_df: pd.DataFrame, target_time: float) -> int:
         """
