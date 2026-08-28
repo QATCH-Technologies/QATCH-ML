@@ -131,7 +131,13 @@ def _make_trainer():
                 except Exception:
                     gs = 32
             ds = build_yolo_dataset(
-                self.args, img_path, batch, self.data, mode=mode, rect=True, stride=gs  # type: ignore
+                self.args,
+                img_path,
+                batch,
+                self.data,
+                mode=mode,
+                rect=True,
+                stride=gs,  # type: ignore
             )
             if mode == "train" and getattr(ds, "augment", False):
                 # The augment branch of build_transforms

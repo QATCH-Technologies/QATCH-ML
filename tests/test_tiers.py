@@ -34,7 +34,7 @@ def test_merge_small_bins_drops_underpopulated_edges():
 
 
 def test_fit_tiers_auto_is_log_uniform_and_sklearn_independent(monkeypatch):
-    """"auto" must not depend on scikit-learn at all - it should use
+    """ "auto" must not depend on scikit-learn at all - it should use
     log_uniform binning (the range-preserving default) whether or not
     sklearn is importable."""
     real_import = builtins.__import__

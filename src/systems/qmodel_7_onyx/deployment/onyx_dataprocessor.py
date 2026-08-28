@@ -1,4 +1,4 @@
-﻿"""
+"""
 onyx_yolo_dataprocessor.py
 
 This module provides the data preprocessing logic required for the QModel Onyx

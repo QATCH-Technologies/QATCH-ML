@@ -13,9 +13,7 @@ class TestLoadDump:
         """It correctly parses line-delimited JSON objects into a list."""
         dump_file = tmp_path / "candidates.jsonl"
         dump_file.write_text(
-            '{"run_id": "A", "truth": {"POI1": 1.0}}\n'
-            "\n"
-            '{"run_id": "B", "truth": {"POI1": 2.0}}\n'
+            '{"run_id": "A", "truth": {"POI1": 1.0}}\n\n{"run_id": "B", "truth": {"POI1": 2.0}}\n'
         )
 
         rows = sweep.load_dump(dump_file)

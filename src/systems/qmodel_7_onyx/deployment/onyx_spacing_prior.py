@@ -147,7 +147,7 @@ class OnyxSpacingPrior:
         _, P = configs_sec.shape
         span = configs_sec[:, -1] - configs_sec[:, 0]
         span = np.where(span < 1e-9, np.nan, span)
-        pairs = [f"{POI_ORDER[i]}->{POI_ORDER[i+1]}" for i in range(P - 1)]
+        pairs = [f"{POI_ORDER[i]}->{POI_ORDER[i + 1]}" for i in range(P - 1)]
         prior = OnyxSpacingPrior(
             pairs=pairs, frac_blend=frac_blend, bound_lo_pct=bound_lo_pct, bound_hi_pct=bound_hi_pct
         )

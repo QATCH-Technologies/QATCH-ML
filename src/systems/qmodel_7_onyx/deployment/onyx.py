@@ -1,4 +1,4 @@
-﻿"""
+"""
 QATCH.QModel.models.qmodel_onyx.onyx.py
 
 It orchestrates a "Reverse Cascading Detection" strategy, utilizing multiple YOLO object detectors

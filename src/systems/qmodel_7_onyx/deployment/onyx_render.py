@@ -1,4 +1,4 @@
-﻿"""
+"""
 QATCH.QModel.models.qmodel_onyx.onyx_render.py
 
 Generates image-based representations of viscosity data for model training
