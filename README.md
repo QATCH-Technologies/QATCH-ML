@@ -1,8 +1,15 @@
+<p align="center">
+  <img src="assets/qmodel-logo.svg" alt="QModel logo" width="240">
+</p>
+
 # QModel
 
-[![Test](https://github.com/QATCH-Technologies/QATCH-ML/actions/workflows/test.yml/badge.svg)](https://github.com/QATCH-Technologies/QATCH-ML/actions/workflows/test.yml)
-[![Style](https://github.com/QATCH-Technologies/QATCH-ML/actions/workflows/style.yml/badge.svg)](https://github.com/QATCH-Technologies/QATCH-ML/actions/workflows/style.yml)
 [![Build](https://github.com/QATCH-Technologies/QATCH-ML/actions/workflows/build.yml/badge.svg)](https://github.com/QATCH-Technologies/QATCH-ML/actions/workflows/build.yml)
+[![CodeQL](https://github.com/QATCH-Technologies/QATCH-ML/actions/workflows/codeql.yml/badge.svg)](https://github.com/QATCH-Technologies/QATCH-ML/actions/workflows/codeql.yml)
+[![Style](https://github.com/QATCH-Technologies/QATCH-ML/actions/workflows/style.yml/badge.svg)](https://github.com/QATCH-Technologies/QATCH-ML/actions/workflows/style.yml)
+[![Test](https://github.com/QATCH-Technologies/QATCH-ML/actions/workflows/test.yml/badge.svg)](https://github.com/QATCH-Technologies/QATCH-ML/actions/workflows/test.yml)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
 QModel is a QCM-D sensor-run event-detection system. It converts raw
 QATCH nanovisQ dissipation and resonance-frequency data into signal-domain
