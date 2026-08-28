@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/qmodel-logo.svg" alt="QModel logo" width="240">
+  <img src="assets/qmodel-logo.png" alt="QModel logo" width="240">
 </p>
 
 # QModel
